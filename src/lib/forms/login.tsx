@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { Twitter } from "lucide-react";
+import { XiLogo } from "@/components/xi-logo";
 import { logIn } from "../apis/auth";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -34,14 +34,14 @@ export default function LoginForm() {
     try {
       const response = await logIn(data);
 
-      if (response.message === "success" && response.token) {
-        localStorage.setItem("token", response.token);
+      if (response.ok) {
         toast.success("Login successful!");
-        router.push("/");
+        router.replace("/dashboard");
+        router.refresh();
       } else {
-        toast.error("Login failed. Please try again.");
+        toast.error(response.message);
       }
-    } catch (error) {
+    } catch {
       toast.error("Something went wrong. Please try again later.");
     }
   };
@@ -49,10 +49,10 @@ export default function LoginForm() {
   return (
     <div className="w-[580px] h-[500px] mx-7 flex flex-col justify-center items-center">
       <div className="flex">
-        <Twitter size={40} className="-mr-8" />
+        <XiLogo size={40} className="-mr-8" />
         <div className="w-48 h-11 text-center">
-          <h1 className="text-primary">Twitter</h1>
-          <h3 className="text-muted-foreground">Tech Company</h3>
+          <h1 className="text-primary">Xi</h1>
+          <h3 className="text-muted-foreground">Your private space</h3>
         </div>
       </div>
 
@@ -94,13 +94,9 @@ export default function LoginForm() {
             )}
           />
 
-          <Link href="/auth/register">
-            <p className="text-chart-1 cursor-pointer text-sm mb-3">
-              Forget Password?
-            </p>
-          </Link>
-
-          <Button className="w-full">Log In</Button>
+          <Button className="w-full" type="submit" disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting ? "Logging in…" : "Log In"}
+          </Button>
 
           <p className="text-primary text-center cursor-pointer text-sm">
             Have not account?

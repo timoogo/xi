@@ -1,12 +1,18 @@
 {
-  "name": "twitter",
+  "name": "xi",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate-auth.ts",
+    "test:auth": "tsx --test tests/auth.test.ts",
+    "test:e2e": "tsx --test tests/e2e.test.ts",
+    "test:publications": "tsx --tsconfig tests/tsconfig.json --test tests/publications.test.ts tests/markdown-view.test.tsx",
+    "graph:reindex": "tsx --env-file-if-exists=.env.local scripts/graph-reindex.ts",
+    "test:graph": "tsx --tsconfig tests/tsconfig.json --test tests/graph-*.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
@@ -16,6 +22,8 @@
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-separator": "^1.1.7",
     "@radix-ui/react-slot": "^1.2.3",
+    "better-auth": "1.7.11",
+    "better-sqlite3": "13.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "embla-carousel-autoplay": "^8.6.0",
@@ -29,21 +37,30 @@
     "react-hook-form": "^7.61.1",
     "react-icons": "^5.5.0",
     "react-infinite-scroll-component": "^6.1.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "sonner": "^2.0.6",
     "tailwind-merge": "^3.3.1",
     "tailwind-scrollbar-hide": "^4.0.0",
+    "yaml": "2.8.1",
     "zod": "^4.0.14"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.4.5",
+    "playwright-core": "^1.64.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "tw-animate-css": "^1.3.6",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

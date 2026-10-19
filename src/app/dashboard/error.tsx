@@ -1,16 +1,13 @@
-"use client"; 
+"use client";
+
+import { Button } from "@/components/ui/button";
 
 export default function Error({ error, reset }: { error: Error; reset: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen">
-      <h2 className="text-2xl font-bold text-red-600 mb-4">Something went wrong!</h2>
-      <p className="text-gray-500 mb-6">{error.message}</p>
-      <button
-        onClick={() => reset()}
-        className="px-4 py-2 bg-red-500 text-white rounded-lg shadow hover:bg-red-600"
-      >
-        Try again
-      </button>
-    </div>
+    <section role="alert" className="px-6 py-16 text-center">
+      <h2 className="text-2xl font-extrabold text-destructive">Une erreur est survenue</h2>
+      <p className="mx-auto mt-2 max-w-md text-[15px] text-muted-foreground">{error.message}</p>
+      <Button onClick={() => reset()} className="mt-6 rounded-full">Réessayer</Button>
+    </section>
   );
 }

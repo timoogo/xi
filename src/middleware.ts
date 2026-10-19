@@ -1,32 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const authpages = new Set(['/auth/login', '/auth/register']);
-const privatepages = new Set([
-  '/dashboard/notifications',
-  '/dashboard/communites',
-  '/dashboard/about-us',
-  '/dashboard/profile',
-  '/dashboard/terms',
-]);
-
-export function middleware(req: NextRequest) {
-  const token = req.cookies.get('token')?.value; // ✅ الصح
-
-  if (authpages.has(req.nextUrl.pathname)) {
-    if (token) {
-      const redirectUrl = new URL('/dashboard/profile', req.nextUrl.origin);
-      return NextResponse.redirect(redirectUrl);
-    }
-    return NextResponse.next();
+// Fast redirect only. The dashboard layout validates the session against SQLite.
+export function middleware(request: NextRequest) {
+  if (!request.cookies.has("xi.session_token") && !request.cookies.has("__Secure-xi.session_token")) {
+    return NextResponse.redirect(new URL("/auth/login", request.url));
   }
-
-  if (privatepages.has(req.nextUrl.pathname)) {
-    if (!token) {
-      const redirectUrl = new URL('/auth/login', req.nextUrl.origin);
-      return NextResponse.redirect(redirectUrl);
-    }
-    return NextResponse.next();
-  }
-
   return NextResponse.next();
 }
+
+export const config = { matcher: ["/dashboard/:path*"] };

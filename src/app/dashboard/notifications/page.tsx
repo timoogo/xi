@@ -1,15 +1,14 @@
-import React from 'react'
-import NotificationsPage from './_components/notifications'
-import { Metadata } from 'next';
+import type { Metadata } from "next";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
 
-export const metadata: Metadata = {
-  title: "Twitty  | Notifications",
-  description: "Discover what people interact with you!",
-};
+export const metadata: Metadata = { title: "Ξ | Notifications", description: "Les notifications ne sont pas encore disponibles." };
 
-export default function page() {
+export default function NotificationsPage() {
   return (
-    <div><NotificationsPage/></div>
-  )
+    <>
+      <PageHeader title="Notifications" />
+      <EmptyState title="Les notifications ne sont pas encore disponibles" description="Ξ ne génère pas encore de notifications. Elles apparaîtront ici lorsque les interactions sociales existeront." />
+    </>
+  );
 }
-

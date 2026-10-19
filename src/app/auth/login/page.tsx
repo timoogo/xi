@@ -5,7 +5,7 @@ import { ModeToggle } from '@/components/themes/toggle';
 
 
 export const metadata: Metadata = {
-  title: "Twitty | Login",
+  title: "Xi | Login",
   description: "Welcome back !",
 };
 export default function page() {

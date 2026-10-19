@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local authentication database and example configuration
+/data/
+*.sqlite
+*.sqlite-*
+!.env.example
+
+/.next-verify/

@@ -1,4 +1,7 @@
-import Image from "next/image";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { getAuth } from "@/lib/auth";
+import { XiLogo } from "@/components/xi-logo";
 import React, { ReactNode } from "react";
 
 interface AuthLayoutProps {
@@ -10,18 +13,14 @@ interface AuthLayoutProps {
  * - Left side: branding image (hidden on small screens)
  * - Right side: renders the auth form (login/register)
  */
-export default function AuthLayout({ children }: AuthLayoutProps) {
+export default async function AuthLayout({ children }: AuthLayoutProps) {
+  const session = await getAuth().api.getSession({ headers: await headers() });
+  if (session) redirect("/dashboard");
   return (
     <div className="flex justify-between items-center">
       {/* Left side image (visible only on large screens) */}
       <div className="hidden lg:flex w-1/2 h-screen items-center bg-black">
-        <Image
-          src="/twitty.png"
-          alt="Brand image"
-          width={800}
-          height={1200}
-          priority
-        />
+        <XiLogo className="w-full h-80 text-white" />
       </div>
 
       {/* Right side content (auth forms) */}

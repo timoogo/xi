@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { Twitter } from "lucide-react";
+import { XiLogo } from "@/components/xi-logo";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Register } from "../apis/auth";
@@ -28,22 +28,23 @@ export default function RegisterForm() {
     defaultValues: {
       name: "",
       email: "",
-      phone: "",
       password: "",
       rePassword: "",
     },
   });
 
   const onSubmit = async (data: RegisterValues) => {
-    const response = await Register(data);
-    console.log("Register Response:", response);
-
-    if (response.message === "success" && response.token) {
-      localStorage.setItem("token", response.token);
-      toast.success("Register successful!");
-      router.push("/auth/login");
-    } else {
-      toast.error("Register failed. Please try again.");
+    try {
+      const response = await Register(data);
+      if (!response.ok) {
+        toast.error(response.message);
+        return;
+      }
+      toast.success("Account created!");
+      router.replace("/dashboard");
+      router.refresh();
+    } catch {
+      toast.error("Unable to register. Please try again later.");
     }
   };
 
@@ -51,10 +52,10 @@ export default function RegisterForm() {
     <div className="w-[580px] h-[500px] mx-7 flex flex-col justify-center items-center">
       {/* Heading */}
       <div className="flex items-center gap-2">
-        <Twitter size={40} />
+        <XiLogo size={40} />
         <div className="text-center">
-          <h1 className="text-primary font-bold">Twitter</h1>
-          <h3 className="text-muted-foreground">Tech Company</h3>
+          <h1 className="text-primary font-bold">Xi</h1>
+          <h3 className="text-muted-foreground">Your private space</h3>
         </div>
       </div>
 
@@ -99,24 +100,6 @@ export default function RegisterForm() {
             )}
           />
 
-          {/* Phone */}
-          <FormField
-            name="phone"
-            control={form.control}
-            render={({ field }) => (
-              <FormItem>
-                <FormControl>
-                  <Input
-                    type="tel"
-                    placeholder="Enter your phone number"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
           {/* Password */}
           <FormField
             name="password"
@@ -153,8 +136,8 @@ export default function RegisterForm() {
             )}
           />
 
-          <Button className="w-full" type="submit">
-            Register
+          <Button className="w-full" type="submit" disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting ? "Registering…" : "Register"}
           </Button>
 
           <p className="text-primary text-center cursor-pointer text-sm">

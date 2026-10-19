@@ -15,46 +15,23 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata :Metadata  = {
-  title: "Twitty | Connect, Share & Explore",
-  description:
-    "Twitty 🐦 — a creative social hub where you can share your thoughts, connect with others, and explore trending ideas. Join the conversation today!",
-  keywords: [
-    "Twitty",
-    "Twitter Clone",
-    "Social Media",
-    "Microblogging",
-    "Connect",
-    "Share",
-    "Explore",
-  ],
-  authors: [{ name: "Twitty Team", url: "https://twitty.com" }],
+export const metadata: Metadata = {
+  title: "Ξ | Votre espace privé",
+  description: "Ξ (Xi) — votre espace privé de veille personnelle.",
   openGraph: {
-    title: "Twitty | Connect, Share & Explore",
-    description:
-      "Welcome to Twitty 🐦 — your social hub for ideas, connections, and creativity.",
-    url: "https://twitty.com",
-    siteName: "Twitty",
-   
-    locale: "en_US",
+    title: "Ξ | Votre espace privé",
+    description: "Votre espace Ξ privé.",
+    siteName: "Xi",
+    locale: "fr_FR",
     type: "website",
   },
   twitter: {
-    card: "summary_large_image",
-    title: "Twitty | Connect, Share & Explore",
-    description:
-      "Twitty 🐦 — a creative social hub where you can share your thoughts, connect with others, and explore trending ideas.",
-    creator: "@twitty",
+    card: "summary",
+    title: "Ξ | Votre espace privé",
+    description: "Votre espace Ξ privé.",
   },
-  icons: {
-      icon: "/twitter.svg",         
-    apple: "/twitter.svg",   
-  },
+  icons: { icon: "/xi.svg", apple: "/xi.svg" },
 };
-
-
-
-
 
 export default function RootLayout({
   children,
@@ -62,7 +39,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="fr" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >

@@ -1,58 +1,52 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { headers } from "next/headers";
+import { isAPIError } from "better-auth/api";
+import { getAuth } from "../auth";
+import { loginSchema, registerSchema, type LoginValues, type RegisterValues } from "../scheme/auth-scheme";
 
-// Login
-export async function logIn(data: { email: string; password: string }) {
-  try {
-    const result = await fetch(`${process.env.NEXT_PUBLIC_API}/signin`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+type AuthResult = { ok: true } | { ok: false; message: string };
 
-    const payload = await result.json();
-
-    if (payload?.token) {
-      const cookieStore = await cookies();
-      cookieStore.set("token", payload.token, {
-        httpOnly: true,
-        path: "/",
-        maxAge: 60 * 60 * 24, // 1 day
-        secure: process.env.NODE_ENV === "production",
-      });
+function authError(error: unknown): AuthResult {
+  if (isAPIError(error)) {
+    if (error.body?.code === "USER_ALREADY_EXISTS" || error.body?.code === "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL") {
+      return { ok: false, message: "This email is already registered. Please log in." };
     }
-
-    return payload;
-  } catch (error) {
-    throw new Error("Login failed. Please try again.");
+    if (error.status === "TOO_MANY_REQUESTS") return { ok: false, message: "Too many attempts. Please try again later." };
+    if (error.status === "UNAUTHORIZED") return { ok: false, message: "Invalid email or password." };
+    if (error.status === "BAD_REQUEST") return { ok: false, message: "Please check your details and try again." };
   }
+  return { ok: false, message: "Authentication is temporarily unavailable. Please try again later." };
 }
 
-// Register
-export async function Register(data: {
-  email: string;
-  password: string;
-  name?: string;
-}) {
+export async function logIn(data: LoginValues): Promise<AuthResult> {
+  const parsed = loginSchema.safeParse(data);
+  if (!parsed.success) return { ok: false, message: "Please enter a valid email and your password." };
   try {
-    const result = await fetch(`${process.env.NEXT_PUBLIC_API}/signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-
-    const payload = await result.json();
-    return payload;
+    await getAuth().api.signInEmail({ body: parsed.data, headers: await headers() });
+    return { ok: true };
   } catch (error) {
-    throw new Error("Registration failed. Please try again.");
+    return authError(error);
   }
 }
 
-// Logout
-export async function Logout() {
-  const cookieStore = await cookies();
-  cookieStore.delete("token");
+export async function Register(data: RegisterValues): Promise<AuthResult> {
+  const parsed = registerSchema.safeParse(data);
+  if (!parsed.success) return { ok: false, message: "Please check your name, email, password and password confirmation." };
+  const { name, email, password } = parsed.data;
+  try {
+    await getAuth().api.signUpEmail({ body: { name, email, password }, headers: await headers() });
+    return { ok: true };
+  } catch (error) {
+    return authError(error);
+  }
 }
 
-
+export async function Logout(): Promise<AuthResult> {
+  try {
+    await getAuth().api.signOut({ headers: await headers() });
+    return { ok: true };
+  } catch (error) {
+    return authError(error);
+  }
+}

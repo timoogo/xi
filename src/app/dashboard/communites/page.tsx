@@ -1,20 +1,14 @@
-import React from 'react'
-import Peoples from '../_components/Peoples'
-import Trending from '../profile/_components/Trending'
-import { Metadata } from 'next';
+import type { Metadata } from "next";
+import { EmptyState } from "@/components/empty-state";
+import { PageHeader } from "@/components/page-header";
 
-export const metadata: Metadata = {
-  title: "Twitty  | Communites",
-  description: "Follow other people!",
-};
+export const metadata: Metadata = { title: "Ξ | Communautés", description: "Les communautés ne sont pas encore disponibles." };
 
-export default function community() {
+export default function CommunitiesPage() {
   return (
     <>
-       <div className='flex overflow-hidden'>
-        <div className='min-h-screen min-w-full lg:min-w-2/4'><Peoples/></div>
-        <div className='hidden lg:block max-h-screen pb-6  lg:min-w-1/4'><Trending/></div>
-       </div>
+      <PageHeader title="Communautés" />
+      <EmptyState title="Les communautés ne sont pas encore disponibles" description="Ce MVP ne permet pas encore de découvrir ni de suivre d’autres comptes." />
     </>
-  )
+  );
 }

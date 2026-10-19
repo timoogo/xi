@@ -4,7 +4,7 @@ import { Metadata } from 'next';
 import React from 'react'
 
 export const metadata: Metadata = {
-  title: "Twitty | Register",
+  title: "Xi | Register",
   description: "Join to our infinite world",
 };
 export default function page() {
