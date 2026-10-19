@@ -5,7 +5,7 @@ import type { PublicationStore } from "../publications/store";
 import { assertWithin, inside, listDir, PUBLICATION_ID, type Vault } from "../publications/vault";
 import { parseGenerator, parseRelation, splitMessageRef } from "./format";
 import { createGraphIndex, migrateGraphIndex, type GeneratorRow, type ReadableMessageRow } from "./index-db";
-import type { AuthorizedGraph, GeneratorData, GraphRepository, MessageData, MessageRef, PublicationData, Viewer } from "./types";
+import type { AuthorizedGraph, GeneratorData, GraphRepository, MessageData, MessageRef, PublicationData, ReadOptions, Viewer } from "./types";
 
 export type GraphRepositoryHandle = GraphRepository & { reconcile(): Promise<void>; rebuild(): Promise<void> };
 
