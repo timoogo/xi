@@ -25,7 +25,7 @@ export type GraphService = ReturnType<typeof createGraphService>;
 export function createGraphService({ repository, publications, authors }: {
   repository: GraphRepository;
   publications: Pick<PublicationStore, "get">;
-  authors: (ids: string[]) => Map<string, AuthorSummary>;
+  authors: (ids: string[], viewer?: Viewer) => Map<string, AuthorSummary> | Promise<Map<string, AuthorSummary>>;
 }) {
   async function view(viewer: Viewer, request: ViewRequest): Promise<ViewResponse> {
     const graph = await repository.authorizedGraph(viewer);
@@ -92,7 +92,7 @@ export function createGraphService({ repository, publications, authors }: {
 
     return {
       ref, nodeId: messageNode(ref), body: snapshot.messages[index].body,
-      author: authors([snapshot.authorId]).get(snapshot.authorId) ?? null,
+      author: (await authors([snapshot.authorId], viewer)).get(snapshot.authorId) ?? null,
       publication: {
         id: publicationId, type: snapshot.type, title: publication?.title ?? excerpt(snapshot.summary || snapshot.messages[0]?.body || "", 120),
         date: snapshot.publishedAt ?? snapshot.updatedAt, visibility: snapshot.visibility, status: snapshot.status,

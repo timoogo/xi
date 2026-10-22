@@ -9,8 +9,8 @@
     "lint": "eslint .",
     "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate-auth.ts",
     "test:auth": "tsx --test tests/auth.test.ts",
-    "test:e2e": "tsx --test tests/e2e.test.ts",
-    "test:publications": "tsx --tsconfig tests/tsconfig.json --test tests/publications.test.ts tests/markdown-view.test.tsx",
+    "test:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/e2e.test.ts tests/xi-live-browser.test.ts",
+    "test:publications": "tsx --tsconfig tests/tsconfig.json --test tests/publications.test.ts tests/markdown-view.test.tsx tests/conversation.test.ts tests/publication-sources.test.ts tests/feed.test.ts tests/realtime-events.test.ts tests/publication-panel.test.tsx tests/xi-conversation-store.test.ts",
     "graph:reindex": "tsx --env-file-if-exists=.env.local scripts/graph-reindex.ts",
     "test:graph": "tsx --tsconfig tests/tsconfig.json --test tests/graph-*.test.ts"
   },

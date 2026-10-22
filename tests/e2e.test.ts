@@ -10,11 +10,11 @@ const executablePath = process.env.XI_E2E_CHROME ?? "/usr/bin/google-chrome-stab
 
 test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_000 }, async (t) => {
   const app = await createTestServer();
-  t.after(app.dispose);
   await app.migrate();
   await app.start();
   const browser: Browser = await chromium.launch({ executablePath, headless: true });
-  t.after(() => browser.close());
+  // node:test runs after hooks in registration order: close the browser's live connections first.
+  t.after(async () => { await browser.close(); await app.dispose(); });
   const errors: string[] = [];
 
   async function register(name: string, email: string) {
@@ -60,30 +60,30 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
   assert.match(await readFile(join(folder, "1_premier_message.md"), "utf8"), /^# Premier message/);
   const secret = await write(author, "Note privée", "Seulement moi", "Moi uniquement");
 
-  await t.test("the home feed shows rendered publications in place, with planned actions disabled", async () => {
+  await t.test("the home feed shows rendered publications with only available actions", async () => {
     await reader.goto(`${app.origin}/dashboard`);
     const card = reader.getByRole("article", { name: "Publication de Browser Author" });
     await card.getByRole("heading", { name: "Premier message" }).waitFor();
     assert.equal(await card.locator("strong", { hasText: "navigateur" }).count(), 1);
     assert.equal(await card.locator(".xi-markdown li", { hasText: "point deux" }).count(), 1);
     for (const action of ["J’aime", "Pas intéressé", "Enregistrer", "Approfondir", "Dériver"]) {
-      assert.equal(await card.getByRole("button", { name: `${action} (bientôt disponible)` }).isDisabled(), true);
+      assert.equal(await card.getByRole("button", { name: `${action} (bientôt disponible)` }).count(), 0);
     }
     assert.equal(await card.getByRole("button", { name: "Supprimer" }).count(), 0);
     assert.equal(await card.getByRole("link", { name: "Modifier" }).count(), 0);
     assert.equal(await reader.getByText("Note privée").count(), 0);
     await author.goto(`${app.origin}/dashboard`);
-    const privateCard = author.getByRole("article").filter({ hasText: "Note privée" });
+    const privateCard = author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Note privée" });
     await privateCard.getByText("Moi uniquement").waitFor();
     assert.ok((await author.locator("article").allInnerTexts()).findIndex((text) => text.includes("Note privée")) === 0, "newest first");
   });
 
   await t.test("deleting from the feed hides it everywhere, and Undo restores it", async () => {
-    const card = author.getByRole("article").filter({ hasText: "Premier message" });
+    const card = author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" });
     await card.getByRole("button", { name: "Supprimer" }).click();
     await card.getByRole("button", { name: "Mettre à la corbeille" }).click();
     await author.getByText("Déplacée dans votre corbeille").waitFor();
-    await author.getByRole("article").filter({ hasText: "Premier message" }).waitFor({ state: "detached" });
+    await author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" }).waitFor({ state: "detached" });
     const trashed = join(app.vaultPath, "posts", ".trash", folder.split("/").at(-2)!, id);
     assert.deepEqual((await readdir(trashed)).sort(), [folder.split("/").at(-1)!, "trash.json"]);
     await reader.goto(`${app.origin}/dashboard`);
@@ -94,7 +94,7 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
 
     await author.getByRole("button", { name: "Annuler", exact: true }).click();
     await author.getByText("Publication restaurée dans son dossier d’origine.").waitFor();
-    await author.getByRole("article").filter({ hasText: "Premier message" }).waitFor();
+    await author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" }).waitFor();
     assert.match(await readFile(join(folder, "index.md"), "utf8"), /status: published/);
     assert.equal((await reader.goto(`${app.origin}/dashboard/publications/${id}`))?.status(), 200);
   });

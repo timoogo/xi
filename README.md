@@ -8,11 +8,11 @@ Xi est un projet personnel de veille intelligente basé sur [Twitty](https://git
 
 - Authentification locale Better Auth + SQLite : inscription, connexion et déconnexion.
 - Profil privé affichant le nom, l’email, l’avatar et un identifiant dérivé du compte connecté.
-- Fil vide, sans publications ou compteurs simulés.
+- Fil Markdown « Pour vous » et « Abonnements », préférences explicites, conversations et synchronisation SSE.
 - Navigation responsive et modes clair/sombre conservés.
 - Communautés, notifications, suggestions et topics explicitement indisponibles.
 
-Les données de démonstration Twitty ont été retirées. Les publications Markdown (brouillons, publication, corbeille) sont stockées dans le vault Obsidian : voir le [format et l’architecture des publications](docs/publications.md). Les interactions sociales et les fonctionnalités IA ne sont pas implémentées. L’[audit des fichiers et du nettoyage](docs/data-cleanup.md) détaille les éléments retirés et conservés.
+Les données de démonstration Twitty ont été retirées. Les publications Markdown (brouillons, publication, corbeille) sont stockées dans le vault Obsidian : voir le [format et l’architecture des publications](docs/publications.md). Les réponses et abonnements sont implémentés ; les autres interactions sociales et le moteur de veille IA restent hors périmètre. Le [contrat du fil et sa validation](docs/feed.md) précise les comportements et limites actuels. L’[audit des fichiers et du nettoyage](docs/data-cleanup.md) détaille les éléments retirés et conservés.
 
 ## Stack
 

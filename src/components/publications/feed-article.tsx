@@ -17,6 +17,7 @@ export function FeedArticle({ href, label, className, children }: { href?: strin
     if (!href || event.defaultPrevented || event.button !== 0) return;
     if ((event.target as Element).closest(INTERACTIVE)) return;
     if (window.getSelection()?.toString()) return;
+    event.stopPropagation();
     if (event.metaKey || event.ctrlKey) window.open(href, "_blank", "noopener");
     else router.push(href);
   }

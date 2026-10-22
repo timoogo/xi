@@ -32,6 +32,12 @@ export async function createPublication(): Promise<Failure> {
   redirect(`/dashboard/publications/${result}/edit`);
 }
 
+export async function createReply(messageRef: string): Promise<Failure> {
+  const result = await run((store, viewer) => store.create(viewer, messageRef));
+  if (typeof result !== "string") return result;
+  redirect(`/dashboard/publications/${result}/edit`);
+}
+
 export async function savePublication(id: string, input: SaveInput) {
   return run((store, viewer) => store.save(viewer, String(id), input));
 }

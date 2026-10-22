@@ -1,17 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { parseMessage } from "./message-metadata";
+import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type Database from "better-sqlite3";
-import { Document } from "yaml";
+import { Document, parseDocument } from "yaml";
 import { z } from "zod";
-import { createIndex, type IndexRow, type MessageRow } from "./index-db";
+import { bumpIndexGeneration, indexGeneration, readablePublicationSql, createIndex, type IndexRow, type MessageRow } from "./index-db";
 import {
   excerpt, hasContent, messageEmbedTarget, messageSlug, parseIndex, parseSource, rewriteFolderLinks, serializeIndex,
-  serializeSource, setMeta, slugify, sourceLinkLine, splitIndexBody,
+  serializeSource, setMeta, slugify, sourceLinkLine, splitIndexBody, splitFrontmatter,
 } from "./markdown";
 import { canEdit, canManageTrash, canRead } from "./permissions";
 import {
-  VISIBILITIES, type PublicationMeta, type PublicationSnapshot, type TrashItem, type Viewer,
+  VISIBILITIES, type PublicationMeta, type PublicationSnapshot, type TrashItem, type Viewer, type ConversationEntry, type ConversationPage,
 } from "./types";
 import {
   assertInVault, exists, FOLDER_NAME, fromVaultRelative, inside, listDir, NUMBERED_FILE, PUBLICATION_ID, readMarkdownTree,
@@ -19,7 +21,7 @@ import {
 } from "./vault";
 
 export class PublicationError extends Error {
-  constructor(readonly code: "not_found" | "invalid", message: string) {
+  constructor(readonly code: "not_found" | "invalid" | "stale_cursor", message: string) {
     super(message);
   }
 }
@@ -63,7 +65,7 @@ type Folder = {
   meta: PublicationMeta;
   generatorId: string | null;
   summary: string;
-  messages: { file: string; body: string }[];
+  messages: PublicationSnapshot["messages"];
   sources: PublicationSnapshot["sources"];
   numbered: string[];
   revision: string;
@@ -72,18 +74,8 @@ type Folder = {
 
 type TrashInfo = { id: string; folder: string; originalPath: string; trashedAt: string };
 
-export type FeedScope = { kind: "home" } | { kind: "own" } | { kind: "author"; authorId: string };
+export type FeedScope = { kind: "home"; tab?: "for-you" | "following" } | { kind: "own" } | { kind: "author"; authorId: string } | { kind: "conversation"; publicationId: string };
 export type FeedPage = { items: PublicationSnapshot[]; nextCursor: string | null };
-
-const encodeCursor = (value: [string, string]) => Buffer.from(JSON.stringify(value)).toString("base64url");
-function decodeCursor(cursor?: string | null): [string, string] | null {
-  if (!cursor) return null;
-  try {
-    const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && PUBLICATION_ID.test(String(value[1]))) return [value[0], value[1]];
-  } catch { /* An invalid cursor starts from the newest publications. */ }
-  return null;
-}
 
 /**
  * Re-parse gate of a live folder: index.md's mtime, or the folder's own when later. The folder's mtime moves when a
@@ -92,7 +84,9 @@ function decodeCursor(cursor?: string | null): [string, string] | null {
  */
 async function folderMtime(dir: string) {
   const [index, folder] = await Promise.all([stat(inside(dir, "index.md")), stat(dir)]);
-  return Math.max(index.mtimeMs, folder.mtimeMs);
+  const entries = await listDir(dir);
+  const messageTimes = await Promise.all(entries.filter(entry => NUMBERED_FILE.test(entry.name)).map(entry => stat(inside(dir, entry.name)).then(info => info.mtimeMs, () => 0)));
+  return Math.max(index.mtimeMs, folder.mtimeMs, ...messageTimes);
 }
 
 const byNumber = (a: string, b: string) => parseInt(a, 10) - parseInt(b, 10) || a.localeCompare(b);
@@ -101,8 +95,11 @@ const maxNumber = (files: string[]) => Math.max(0, ...files.map((file) => parseI
 export function createPublicationStore({ vault, db, now = () => new Date() }: { vault: Vault; db: Database.Database; now?: () => Date }) {
   const index = createIndex(db);
   const usersDir = inside(vault.postsDir, "_users");
+  const generatorsDir = inside(vault.postsDir, "_generators");
   const trashDir = inside(vault.postsDir, ".trash");
   const locks = new Map<string, Promise<unknown>>();
+  let indexedAt = 0;
+  let indexing: Promise<void> | undefined;
   const rel = (path: string) => toVaultRelative(vault, path);
 
   /** Serializes writers of one publication (or one user's folder allocation) within this process. */
@@ -140,17 +137,22 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       .map((name) => name.slice(9)).sort(byNumber)
       .map((file) => {
         const source = parseSource(tree.files.get(`_sources/${file}`)!);
-        return { file, title: source.title ?? file.replace(/\.md$/, ""), url: source.url, publisher: source.publisher };
+        return { ...source, file, title: source.title ?? file.replace(/\.md$/, "") };
       });
     return {
       dir, doc: parsed.doc, meta: parsed.meta, generatorId: parsed.generatorId, summary, sources, numbered, revision: tree.revision, indexMtime,
-      messages: order.map((file) => ({ file, body: tree.files.get(file)! })),
+      messages: order.map((file, i) => {
+        const message = parseMessage(file, tree.files.get(file)!);
+        const reply = parsed.doc.get("reply_to");
+        if (i === 0 && !message.replyTo && typeof reply === "string" && /^[0-9a-f-]{36}\/\d+$/.test(reply)) message.replyTo = reply;
+        return message;
+      }),
     };
   }
 
   // A folder only counts if its location and its frontmatter agree on the author.
   function owned(folder: Folder | null, userId: string, id?: string): folder is Folder {
-    return !!folder && folder.meta.authorType === "human" && folder.meta.authorId === userId && (!id || folder.meta.id === id);
+    return !!folder && folder.meta.authorId === userId && (!id || folder.meta.id === id);
   }
 
   function toRow(folder: Folder, trash?: TrashInfo): IndexRow {
@@ -160,7 +162,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       visibility: meta.visibility, path: rel(folder.dir), original_path: trash?.originalPath ?? null,
       trashed_at: trash?.trashedAt ?? null, created_at: meta.createdAt, updated_at: meta.updatedAt,
       published_at: meta.publishedAt, score: meta.score, excerpt: excerpt(folder.summary || folder.messages[0]?.body || ""),
-      generator_id: folder.generatorId, index_mtime: folder.indexMtime,
+      revision:folder.revision, generator_id: folder.generatorId, reply_to: folder.messages[0]?.replyTo ?? null, index_mtime: folder.indexMtime,
     };
   }
 
@@ -172,7 +174,13 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       const n = parseInt(message.file, 10);
       if (used.has(n)) continue;
       used.add(n);
-      rows.push({ publication_id: folder.meta.id, n, file: message.file, position: rows.length + 1, excerpt: excerpt(message.body) });
+      rows.push({ publication_id: folder.meta.id, n, file: message.file, position: rows.length + 1, excerpt: excerpt(message.body), reply_to: message.replyTo ?? null, created_at: message.createdAt ?? folder.meta.createdAt, updated_at: message.updatedAt ?? message.createdAt ?? folder.meta.createdAt, deleted: 0 });
+    }
+    const deleted = (folder.doc.toJS() as Record<string, unknown>).deleted_messages;
+    if (Array.isArray(deleted)) for (const item of deleted) {
+      if (!Number.isSafeInteger(item?.n) || item.n < 1 || used.has(item.n)) continue;
+      used.add(item.n);
+      rows.push({ publication_id: folder.meta.id, n: item.n, file: `${item.n}_deleted.md`, position: Number.isSafeInteger(item.position) ? item.position : rows.length + 1, excerpt: "", reply_to: typeof item.reply_to === "string" ? item.reply_to : null, created_at: typeof item.created_at === "string" ? item.created_at : folder.meta.createdAt, updated_at: folder.meta.updatedAt, deleted: 1 });
     }
     return rows;
   }
@@ -202,7 +210,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       seen.add(folder.meta.id);
       index.upsert(toRow(folder, trash), messageRows(folder));
     };
-    const live = userDir(userId);
+    const live = index.byAuthor(userId).some(row => row.author_type === "ai") || await exists(inside(generatorsDir, userId)) ? inside(generatorsDir, userId) : userDir(userId);
     for (const entry of await listDir(live)) {
       if (!entry.isDirectory() || !FOLDER_NAME.test(entry.name)) continue;
       const dir = inside(live, entry.name);
@@ -214,7 +222,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
         continue;
       }
       const folder = await readFolder(dir);
-      if (owned(folder, userId)) accept(folder);
+      if (owned(folder, userId) && folder.meta.authorType === (live.startsWith(generatorsDir + "/") ? "ai" : "human")) accept(folder);
     }
     for (const entry of await listDir(inside(trashDir, userId))) {
       if (!entry.isDirectory() || !PUBLICATION_ID.test(entry.name)) continue;
@@ -228,26 +236,62 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
 
   async function reconcileAll() {
     const users = new Set(index.all().map((row) => row.author_id));
-    for (const base of [usersDir, trashDir]) {
+    for (const base of [usersDir, generatorsDir, trashDir]) {
       for (const entry of await listDir(base)) if (entry.isDirectory() && USER_ID.test(entry.name)) users.add(entry.name);
     }
     for (const userId of users) await reconcileUser(userId);
+    const insert = db.prepare("INSERT OR IGNORE INTO feed_follow (viewer_id, author_id) VALUES (?, ?)");
+    const settings = await Promise.all([...users].map(async id => ({ id, effective: effectiveSocial(await readSocial(vault, {id}), await readGenerators(vault, {id})) })));
+    db.transaction(() => {
+      const old = JSON.stringify(db.prepare("SELECT * FROM feed_follow ORDER BY viewer_id, author_id").all());
+      db.exec("DELETE FROM feed_follow");
+      for (const { id, effective } of settings) for (const author of effective.following) insert.run(id, author);
+      if (old !== JSON.stringify(db.prepare("SELECT * FROM feed_follow ORDER BY viewer_id, author_id").all())) bumpIndexGeneration(db);
+    })();
+    indexedAt = Date.now();
+  }
+
+  async function ensureIndexed() {
+    if (indexedAt && Date.now() - indexedAt < 60_000) return;
+    if (!indexing) indexing = reconcileAll().finally(() => { indexing = undefined; });
+    await indexing;
+  }
+
+  /** Watcher entry point. Re-read only the affected publication, including in-place message edits. */
+  async function invalidatePath(path: string) {
+    const relative = path.startsWith(vault.root + "/") ? rel(path) : path;
+    const row = index.all().find(item => relative === item.path || relative.startsWith(item.path + "/"));
+    if (row) {
+      const folder = await readFolder(fromVaultRelative(vault, row.path));
+      if (folder && owned(folder, row.author_id, row.id)) index.upsert(toRow(folder, row.trashed_at ? {id: row.id, folder: basename(row.path), originalPath: row.original_path!, trashedAt: row.trashed_at} : undefined), messageRows(folder));
+      else await reconcileUser(row.author_id);
+    } else {
+      // New directories, moves and social settings can change the indexed perimeter.
+      indexedAt = 0;
+      await ensureIndexed();
+      bumpIndexGeneration(db);
+    }
   }
 
   async function locate(id: string) {
     if (!PUBLICATION_ID.test(id)) throw notFound();
     const row = index.get(id);
-    if (row) await reconcileUser(row.author_id);
-    else await reconcileAll();
+    if (!row) await ensureIndexed();
     const current = index.get(id);
     if (!current) throw notFound();
     return current;
   }
 
   async function loadLive(id: string) {
-    const row = await locate(id);
+    let row = await locate(id);
     if (row.trashed_at) throw notFound();
-    const folder = await readFolder(fromVaultRelative(vault, row.path));
+    let folder = await readFolder(fromVaultRelative(vault, row.path));
+    if (!folder) {
+      await reconcileUser(row.author_id);
+      row = index.get(id)!;
+      if (!row || row.trashed_at) throw notFound();
+      folder = await readFolder(fromVaultRelative(vault, row.path));
+    }
     if (!owned(folder, row.author_id, id)) throw notFound();
     return folder;
   }
@@ -259,7 +303,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   }
 
   function snapshot(folder: Folder): PublicationSnapshot {
-    return { ...folder.meta, summary: folder.summary, messages: folder.messages, sources: folder.sources, revision: folder.revision };
+    return { ...folder.meta, summary: folder.summary, messages: folder.messages, sources: folder.sources, revision: folder.revision, analysis: folder.doc.get("analysis") === true };
   }
 
   async function writeIndex(folder: Folder, meta: PublicationMeta, summary: string, order: string[]) {
@@ -299,7 +343,13 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
 
   const stamp = (date: Date) => date.toISOString().slice(0, 10).replaceAll("-", "");
 
-  async function create(viewer: Viewer) {
+  async function create(viewer: Viewer, replyTo?: string) {
+    if (replyTo !== undefined) {
+      const match = /^([0-9a-f-]{36})\/(\d+)$/.exec(replyTo);
+      if (!match) throw invalid("Message parent invalide.");
+      const parent = await get(viewer, match[1]);
+      if (!parent.messages.some(message => parseInt(message.file, 10) === Number(match[2]))) throw notFound();
+    }
     const live = userDir(viewer.id);
     await mkdir(live, { recursive: true, mode: 0o700 });
     await assertInVault(vault, live);
@@ -314,6 +364,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       };
       const doc = new Document({});
       setMeta(doc, meta);
+      if (replyTo) doc.set("reply_to", replyTo);
       await writeAtomic(inside(dir, "index.md"), serializeIndex(doc, "", []));
       return (await reindex(dir)).meta.id;
     });
@@ -321,8 +372,46 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
 
   async function get(viewer: Viewer, id: string) {
     const folder = await loadLive(id);
-    if (!canRead(viewer, folder.meta)) throw notFound();
-    return snapshot(folder);
+    const {viewer:reader} = await authorized(viewer);
+    if (!canRead(reader, folder.meta)) throw notFound();
+    return withParent(snapshot(folder), reader);
+  }
+
+
+  // Trash is structural only when this exact message still has an independently readable child.
+  const structuralReadableSql = (publication: string, message: string) => readablePublicationSql(publication).replace(`${publication}.trashed_at IS NULL`, `(${publication}.trashed_at IS NULL OR EXISTS (SELECT 1 FROM publication_message child JOIN publication cp ON cp.id=child.publication_id WHERE child.reply_to=(${message}.publication_id || '/' || ${message}.n) AND child.deleted=0 AND ${readablePublicationSql("cp")}))`);
+
+  function withReplyCounts(item: PublicationSnapshot, viewer: Viewer) {
+    const counts = db.prepare<{viewer:string;parent:string},{reply_to:string;total:number}>(`SELECT m.reply_to, COUNT(*) AS total FROM publication_message m JOIN publication p ON p.id=m.publication_id WHERE m.reply_to LIKE @parent AND ${structuralReadableSql("p", "m")} AND (m.deleted=0 OR EXISTS (SELECT 1 FROM publication_message child JOIN publication cp ON cp.id=child.publication_id WHERE child.reply_to=(m.publication_id || '/' || m.n) AND child.deleted=0 AND ${readablePublicationSql("cp")})) GROUP BY m.reply_to`).all({viewer:viewer.id,parent:item.id+"/%"});
+    const byRef = new Map(counts.map(row => [row.reply_to,row.total]));
+    const messages = item.messages.map(message => ({...message,replyCount:byRef.get(`${item.id}/${parseInt(message.file,10)}`) ?? 0}));
+    for (const row of index.messages(item.id)) {
+      const replyCount = byRef.get(`${item.id}/${row.n}`) ?? 0;
+      if (row.deleted && replyCount) messages.splice(Math.min(row.position-1,messages.length),0,{file:row.file,body:"",replyTo:row.reply_to,deleted:true,replyCount});
+    }
+    return {...item,messages};
+  }
+
+  async function withParent(item: PublicationSnapshot, viewer: Viewer) {
+    item = withReplyCounts(item, viewer);
+    const ownRow = index.get(item.id);
+    const own = ownRow && await readFolder(fromVaultRelative(vault, ownRow.path));
+    const previousId = own?.doc.get("previous_version");
+    if (typeof previousId === "string") {
+      const previousRow = index.get(previousId);
+      const previous = previousRow && !previousRow.trashed_at && await readFolder(fromVaultRelative(vault, previousRow.path));
+      if (previous && canRead(viewer, previous.meta)) item = { ...item, previousVersion: previousId };
+    }
+    const reply = item.messages[0]?.replyTo;
+    if (!reply) return item;
+    const [id, n] = reply.split("/");
+    if (id === item.id) return item;
+    const row = index.get(id);
+    if (!row || row.trashed_at) return item;
+    const parent = await readFolder(fromVaultRelative(vault, row.path));
+    if (!parent || !canRead(viewer, parent.meta)) return item;
+    const message = parent.messages.find(m => parseInt(m.file, 10) === Number(n));
+    return message ? { ...item, parentContext: { publicationId: id, ref: reply, excerpt: excerpt(message.body) } } : item;
   }
 
   async function getEditable(viewer: Viewer, id: string) {
@@ -340,6 +429,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     return withLock(id, async () => {
       let folder = await loadEditable(viewer, id);
       if (folder.revision !== input.baseRevision) return { ok: false, conflict: snapshot(folder) };
+      if (folder.meta.status === "published" && folder.doc.get("analysis") === true) throw invalid("Une analyse publiée est immuable. Créez une correction datée.");
       const referenced = input.messages.flatMap((message) => message.file ?? []);
       const current = new Map(folder.messages.map((message) => [message.file, message.body]));
       if (new Set(referenced).size !== referenced.length || referenced.some((file) => !current.has(file))) throw invalid("Message inconnu.");
@@ -368,20 +458,54 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       const files: Record<string, string> = {};
       const order: string[] = [];
       for (const message of kept) {
-        const body = fix(message.body);
+        let body = fix(message.body);
+        const old = message.file ? folder.messages.find(item => item.file === message.file) : undefined;
+        if ((old && onDisk.get(message.file!) !== body) || (!old && folder.meta.status === "published")) {
+          const parts = splitFrontmatter(body);
+          const doc = parts.yaml ? parseDocument(parts.yaml) : new Document({});
+          if (doc.errors.length) throw invalid("Métadonnées du message invalides.");
+          doc.set("created_at", old ? old.createdAt ?? folder.meta.createdAt : now().toISOString());
+          if (old) doc.set("updated_at", now().toISOString());
+          body = `---\n${doc.toString()}---\n${parts.body}`;
+        }
         const file = message.file ?? `${next++}_${messageSlug(body)}.md`;
         if (onDisk.get(file) !== body) await writeAtomic(inside(folder.dir, file), body);
         files[message.key] = file;
         order.push(file);
       }
+      const deletedValue = (folder.doc.toJS() as Record<string, unknown>).deleted_messages;
+      const deletedMessages: {n:number;reply_to:string|null;created_at:string;position?:number}[] = Array.isArray(deletedValue) ? deletedValue : [];
       for (const file of onDisk.keys()) {
         if (order.includes(file)) continue;
+        const removed = folder.messages.find(item => item.file === file)!;
+        deletedMessages.push({n: parseInt(file, 10), position: folder.messages.findIndex(item => item.file === file)+1, reply_to: removed.replyTo ?? null, created_at: removed.createdAt ?? folder.meta.createdAt});
         await mkdir(removedDir, { recursive: true, mode: 0o700 });
         await rename(inside(folder.dir, file), inside(removedDir, `${Date.now()}_${file}`));
       }
+      if (deletedMessages.length) folder.doc.set("deleted_messages", deletedMessages);
       await writeIndex(folder, { ...folder.meta, type, visibility: input.visibility, updatedAt: now().toISOString() }, fix(input.summary), order);
       return { ok: true, snapshot: snapshot(await reindex(folder.dir)), files, relocated };
     });
+  }
+
+  async function createCorrection(viewer: Viewer, id: string) {
+    const previous = await loadEditable(viewer, id);
+    if (previous.meta.status !== "published") throw invalid("La version précédente doit être publiée.");
+    const newId = await create(viewer);
+    const target = await loadEditable(viewer, newId);
+    for (const [file, body] of (await readMarkdownTree(previous.dir)).files) {
+      if (file === "index.md") continue;
+      const path = inside(target.dir, ...file.split("/"));
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await writeAtomic(path, rewriteFolderLinks(body, rel(previous.dir), rel(target.dir)));
+    }
+    target.doc = previous.doc;
+    target.doc.set("previous_version", id);
+    target.doc.set("analysis", true);
+    target.doc.set("version_created_at", now().toISOString());
+    await writeIndex(target, { ...target.meta, type: previous.meta.type, visibility: previous.meta.visibility }, previous.summary, previous.messages.map(m => m.file));
+    await reindex(target.dir);
+    return newId;
   }
 
   async function publish(viewer: Viewer, id: string, baseRevision: string): Promise<SaveResult> {
@@ -404,11 +528,12 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     return withLock(id, async () => {
       const folder = await loadEditable(viewer, id);
       if (folder.revision !== baseRevision) return { ok: false as const, conflict: snapshot(folder) };
+      if (folder.meta.status === "published" && folder.doc.get("analysis") === true) throw invalid("Une analyse publiée est immuable. Créez une correction datée.");
       const sourcesDir = inside(folder.dir, "_sources");
       await mkdir(sourcesDir, { recursive: true, mode: 0o700 });
       const file = `${maxNumber(folder.sources.map((item) => item.file)) + 1}_${slugify(source.title, "source")}.md`;
       await writeAtomic(inside(sourcesDir, file), serializeSource(source, now().toISOString().slice(0, 10)));
-      const updated = (await readFolder(folder.dir))!;
+      const updated = await reindex(folder.dir);
       return { ok: true as const, revision: updated.revision, line: sourceLinkLine(rel(folder.dir), file, source.title, source.publisher), snapshot: snapshot(updated) };
     });
   }
@@ -455,27 +580,189 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   }
 
   /**
-   * One page of full publications, newest publication date first. "home": published, the viewer's own
-   * plus public ones; "author": one author's published ones; "own": the viewer's drafts and published.
+   * One page of readable publications. Home uses the chosen editorial/chronological
+   * policy; author/own lists remain chronological. Preferences filter home only.
    * Each item is re-read from its files and re-checked, so a stale index can never widen access.
    */
   async function page(viewer: Viewer, scope: FeedScope, cursor?: string | null, limit = 20): Promise<FeedPage> {
-    const before = decodeCursor(cursor);
-    const author = scope.kind === "home" ? null : scope.kind === "own" ? viewer.id : scope.authorId;
-    if (author === null) await reconcileAll();
-    else await reconcileUser(author);
-    const rows = index.page({
-      viewer: viewer.id, drafts: scope.kind === "own" ? 1 : 0, author,
-      before: before?.[0] ?? null, beforeId: before?.[1] ?? null, limit: Math.min(Math.max(limit, 1), 50) + 1,
-    });
-    const more = rows.length > limit;
-    const items: PublicationSnapshot[] = [];
-    for (const row of rows.slice(0, limit)) {
-      const folder = await readFolder(fromVaultRelative(vault, row.path));
-      if (owned(folder, row.author_id, row.id) && canRead(viewer, folder.meta)) items.push(snapshot(folder));
+    const size = Math.min(Math.max(Math.floor(limit), 1), 50);
+    await ensureIndexed();
+    const {effective,viewer:reader} = await authorized(viewer);
+    const forYou = scope.kind === "home" && scope.tab !== "following";
+    // Explicit preference tiers remain authoritative. Within a tier, take one
+    // publication per author per round, ordered by editorial score then freshness.
+    let after: { order: string; id: string } | null = null;
+    if (cursor) try {
+      const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+      if (typeof parsed?.order === "string" && typeof parsed?.id === "string") after = parsed;
+    } catch { /* Legacy or invalid links restart from the first page. */ }
+    const clauses = [readablePublicationSql("p")];
+    if (scope.kind !== "own") clauses.push("p.status = 'published'");
+    if (scope.kind === "own") clauses.push("p.author_id = @viewer AND p.author_type = 'human'");
+    if (scope.kind === "author") clauses.push("p.author_id = @author");
+    if (scope.kind === "conversation") clauses.push("p.reply_to LIKE @parent");
+    if (scope.kind === "home") {
+      clauses.push("COALESCE((SELECT value FROM json_each(@preferences) WHERE key=p.author_id), 'normal') != 'hidden'");
+      if (scope.tab === "following") clauses.push("EXISTS (SELECT 1 FROM feed_follow f WHERE f.viewer_id=@viewer AND f.author_id=p.author_id)");
+      // A reply stays in its parent's conversation when that parent belongs to this feed.
+      clauses.push(`(p.reply_to IS NULL OR COALESCE(p.score,0)>0 OR NOT EXISTS (SELECT 1 FROM publication parent WHERE parent.id=substr(p.reply_to,1,instr(p.reply_to,'/')-1)
+        AND ${readablePublicationSql("parent")} AND parent.status='published'
+        AND COALESCE((SELECT value FROM json_each(@preferences) WHERE key=parent.author_id),'normal')!='hidden'
+        ${scope.tab === "following" ? "AND EXISTS (SELECT 1 FROM feed_follow f WHERE f.viewer_id=@viewer AND f.author_id=parent.author_id)" : ""}))`);
     }
-    const last = rows[limit - 1];
-    return { items, nextCursor: more && last ? encodeCursor([last.published_at ?? last.updated_at, last.id]) : null };
+    const preferenceSql = forYou ? "CASE (SELECT value FROM json_each(@preferences) WHERE key=p.author_id) WHEN 'priority' THEN 1 WHEN 'less' THEN -1 ELSE 0 END" : "0";
+    const scoreSql = forYou ? "COALESCE(p.score,0)" : "0";
+    const rows = db.prepare<Record<string, string | null>, IndexRow>(`WITH candidates AS (
+      SELECT p.*, ${preferenceSql} AS preference_rank, ${scoreSql} AS score_rank, COALESCE(p.published_at,p.updated_at) AS sort_date
+      FROM publication p WHERE ${clauses.join(" AND ")}), ranked AS (
+      SELECT *, ${forYou ? "ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY score_rank DESC,sort_date DESC,id DESC)" : "0"} AS author_round FROM candidates)
+      SELECT * FROM ranked ORDER BY preference_rank DESC,author_round ASC,score_rank DESC,sort_date DESC,id DESC`).all({
+        viewer: viewer.id, preferences: JSON.stringify(effective.preferences),
+        author: scope.kind === "author" ? scope.authorId : null,
+        parent: scope.kind === "conversation" ? scope.publicationId + "/%" : null,
+      });
+    // A changing author rank cannot safely use an old numeric offset. The opaque
+    // fingerprint covers only this viewer's ordered feed, never private global activity.
+    const order = createHash("sha256").update(JSON.stringify([viewer.id, scope, rows.map(row => row.id)])).digest("hex");
+    if (after && after.order !== order) throw new PublicationError("stale_cursor", "Le fil a changé. Rechargez la liste.");
+    const start = after ? rows.findIndex(row => row.id === after.id) + 1 : 0;
+    const items: PublicationSnapshot[] = [];
+    let more = false;
+    for (const row of rows.slice(start)) {
+      const folder = await readFolder(fromVaultRelative(vault, row.path));
+      if (!owned(folder, row.author_id, row.id) || !canRead(reader, folder.meta)) continue;
+      if (items.length === size) { more = true; break; }
+      items.push(await withParent(snapshot(folder), reader));
+    }
+    return { items, nextCursor: more ? Buffer.from(JSON.stringify({ order, id: items.at(-1)!.id })).toString("base64url") : null };
+  }
+
+  async function authorized(viewer: Viewer) {
+    const effective = effectiveSocial(await readSocial(vault, viewer), await readGenerators(vault, viewer));
+    // Refresh the shared SQL permission projection used by the graph and conversations.
+    const existing = db.prepare<[string], {author_id:string}>("SELECT author_id FROM feed_follow WHERE viewer_id = ? ORDER BY author_id").all(viewer.id).map(row => row.author_id);
+    const following = [...effective.following].sort();
+    if (JSON.stringify(existing) !== JSON.stringify(following)) db.transaction(() => {
+      db.prepare("DELETE FROM feed_follow WHERE viewer_id = ?").run(viewer.id);
+      const insert = db.prepare("INSERT INTO feed_follow(viewer_id, author_id) VALUES (?, ?)");
+      for (const author of following) insert.run(viewer.id, author);
+      bumpIndexGeneration(db);
+    })();
+    return { effective, viewer: {...viewer, following} };
+  }
+
+  const realtimeReaders = new Map<string, {generation:string; value: Awaited<ReturnType<typeof authorized>>}>();
+  async function realtimeState(viewer: Viewer) {
+    await ensureIndexed();
+    let cached = realtimeReaders.get(viewer.id);
+    if (!cached || cached.generation !== indexGeneration(db)) {
+      const value = await authorized(viewer);
+      cached = {generation:indexGeneration(db),value};
+      // Bound memory on long-lived servers; cache keys never cross viewers.
+      if (realtimeReaders.size > 1000) realtimeReaders.clear();
+      realtimeReaders.set(viewer.id,cached);
+    }
+    const {effective} = cached.value;
+    const rows = db.prepare<{viewer:string},IndexRow>(`SELECT p.* FROM publication p WHERE ${readablePublicationSql("p")} ORDER BY p.id`).all({viewer:viewer.id});
+    return {version: indexGeneration(db), settingsRevision:JSON.stringify({following:[...effective.following].sort(),preferences:effective.preferences}), publications: rows.map(row => ({id:row.id, revision:row.revision ?? `${row.index_mtime}:${row.updated_at}`}))};
+  }
+
+  async function conversation(viewer: Viewer, ref: string, cursor?: string | null): Promise<ConversationPage> {
+    if (!/^[0-9a-f-]{36}\/[1-9]\d*$/.test(ref)) throw notFound();
+    await ensureIndexed();
+    const {viewer: reader} = await authorized(viewer);
+    const folders = new Map<string, Promise<Folder | null>>();
+    const load = (row: IndexRow) => {
+      if (!folders.has(row.id)) folders.set(row.id, readFolder(fromVaultRelative(vault, row.path)));
+      return folders.get(row.id)!;
+    };
+    const entry = async (target: string): Promise<ConversationEntry | null> => {
+      const [id, number] = target.split("/");
+      const row = index.get(id);
+      if (!row) return null;
+      const folder = await load(row);
+      if (!folder || !canRead(reader, folder.meta)) return null;
+      const indexed = index.messages(id).find(message => message.n === Number(number));
+      if (!indexed) return null;
+      const publication = withReplyCounts(snapshot(folder), reader);
+      const replyCount = publication.messages.find(message => parseInt(message.file,10) === Number(number))?.replyCount ?? db.prepare<{viewer:string;ref:string},{total:number}>(`SELECT COUNT(*) AS total FROM publication_message m JOIN publication p ON p.id=m.publication_id WHERE m.reply_to=@ref AND m.deleted=0 AND ${readablePublicationSql("p")}`).get({viewer:viewer.id,ref:target})!.total;
+      if (row.trashed_at || indexed.deleted) {
+        const child = db.prepare<{viewer:string;ref:string}, {n:number}>(`SELECT m.n FROM publication_message m JOIN publication p ON p.id = m.publication_id WHERE m.reply_to = @ref AND m.deleted = 0 AND ${readablePublicationSql("p")} LIMIT 1`).get({viewer:viewer.id,ref:target});
+        return child ? {ref:target,publicationId:id,message:null,publication:null,deleted:true,replyCount} : null;
+      }
+      const message = publication.messages.find(message => parseInt(message.file,10) === Number(number));
+      return message ? {ref:target, publicationId:id, message, publication, deleted:false,replyCount} : null;
+    };
+    const parent = await entry(ref);
+    if (!parent) throw notFound();
+    const ancestors: ConversationEntry[] = [];
+    const seen = new Set([ref]);
+    let current = ref;
+    while (true) {
+      const [id, number] = current.split("/");
+      const next = index.messages(id).find(message => message.n === Number(number))?.reply_to;
+      if (!next || seen.has(next)) break;
+      seen.add(next);
+      const ancestor = await entry(next);
+      if (!ancestor) break;
+      ancestors.unshift(ancestor);
+      current = next;
+    }
+    let after: [string,string] | null = null;
+    if (cursor) {
+      try {
+        const parsed = JSON.parse(Buffer.from(cursor,"base64url").toString("utf8"));
+        if (Array.isArray(parsed) && parsed.length === 3 && parsed[0] === ref && typeof parsed[1] === "string" && typeof parsed[2] === "string") after = [parsed[1],parsed[2]];
+        else throw new Error();
+      } catch { throw invalid("Curseur de réponses invalide."); }
+    }
+    const query = db.prepare<{viewer:string;ref:string;date:string|null;after:string|null}, MessageRow>(`SELECT m.* FROM publication_message m JOIN publication p ON p.id=m.publication_id
+      WHERE m.reply_to=@ref AND ${structuralReadableSql("p", "m")}
+      AND (@date IS NULL OR m.created_at>@date OR (m.created_at=@date AND (m.publication_id || '/' || m.n)>@after))
+      ORDER BY m.created_at ASC, (m.publication_id || '/' || m.n) ASC LIMIT 11`);
+    const children: ConversationEntry[] = [];
+    let last: MessageRow | undefined;
+    let more = false;
+    // Continue across stale/unreadable rows without a short page or exposing their count.
+    while (children.length <= 10) {
+      const rows = query.all({viewer:viewer.id,ref,date:after?.[0] ?? null,after:after?.[1] ?? null});
+      if (!rows.length) break;
+      for (const row of rows) {
+        const childRef = `${row.publication_id}/${row.n}`;
+        after = [row.created_at ?? "",childRef];
+        if (seen.has(childRef)) continue;
+        const child = await entry(childRef);
+        if (!child) continue;
+        if (children.length === 10) { more = true; break; }
+        children.push(child);
+        last = row;
+      }
+      if (more || rows.length < 11) break;
+    }
+    return {parent,ancestors,children,nextCursor:more && last ? Buffer.from(JSON.stringify([ref,last.created_at,`${last.publication_id}/${last.n}`])).toString("base64url") : null};
+  }
+
+  const replies = (viewer: Viewer, publicationId: string, cursor?: string | null) => page(viewer, { kind: "conversation", publicationId }, cursor);
+  const social = (viewer: Viewer) => readSocial(vault, viewer);
+  const generators = (viewer: Viewer) => readGenerators(vault, viewer);
+  async function setSocial(viewer: Viewer, authorId: string, change: { following?: boolean; preference?: Preference | null }) {
+    if (!USER_ID.test(authorId) || (change.preference !== undefined && change.preference !== null && !PREFERENCES.includes(change.preference))) throw invalid("Préférence invalide.");
+    return withLock(`social:${viewer.id}`, async () => {
+      const settings = await readSocial(vault, viewer);
+      if (change.following === true && !settings.following.includes(authorId)) settings.following.push(authorId);
+      if (change.following === false) settings.following = settings.following.filter(id => id !== authorId);
+      if (change.preference === null) delete settings.preferences[authorId];
+      else if (change.preference !== undefined) settings.preferences[authorId] = change.preference;
+      await writeSocial(vault, viewer, settings);
+      const effective = effectiveSocial(settings, await readGenerators(vault, viewer));
+      db.transaction(() => {
+        db.prepare("DELETE FROM feed_follow WHERE viewer_id = ?").run(viewer.id);
+        const insert = db.prepare("INSERT INTO feed_follow(viewer_id, author_id) VALUES (?, ?)");
+        for (const author of effective.following) insert.run(viewer.id, author);
+        bumpIndexGeneration(db);
+      })();
+      return settings;
+    });
   }
 
   async function listTrash(viewer: Viewer): Promise<TrashItem[]> {
@@ -485,7 +772,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     }));
   }
 
-  return { create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

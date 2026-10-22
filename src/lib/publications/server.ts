@@ -5,13 +5,18 @@ import { handleFor } from "../handle";
 import { createPublicationStore, PublicationError, type PublicationStore } from "./store";
 import type { Viewer } from "./types";
 import { openVault, vaultPathFromEnv } from "./vault";
+import { watchPublications } from "./runtime";
 
 // One store per server process: its per-publication locks must be shared by every request.
 const storeGlobal = globalThis as typeof globalThis & { xiPublications?: Promise<PublicationStore> };
 
 export function getPublicationStore() {
   storeGlobal.xiPublications ??= openVault(vaultPathFromEnv())
-    .then((vault) => createPublicationStore({ vault, db: getAppDatabase() }))
+    .then((vault) => {
+      const store = createPublicationStore({ vault, db: getAppDatabase() });
+      watchPublications(vault, store);
+      return store;
+    })
     .catch((error) => {
       storeGlobal.xiPublications = undefined;
       throw error;
@@ -25,7 +30,7 @@ export async function getViewer(): Promise<Viewer | null> {
   return session ? { id: session.user.id } : null;
 }
 
-export type Author = { id: string; name: string; image: string | null; handle: string };
+export type Author = { id: string; name: string; image: string | null; handle: string; description?: string; parentId?: string | null };
 
 export function getAuthors(ids: string[]): Map<string, Author> {
   const unique = [...new Set(ids)];
@@ -44,4 +49,12 @@ export async function orNotFound<T>(load: () => Promise<T>): Promise<T> {
     if (error instanceof PublicationError) notFound();
     throw error;
   }
+}
+
+export async function getFeedAuthors(viewer: Viewer, ids: string[]): Promise<Map<string, Author>> {
+  const authors = getAuthors(ids);
+  for (const generator of await (await getPublicationStore()).generators(viewer)) {
+    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, handle: `@${generator.handle}` });
+  }
+  return authors;
 }

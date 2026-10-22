@@ -93,7 +93,7 @@ Tous les champs viennent de l’auteur (URL http(s) originale, titre, éditeur e
 - **Révision et conflits.** La révision est le SHA-256 de tous les `.md` du dossier, calculé sur les octets mêmes renvoyés au client. Une sauvegarde n’écrit rien si le disque a changé depuis ; l’éditeur affiche la version des fichiers et l’auteur choisit de la charger ou d’imposer la sienne (explicitement, contre la révision qu’il a vue).
 - **Écritures atomiques.** Fichier temporaire caché dans le même dossier, `fsync`, puis `rename`. Les messages sont écrits avant `index.md`. Un verrou par publication sérialise les écritures du processus.
 - **post_ / thread_.** Le type suit le nombre de messages. Le dossier d’un brouillon est renommé en conséquence et ses liens internes réécrits ; un dossier publié garde son nom pour ne pas casser les liens extérieurs. L’`id` ne change jamais.
-- **Permissions (store, côté serveur).** Lecture : l’auteur, ou tout membre connecté si `published` + `public`. Brouillon : toujours privé. `followers` : auteur seul tant qu’aucun modèle d’abonnement n’existe. Édition, corbeille, restauration : l’auteur seul. Une publication illisible répond 404, comme une inexistante.
+- **Permissions (store, côté serveur).** Lecture : l’auteur, ou tout membre connecté si `published` + `public`. Brouillon : toujours privé. `followers` : auteur et membres abonnés, selon les préférences Markdown actuelles. Édition, corbeille, restauration : l’auteur seul. Une publication illisible répond 404, comme une inexistante.
 - **Chemins.** Le client ne transmet jamais de chemin : seulement un UUID et des noms de messages validés (`^\d+_[a-z0-9_]+\.md$`) qui doivent appartenir à la publication. Les segments sont validés, les liens symboliques résolus et refusés hors de `posts/`, et le dossier comme le frontmatter doivent désigner le même auteur.
 - **Rien n’est servi directement** : pas de route statique sur le vault. Le Markdown est rendu sans HTML brut, URLs assainies, images distantes non chargées ; les wikilinks sont affichés sans être interprétés par le parseur.
 - **Corbeille.** Déplacement du dossier entier vers `posts/.trash/<userId>/<id>/` ; la publication quitte immédiatement l’index public. Restauration à l’emplacement d’origine, ou sur un nouveau numéro (liens réécrits) si l’emplacement est occupé. Aucune purge automatique. Les numéros de dossier ne sont jamais réutilisés, corbeille comprise.
@@ -102,12 +102,12 @@ Tous les champs viennent de l’auteur (URL http(s) originale, titre, éditeur e
 
 ## Fil et routes
 
-- `/dashboard` (accueil) : publications publiées, les tiennes (toutes visibilités) et celles des autres membres en `public`, par date de publication décroissante.
+- `/dashboard` (accueil) : deux fils, « Pour vous » (préférence explicite, alternance des auteurs, score et fraîcheur) et « Abonnements » (chronologique). Les publications doivent être lisibles et non masquées. Voir [le contrat du fil](feed.md).
 - `/dashboard/profile` : tes publications publiées. `/dashboard/publications` : tes brouillons et publications. `/dashboard/publications/trash` : ta corbeille.
 - `/dashboard/publications/<id>` : page de détail (thread complet, sources dépliées) ; `…/edit` : éditeur, auteur seul.
 - Chaque entrée est un `PublicationCard` lisible sur place : auteur, date, Markdown rendu par `MarkdownView`, messages d'un thread reliés, sources repliables, visibilité non publique signalée. Au-delà de 3 messages ou de 1 500 caractères par bloc, la carte est tronquée avec un lien vers la page complète.
-- Pagination par curseur (`?cursor=`, couple date + id), 20 publications par page. Chaque élément est relu depuis ses fichiers et ses permissions re-vérifiées.
-- La barre d'actions (aimer, pas intéressé, enregistrer, approfondir, fork) est affichée mais désactivée tant que la logique n'existe pas. L'auteur dispose de Modifier et Supprimer.
+- Pagination par curseur (`?cursor=`), 20 publications par page. Le curseur associe une empreinte de l’ordre autorisé et le dernier UUID ; un changement de classement provoque une reconstruction de la portion chargée, jamais une continuation avec un décalage périmé. Chaque élément est relu depuis ses fichiers et ses permissions re-vérifiées.
+- Actions disponibles : répondre, partager le lien, sources et connexions du graphe. L’auteur dispose de Modifier (ou Corriger pour une analyse publiée) et Supprimer. Les actions aimer, enregistrer, approfondir et fork ne sont pas affichées.
 
 ## Suppression et restauration
 
@@ -116,6 +116,12 @@ Supprimer (depuis une carte, la page de détail ou l'éditeur) demande une confi
 ## Limites connues
 
 - Fenêtre de course résiduelle entre la vérification de révision et l’écriture si Obsidian écrit exactement à ce moment ; une instance Xi unique est supposée (verrou en mémoire).
-- Pas de surveillance de fichiers en continu : les changements externes sont pris en compte à la lecture suivante.
+- Surveillance des dossiers du vault, réconciliation périodique de secours toutes les 60 secondes et SSE. Une interruption réseau retarde la mise à jour jusqu’à la reconnexion.
 - Les médias `_assets/` ne sont ni téléversables ni affichés.
 - Les messages retirés restent dans `removed-messages/` sans interface de restauration.
+
+### Réponses et branches
+
+Un message peut déclarer `reply_to: <uuid-publication>/<numéro-immuable>` dans son frontmatter YAML. Une référence vers un message de la même publication crée une branche secondaire ; les autres messages conservent l’ordre des inclusions de `index.md`. Une réponse publiée séparément peut aussi déclarer ce champ dans `index.md` (il s’applique au premier message). Les fichiers Markdown restent la source de vérité.
+
+Les numéros de fichiers, et donc les liens `#m-<numéro>`, restent stables lors du réordonnancement. Les références manquantes ou cycliques ne suppriment jamais de contenu : leurs messages restent dans le fil principal. Le fil d’accueil montre trois messages principaux au maximum ; les branches sont consultables sur la page complète. Les liens directs ouvrent automatiquement les branches qui contiennent le message ciblé.

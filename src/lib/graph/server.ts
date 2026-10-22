@@ -1,5 +1,5 @@
 import { getAppDatabase } from "../auth";
-import { getAuthors, getPublicationStore, getViewer } from "../publications/server";
+import { getFeedAuthors, getPublicationStore, getViewer } from "../publications/server";
 import { openVault, vaultPathFromEnv } from "../publications/vault";
 import { createGraphRepository } from "./repository";
 import { createGraphService, GraphNotFoundError, type GraphService } from "./service";
@@ -11,7 +11,8 @@ const graphGlobal = globalThis as typeof globalThis & { xiGraph?: Promise<GraphS
 export function getGraphService() {
   graphGlobal.xiGraph ??= Promise.all([getPublicationStore(), openVault(vaultPathFromEnv())])
     .then(([publications, vault]) => createGraphService({
-      repository: createGraphRepository({ vault, db: getAppDatabase(), publications }), publications, authors: getAuthors,
+      repository: createGraphRepository({ vault, db: getAppDatabase(), publications }), publications,
+      authors: (ids, viewer) => viewer ? getFeedAuthors(viewer, ids) : new Map(),
     }))
     .catch((error) => {
       graphGlobal.xiGraph = undefined;

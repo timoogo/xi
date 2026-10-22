@@ -86,21 +86,22 @@ export function createGraphIndex(db: Database.Database) {
   const readable = readablePublicationSql("p");
   const readablePublications = db.prepare<[{ viewer: string }], ReadablePublicationRow>(`
     SELECT p.id, p.author_id, p.type, COALESCE(p.published_at, p.updated_at) AS date, p.excerpt, p.generator_id,
-      (SELECT COUNT(*) FROM publication_message m WHERE m.publication_id = p.id) AS message_count
+      (SELECT COUNT(*) FROM publication_message m WHERE m.publication_id = p.id AND m.deleted = 0) AS message_count
     FROM publication p WHERE ${readable}
     ORDER BY date DESC, p.id DESC`);
   const readablePublication = db.prepare<[{ viewer: string; id: string }], ReadablePublicationRow>(`
     SELECT p.id, p.author_id, p.type, COALESCE(p.published_at, p.updated_at) AS date, p.excerpt, p.generator_id,
-      (SELECT COUNT(*) FROM publication_message m WHERE m.publication_id = p.id) AS message_count
+      (SELECT COUNT(*) FROM publication_message m WHERE m.publication_id = p.id AND m.deleted = 0) AS message_count
     FROM publication p WHERE p.id = @id AND ${readable}`);
   const readableMessages = db.prepare<[{ viewer: string; id: string }], ReadableMessageRow>(`
     SELECT m.publication_id, m.n, m.position, m.excerpt FROM publication_message m JOIN publication p ON p.id = m.publication_id
-    WHERE m.publication_id = @id AND ${readable} ORDER BY m.position`);
+    WHERE m.publication_id = @id AND m.deleted = 0 AND ${readable} ORDER BY m.position`);
+  // Removed messages stay indexed as conversation tombstones: the graph only sees live ones.
   // Validated relations whose two endpoint messages are indexed and whose two publications the viewer may read.
   const readableRelations = db.prepare<[{ viewer: string }], RelationRow>(`
     SELECT r.* FROM graph_relation r
-    JOIN publication_message sm ON sm.publication_id = r.source_publication AND sm.n = r.source_n
-    JOIN publication_message tm ON tm.publication_id = r.target_publication AND tm.n = r.target_n
+    JOIN publication_message sm ON sm.publication_id = r.source_publication AND sm.n = r.source_n AND sm.deleted = 0
+    JOIN publication_message tm ON tm.publication_id = r.target_publication AND tm.n = r.target_n AND tm.deleted = 0
     JOIN publication p ON p.id = r.source_publication
     JOIN publication q ON q.id = r.target_publication
     WHERE r.status = 'validated' AND ${readable} AND ${readablePublicationSql("q")}

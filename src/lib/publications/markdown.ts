@@ -136,11 +136,29 @@ export function serializeSource(source: SourceInput, accessedAt: string) {
 }
 
 export function parseSource(text: string) {
-  const { yaml } = splitFrontmatter(text);
+  const { yaml, body } = splitFrontmatter(text);
   const data = yaml ? parseDocument(yaml).toJS() as Record<string, unknown> | null : null;
   const string = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
   const url = string(data?.url);
-  return { title: string(data?.title), publisher: string(data?.publisher), url: url && /^https?:\/\//i.test(url) ? url : null };
+  const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && !!item.trim()).map((item) => item.trim()) : string(value) ? [string(value)!] : [];
+  const section = (heading: string) => {
+    const lines = body.split(/\r?\n/);
+    const start = lines.findIndex((line) => line.trim().toLocaleLowerCase("fr") === `## ${heading}`.toLocaleLowerCase("fr"));
+    if (start < 0) return [];
+    const result: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^#{1,6}\s/.test(line)) break;
+      if (/^[-*]\s+/.test(line.trim())) result.push(line.trim().replace(/^[-*]\s+/, ""));
+    }
+    return result;
+  };
+  return {
+    title: string(data?.title), publisher: string(data?.publisher),
+    url: url && /^https?:\/\//i.test(url) ? url : null,
+    date: string(data?.published_at), author: string(data?.author),
+    kinds: strings(data?.categories ?? data?.nature), excerpts: strings(data?.excerpts),
+    claims: [...strings(data?.claims), ...section("Faits utilisés")], reservations: section("Réserves"),
+  };
 }
 
 export function sourceLinkLine(folder: string, file: string, title: string, publisher: string) {

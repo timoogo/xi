@@ -6,7 +6,16 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/user-avatar";
-import { createPublication, restorePublication, trashPublication } from "@/lib/apis/publications";
+import { createPublication, createReply, restorePublication, trashPublication } from "@/lib/apis/publications";
+
+export function ReplyButton({ messageRef }: { messageRef: string }) {
+  const [pending, setPending] = useState(false);
+  return <button type="button" disabled={pending} className="rounded-full px-3 py-2 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50" onClick={async () => {
+    setPending(true);
+    try { const result = await createReply(messageRef); toast.error(result.message); }
+    finally { setPending(false); }
+  }}>{pending ? "Ouverture…" : "Répondre"}</button>;
+}
 
 /** Creates an empty draft, then the server action opens it in the existing editor. */
 function useCreatePublication() {
