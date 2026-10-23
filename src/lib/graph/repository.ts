@@ -185,6 +185,7 @@ export function createGraphRepository({ vault, db, publications }: { vault: Vaul
 
   async function authorizedGraph(viewer: Viewer): Promise<AuthorizedGraph> {
     await reconcile();
+    await publications.refreshAccess(viewer);
     const model = currentStructure();
     const hit = graphs.get(viewer.id);
     if (hit?.key === model.key) return copy(hit.graph);
@@ -225,6 +226,7 @@ export function createGraphRepository({ vault, db, publications }: { vault: Vaul
   async function messages(viewer: Viewer, publicationId: string, options?: ReadOptions) {
     if (!PUBLICATION_ID.test(publicationId)) return null;
     if (!options?.reconciled) await reconcile();
+    await publications.refreshAccess(viewer);
     if (!index.readablePublication(viewer.id, publicationId)) return null;
     return toMessages(index.readableMessages(viewer.id, publicationId));
   }
@@ -238,6 +240,7 @@ export function createGraphRepository({ vault, db, publications }: { vault: Vaul
     }
     if (!wanted.size) return result;
     if (!options?.reconciled) await reconcile();
+    await publications.refreshAccess(viewer);
     for (const [publicationId, set] of wanted) {
       for (const message of toMessages(index.readableMessages(viewer.id, publicationId))) if (set.has(message.ref)) result.set(message.ref, message);
     }

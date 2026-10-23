@@ -8,7 +8,7 @@ import type { PublicationMeta } from "./types";
 
 // Bump whenever an index table changes shape: every index table is then dropped and rebuilt from the vault.
 export const INDEX_SCHEMA_VERSION = "5";
-const INDEX_TABLES = ["publication_message", "publication", "graph_generator", "graph_relation", "feed_follow"];
+const INDEX_TABLES = ["publication_message", "publication", "graph_generator", "graph_relation", "feed_follow", "feed_managed_agent"];
 
 /** Drops every derived table (never Better Auth's): the next reconciliation rebuilds them from the vault. */
 export function dropIndexTables(db: Database.Database) {
@@ -44,6 +44,7 @@ export function indexGeneration(db: Database.Database) {
 export function migratePublicationIndex(db: Database.Database) {
   checkSchemaVersion(db);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS feed_managed_agent (viewer_id TEXT NOT NULL, author_id TEXT NOT NULL, PRIMARY KEY (viewer_id, author_id));
     CREATE TABLE IF NOT EXISTS feed_follow (viewer_id TEXT NOT NULL, author_id TEXT NOT NULL, PRIMARY KEY (viewer_id, author_id));
     CREATE TABLE IF NOT EXISTS publication (
       id TEXT PRIMARY KEY,
@@ -90,6 +91,7 @@ export function migratePublicationIndex(db: Database.Database) {
  */
 export function readablePublicationSql(alias: string) {
   return `(${alias}.trashed_at IS NULL AND ((${alias}.author_type = 'human' AND ${alias}.author_id = @viewer)
+    OR (${alias}.author_type = 'ai' AND EXISTS (SELECT 1 FROM feed_managed_agent a WHERE a.viewer_id = @viewer AND a.author_id = ${alias}.author_id))
     OR (${alias}.status = 'published' AND (${alias}.visibility = 'public' OR (${alias}.visibility = 'followers' AND EXISTS (SELECT 1 FROM feed_follow f WHERE f.viewer_id = @viewer AND f.author_id = ${alias}.author_id))))))`;
 }
 

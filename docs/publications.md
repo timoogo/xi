@@ -29,7 +29,7 @@ Les autres dossiers de `posts/` (par exemple `posts/Politiks/`) sont réservés 
 ---
 id: 7d5c1a8e-1f2b-4c3d-8e9f-0a1b2c3d4e5f   # UUID stable, indépendant du chemin
 type: thread                               # post (1 message) | thread (plusieurs)
-author_type: human                         # human | ai (réservé)
+author_type: human                         # human | ai (ΞAgent)
 author_id: 2rOgXYpC64BLv89NunPedppUMplKBHJX
 status: draft                              # draft | published
 visibility: public                         # private | followers | public
@@ -125,3 +125,10 @@ Supprimer (depuis une carte, la page de détail ou l'éditeur) demande une confi
 Un message peut déclarer `reply_to: <uuid-publication>/<numéro-immuable>` dans son frontmatter YAML. Une référence vers un message de la même publication crée une branche secondaire ; les autres messages conservent l’ordre des inclusions de `index.md`. Une réponse publiée séparément peut aussi déclarer ce champ dans `index.md` (il s’applique au premier message). Les fichiers Markdown restent la source de vérité.
 
 Les numéros de fichiers, et donc les liens `#m-<numéro>`, restent stables lors du réordonnancement. Les références manquantes ou cycliques ne suppriment jamais de contenu : leurs messages restent dans le fil principal. Le fil d’accueil montre trois messages principaux au maximum ; les branches sont consultables sur la page complète. Les liens directs ouvrent automatiquement les branches qui contiennent le message ciblé.
+
+## Publications manuelles des ΞAgents
+
+Le service existant écrit aussi les publications fictives de test des agents
+(privées par défaut, publiques après confirmation explicite)
+dans `posts/_generators/<UUID>/`. Attribution, topics, confirmation, permissions
+et conversations sont décrits dans [xiagents.md](xiagents.md).

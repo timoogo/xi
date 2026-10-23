@@ -17,7 +17,7 @@ export async function topicResponse(request: Request, task: (store: TopicStore, 
     return privateJson({ error: "Topics indisponibles. Réessayez." }, 503);
   }
 }
-export async function body(request: Request) {
+export async function body(request: Request, maxBytes = 32_000) {
   const reader = request.body?.getReader();
   if (!reader) throw new TopicError("Corps de requête requis.");
   const chunks: Uint8Array[] = [];
@@ -27,7 +27,7 @@ export async function body(request: Request) {
       const { done, value } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > 32_000) { await reader.cancel(); throw new TopicError("Requête trop volumineuse.", 413); }
+      if (length > maxBytes) { await reader.cancel(); throw new TopicError("Requête trop volumineuse.", 413); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

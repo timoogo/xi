@@ -29,7 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Profil", icon: UserRound, href: "/dashboard/profile" },
   { label: "Graphe", icon: Network, href: "/dashboard/graph" },
   { label: "Gestion des topics", icon: Compass, href: "/dashboard/topics" },
-  { label: "Comptes éditoriaux", icon: UserRound, href: "/dashboard/accounts" },
+  { label: "ΞAgents", icon: UserRound, href: "/dashboard/xiagents" },
 ];
 const SECONDARY_ITEMS: NavItem[] = [
   { label: "Paramètres du compte", icon: Settings, href: "/dashboard/settings" },
@@ -134,7 +134,7 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
   const [open, setOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const { pending, logOut } = useLogout(() => setOpen(false));
-  const tabs = NAV_ITEMS.filter((item) => item.href !== "/dashboard/profile" && item.href !== "/dashboard/topics" && item.href !== "/dashboard/accounts");
+  const tabs = NAV_ITEMS.filter((item) => item.href !== "/dashboard/profile" && item.href !== "/dashboard/topics" && item.href !== "/dashboard/xiagents");
   // The editor has its own sticky actions: a floating button there would hide them.
   const editing = pathname.endsWith("/edit");
   return (

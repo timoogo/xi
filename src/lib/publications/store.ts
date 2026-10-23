@@ -1,3 +1,4 @@
+import { labelTestMessage } from "./test-content";
 import { parseMessage } from "./message-metadata";
 import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
 import { createHash, randomUUID } from "node:crypto";
@@ -174,7 +175,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       const n = parseInt(message.file, 10);
       if (used.has(n)) continue;
       used.add(n);
-      rows.push({ publication_id: folder.meta.id, n, file: message.file, position: rows.length + 1, excerpt: excerpt(message.body), reply_to: message.replyTo ?? null, created_at: message.createdAt ?? folder.meta.createdAt, updated_at: message.updatedAt ?? message.createdAt ?? folder.meta.createdAt, deleted: 0 });
+      rows.push({ publication_id: folder.meta.id, n, file: message.file, position: rows.length + 1, excerpt: excerpt(message.body), reply_to: message.replyTo ?? (folder.doc.get("thread_continuation") === true && rows.length ? `${folder.meta.id}/${rows[rows.length - 1].n}` : null), created_at: message.createdAt ?? folder.meta.createdAt, updated_at: message.updatedAt ?? message.createdAt ?? folder.meta.createdAt, deleted: 0 });
     }
     const deleted = (folder.doc.toJS() as Record<string, unknown>).deleted_messages;
     if (Array.isArray(deleted)) for (const item of deleted) {
@@ -368,6 +369,59 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       await writeAtomic(inside(dir, "index.md"), serializeIndex(doc, "", []));
       return (await reindex(dir)).meta.id;
     });
+  }
+
+  /** The only generated-publication writer: owner checked from Markdown, public visibility requires explicit confirmation.
+   * Stage the entire folder before exposing it; the request UUID makes retries idempotent.
+   */
+  async function publishGenerated(viewer: Viewer, agentId: string, raw: unknown): Promise<PublicationSnapshot> {
+    const data = z.object({
+      id: z.string().regex(PUBLICATION_ID), summary: z.string().min(1).max(20_000),
+      messages: z.array(z.string().min(1).max(100_000)).min(1).max(10),
+      topicIds: z.array(z.uuid()).min(1).max(31),
+      visibility: z.enum(["private", "public"]).default("private"),
+      publicConfirmed: z.boolean().default(false),
+    }).strict().parse(raw);
+    if (data.visibility === "public" && !data.publicConfirmed) throw invalid("Confirmation publique requise.");
+    if (!(await readGenerators(vault, viewer)).some(agent => agent.id === agentId && agent.ownerId === viewer.id)) throw notFound();
+    await ensureIndexed();
+    return withLock(`generated-publication:${data.id}`, () => withLock(`generated:${agentId}`, async () => {
+      await reconcileUser(agentId);
+      const fingerprint = createHash("sha256").update(JSON.stringify(data)).digest("hex");
+      const existing = index.get(data.id);
+      if (existing) {
+        const folder = await loadLive(data.id);
+        if (folder.meta.authorType !== "ai" || folder.meta.authorId !== agentId || folder.doc.get("generation_fingerprint") !== fingerprint) throw invalid("Cet aperçu a déjà été utilisé pour un autre contenu.");
+        return snapshot(folder);
+      }
+      const live = inside(generatorsDir, agentId);
+      await mkdir(live, { recursive: true, mode: 0o700 });
+      if (await assertInVault(vault, live) !== live) throw invalid("Dossier de publication invalide.");
+      const date = now(), at = date.toISOString();
+      const type = data.messages.length > 1 ? "thread" : "post";
+      const used = (await listDir(live)).map(entry => FOLDER_NAME.exec(entry.name)).filter(match => match?.[2] === stamp(date)).map(match => Number(match![3]));
+      const sequence = String(Math.max(0, ...used) + 1).padStart(3, "0");
+      const target = inside(live, `${type}_${stamp(date)}_${sequence}`);
+      const stage = inside(live, `.${data.id}-${randomUUID()}`);
+      await mkdir(stage, { mode: 0o700 });
+      try {
+        const meta: PublicationMeta = { id: data.id, type, authorType: "ai", authorId: agentId, status: "published", visibility: data.visibility, createdAt: at, updatedAt: at, publishedAt: at, score: null };
+        const doc = new Document({ generator: agentId, topics: data.topicIds, primary_topic: data.topicIds[0], test_content: true, generated_by: "manual-fixture-v1", confirmed_by: viewer.id, generation_fingerprint: fingerprint });
+        setMeta(doc, meta);
+        const order: string[] = [];
+        for (const [i, body] of data.messages.entries()) {
+          const file = `${i + 1}_${messageSlug(body)}.md`;
+          order.push(file);
+          // Parent relations for conversations are derived from ordered messages,
+          // leaving reply_to available for explicit secondary branches.
+          await writeAtomic(inside(stage, file), labelTestMessage(body, i, data.messages.length));
+        }
+        doc.set("thread_continuation", true);
+        await writeAtomic(inside(stage, "index.md"), serializeIndex(doc, data.summary, order.map(file => messageEmbedTarget(rel(target), file))));
+        await rename(stage, target);
+        return snapshot(await reindex(target));
+      } finally { await rm(stage, { recursive: true, force: true }); }
+    }));
   }
 
   async function get(viewer: Viewer, id: string) {
@@ -638,7 +692,15 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   }
 
   async function authorized(viewer: Viewer) {
-    const effective = effectiveSocial(await readSocial(vault, viewer), await readGenerators(vault, viewer));
+    const agents = await readGenerators(vault, viewer);
+    const managedAgents = agents.filter(agent => agent.ownerId === viewer.id).map(agent => agent.id).sort();
+    const previous = db.prepare<[string], {author_id:string}>("SELECT author_id FROM feed_managed_agent WHERE viewer_id = ? ORDER BY author_id").all(viewer.id).map(row => row.author_id);
+    if (JSON.stringify(previous) !== JSON.stringify(managedAgents)) db.transaction(() => {
+      db.prepare("DELETE FROM feed_managed_agent WHERE viewer_id = ?").run(viewer.id);
+      for (const id of managedAgents) db.prepare("INSERT INTO feed_managed_agent VALUES (?, ?)").run(viewer.id, id);
+      bumpIndexGeneration(db);
+    })();
+    const effective = effectiveSocial(await readSocial(vault, viewer), agents);
     // Refresh the shared SQL permission projection used by the graph and conversations.
     const existing = db.prepare<[string], {author_id:string}>("SELECT author_id FROM feed_follow WHERE viewer_id = ? ORDER BY author_id").all(viewer.id).map(row => row.author_id);
     const following = [...effective.following].sort();
@@ -648,7 +710,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       for (const author of following) insert.run(viewer.id, author);
       bumpIndexGeneration(db);
     })();
-    return { effective, viewer: {...viewer, following} };
+    return { effective, viewer: {id: viewer.id, following, managedAgents} };
   }
 
   const realtimeReaders = new Map<string, {generation:string; value: Awaited<ReturnType<typeof authorized>>}>();
@@ -772,7 +834,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     }));
   }
 
-  return { ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { refreshAccess: authorized, publishGenerated, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

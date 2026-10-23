@@ -125,8 +125,8 @@ test("requested subject creates its missing parent explicitly before the child",
   const child = topics.find((topic: { tag: string }) => topic.tag === "politiks.france");
   await page.goto(`${app.origin}/dashboard/accounts`);
   await page.getByLabel("Topic de départ").selectOption(child.id);
-  await page.getByRole("button", { name: "Proposer un compte", exact: true }).click();
-  await page.getByLabel("Nom du compte", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Nom du compte", { exact: true }).inputValue(), "Politique française");
+  await page.getByRole("button", { name: "Proposer un ΞAgent", exact: true }).click();
+  await page.getByLabel("Nom du ΞAgent", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Nom du ΞAgent", { exact: true }).inputValue(), "Politique française");
   assert.equal(await page.getByLabel("Handle public").inputValue(), "politiks.france");
 });

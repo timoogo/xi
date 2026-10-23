@@ -79,6 +79,12 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
     if (!preset) throw new TopicError("Version de preset introuvable.");
   }
   async function list(owner: string) { return exclusive(async () => { const entries = await all(); index(entries); return entries.filter(e => e.parsed.generator.visibility === "public" || e.account.owner === owner).map(e => e.account); }); }
+  async function getOwned(owner: string, id: string) {
+    if (!z.uuid().safeParse(id).success) throw new TopicError("ΞAgent introuvable.", 404);
+    const account = (await list(owner)).find(account => account.id === id && account.owner === owner);
+    if (!account) throw new TopicError("ΞAgent introuvable.", 404);
+    return account;
+  }
   async function savePreset(owner: string, input: unknown) {
     const data = z.object({ id: z.string().max(100).optional(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(160), settings: settingsSchema }).strict().parse(input);
     return exclusive(async () => {
@@ -175,7 +181,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       await event(run, 5, "completed", { confirmedBy: owner }); return execute(run);
     });
   }
-  return { list, update, propose, confirm, savePreset,
+  return { list, getOwned, update, propose, confirm, savePreset,
     listPresets: (owner: string) => exclusive(async () => (await presets()).filter(p => !p.owner || p.owner === owner)),
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },
     resume: (owner: string, id: string) => exclusive(async () => { const run = await loadRun(owner, id); return run.state === "completed" || run.state === "waiting" ? run : execute(run); }),

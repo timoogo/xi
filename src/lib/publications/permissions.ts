@@ -13,6 +13,7 @@ function isAuthor(viewer: Viewer | null, publication: Access) {
 export function canRead(viewer: Viewer | null, publication: Access, trashed = false) {
   if (trashed) return false;
   if (isAuthor(viewer, publication)) return true;
+  if (publication.authorType === "ai" && viewer?.managedAgents?.includes(publication.authorId)) return true;
   return !!viewer && publication.status === "published" && (publication.visibility === "public" || (publication.visibility === "followers" && viewer.following?.includes(publication.authorId) === true));
 }
 

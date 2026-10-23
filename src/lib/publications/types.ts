@@ -36,7 +36,7 @@ export type PublicationSnapshot = PublicationMeta & {
 
 export type TrashItem = Pick<PublicationMeta, "id" | "type" | "status" | "visibility"> & { excerpt: string; trashedAt: string };
 
-export type Viewer = { id: string; following?: readonly string[] };
+export type Viewer = { id: string; following?: readonly string[]; managedAgents?: readonly string[] };
 
 /** Message identities are publication UUID / immutable file number. */
 export type ConversationEntry = {

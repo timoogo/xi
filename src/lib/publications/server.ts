@@ -54,7 +54,7 @@ export async function orNotFound<T>(load: () => Promise<T>): Promise<T> {
 export async function getFeedAuthors(viewer: Viewer, ids: string[]): Promise<Map<string, Author>> {
   const authors = getAuthors(ids);
   for (const generator of await (await getPublicationStore()).generators(viewer)) {
-    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, ai: true, handle: `@${generator.handle}` });
+    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, image: null, ai: true, handle: `@${generator.handle}` });
   }
   return authors;
 }

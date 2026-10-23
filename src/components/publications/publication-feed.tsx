@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { PublicationError } from "@/lib/publications/store";
 import { LiveFeed } from "./live-feed";
@@ -8,12 +9,13 @@ import type { Viewer } from "@/lib/publications/types";
 import { PublicationCard } from "./publication-card";
 
 /** A column of readable publications, one page at a time (`?cursor=`), newest first. */
-export async function PublicationFeed({ viewer, scope, cursor, path, label, empty }: {
+export async function PublicationFeed({ viewer, scope, cursor, path, label, empty, showPublicationLinks = false }: {
   viewer: Viewer;
   scope: FeedScope;
   cursor?: string;
   path: string;
   label: string;
+  showPublicationLinks?: boolean;
   empty: { title: string; description: string };
 }) {
   const store = await getPublicationStore();
@@ -26,7 +28,7 @@ export async function PublicationFeed({ viewer, scope, cursor, path, label, empt
   if (!items.length && !cursor) return <EmptyState title={empty.title} description={empty.description} />;
   return (
     <section aria-label={label}>
-      {items.map((item) => <PublicationCard key={item.id} publication={item} author={authors.get(item.authorId)} viewerId={viewer.id} />)}
+      {items.map((item) => <Fragment key={item.id}><PublicationCard publication={item} author={authors.get(item.authorId)} viewerId={viewer.id} />{showPublicationLinks && <Link className="block border-b px-4 py-2 text-sm underline" href={`/dashboard/publications/${item.id}`}>Ouvrir la publication · {item.visibility === "public" ? "Public" : "Privé"}</Link>}</Fragment>)}
       {!items.length ? <p className="border-b p-6 text-center text-[15px] text-muted-foreground">Aucune publication plus ancienne.</p> : null}
       {nextCursor || cursor ? (
         <nav aria-label={`${label} : pages`} className="flex justify-between gap-3 border-b px-4 py-4 text-[15px]">

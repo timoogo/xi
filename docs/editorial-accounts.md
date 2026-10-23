@@ -1,6 +1,6 @@
-# Comptes éditoriaux
+# ΞAgents — identité et création
 
-La page `/dashboard/accounts`, accessible dans la navigation et le menu mobile, gère les générateurs existants et les nouveaux comptes éditoriaux. Aucun modèle IA, scheduler ou mécanisme de publication n’est exécuté.
+La page `/dashboard/xiagents`, accessible dans la navigation et le menu mobile, gère les identités éditoriales appartenant à l’utilisateur connecté. L’ancienne route `/dashboard/accounts` redirige vers cette page. Aucun modèle IA ni scheduler n’est exécuté. Le parcours de publication manuelle de test est décrit dans [xiagents.md](xiagents.md).
 
 ## Parcours
 
