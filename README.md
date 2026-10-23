@@ -91,3 +91,7 @@ Le build et les tests doivent utiliser la même valeur `NEXT_DIST_DIR`. Le dossi
 `pnpm test:auth` nécessite le build courant. Les tests créent une véritable base SQLite temporaire, appliquent deux fois la migration, démarrent `next start` sur un port libre, appellent les Server Actions référencées par les formulaires et les routes HTTP Better Auth, puis arrêtent et redémarrent le processus. Ils vérifient l’inscription, le hachage, le doublon d’email, le mauvais mot de passe, les cookies falsifiés et expirés, la déconnexion, la protection des pages, le refus d’une origine étrangère et la persistance après redémarrage. La base temporaire est supprimée à la fin ; la base locale de développement n’est pas utilisée.
 
 Les tests vérifient aussi le rendu du compte courant, les états vides et l’isolation de deux utilisateurs authentifiés (requêtes simultanées et paramètres d’URL), sans modifier la base de développement.
+
+### Topics hiérarchiques
+
+La page `/dashboard/topics` permet de proposer, confirmer, explorer et gérer les topics partagés, avec pipeline SSE et routage privé corrigible. Les topics restent distincts des comptes éditoriaux. Voir [l’architecture, les permissions et les limites](docs/topics.md). Réindexation : `npm run topics:reindex` ; tests : `npm run test:topics` et `npm run test:topics:e2e`.
