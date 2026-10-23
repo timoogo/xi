@@ -15,6 +15,8 @@ export function FeedArticle({ href, label, className, children }: { href?: strin
   const router = useRouter();
   function open(event: MouseEvent<HTMLElement>) {
     if (!href || event.defaultPrevented || event.button !== 0) return;
+    // React portals bubble through their owner even outside the article DOM.
+    if (!event.currentTarget.contains(event.target as Node)) return;
     if ((event.target as Element).closest(INTERACTIVE)) return;
     if (window.getSelection()?.toString()) return;
     event.stopPropagation();

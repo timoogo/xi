@@ -1,5 +1,6 @@
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MarkdownImage } from "./markdown-image";
 import Link from "next/link";
 import { stripFrontmatter, wikilinkLabel } from "@/lib/publications/links";
 
@@ -47,9 +48,9 @@ const components: Components = {
     }
     return <a href={href} target="_blank" rel="noopener noreferrer nofollow">{children}</a>;
   },
-  // Images would load third-party URLs from untrusted Markdown; vault assets are not served yet.
-  img({ alt }) {
-    return <span className="xi-wikilink">{alt ? `[image: ${alt}]` : "[image]"}</span>;
+  // Vault assets are not served; HTTPS media requires explicit reader consent.
+  img({ src, alt }) {
+    return <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} />;
   },
 };
 

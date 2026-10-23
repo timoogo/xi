@@ -12,7 +12,7 @@ import { useLiveSync } from "./live-sync";
 import { formatShortDate } from "./publication-badges";
 
 type Entry = { ref: string; publicationId: string; message: PublicationSnapshot["messages"][number] | null; publication: PublicationSnapshot | null; deleted: boolean; replyCount?: number };
-type Author = { name: string; handle: string; image?: string | null };
+type Author = { name: string; handle: string; bloubSeed?: string | null; image?: string | null };
 type Page = { parent: Entry; ancestors: Entry[]; children: Entry[]; nextCursor: string | null; authors: Record<string, Author> };
 const unique = (items: Entry[]) => [...new Map(items.map(item => [item.ref, item])).values()];
 
@@ -23,19 +23,17 @@ function Message({ entry, authors, fresh = false }: { entry: Entry; authors: Pag
   const author = authors[publication.authorId];
   const message = entry.message as typeof entry.message & { createdAt?: string; updatedAt?: string };
   const date = message.createdAt ?? publication.publishedAt ?? publication.createdAt;
-  return <article id={`m-${entry.ref.split("/")[1]}`} className={`min-w-0 scroll-mt-24 py-3 ${fresh ? "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500" : ""}`}>
-    <header className="mb-2 flex flex-wrap items-center gap-1 text-sm">
-      <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} size={32} /></Link>
-      <Link href={`/dashboard/profiles/${publication.authorId}`} className="font-semibold hover:underline">{author?.name ?? "Auteur"}</Link>
-      {publication.authorType === "ai" ? <span className="rounded border px-1 text-xs">IA</span> : null}
-      <span className="text-muted-foreground">{author?.handle}</span>
+  return <article id={`m-${entry.ref.split("/")[1]}`} className={`grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 min-w-0 scroll-mt-24 py-3 ${fresh ? "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500" : ""}`}>
+    <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} bloubSeed={author?.bloubSeed} size={40} ai={publication.authorType === "ai"} /></Link>
+    <header className="relative flex min-h-10 flex-wrap content-center items-center gap-x-1 pr-11 text-[15px] leading-5">
+      <Link href={`/dashboard/profiles/${publication.authorId}`} className="max-w-full truncate font-bold hover:underline">{author?.name ?? "Auteur"}</Link>
+      <span className="max-w-full truncate text-muted-foreground">{author?.handle}</span>
       <Link href={messageHref(entry.ref)} className="text-muted-foreground hover:underline"><time dateTime={date}>{formatShortDate(date)}</time></Link>
       {message.updatedAt && message.updatedAt !== date ? <span className="text-xs text-muted-foreground">Modifié</span> : null}
       {fresh ? <span className="text-xs text-muted-foreground">Nouvelle réponse</span> : null}
-      <MessageMenu messageRef={entry.ref} sources={publication.sources} />
+      <span className="absolute right-0 top-0"><MessageMenu messageRef={entry.ref} sources={publication.sources} /></span>
     </header>
-    <MarkdownView markdown={message.body} />
-    <PublicationPanel sources={publication.sources} messageRefs={[entry.ref]} preview={message.body} />
+    <div className="col-start-2"><MarkdownView markdown={message.body} /><PublicationPanel sources={publication.sources} messageRefs={[entry.ref]} preview={message.body} /></div>
   </article>;
 }
 
@@ -140,7 +138,7 @@ export function ConversationView({ messageRef }: { messageRef: string }) {
     return () => controller.abort();
   }, [messageRef, attempt]);
   useLiveSync(event => { if (event.removed?.includes(messageRef.split("/")[0])) setPage(null); setAttempt(value => value + 1); });
-  return <section className="min-w-0">
+  return <section className="xi-publication min-w-0">
     <header className="border-b px-4 py-3"><button type="button" className="mr-3 rounded px-2 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => window.history.length > 1 ? router.back() : router.push(`/dashboard/publications/${messageRef.split("/")[0]}`)}>← Retour</button><h1 className="inline text-lg font-semibold">Sous-conversation</h1>
       {page ? <nav aria-label="Fil d’Ariane" className="mt-2 flex flex-wrap gap-2 text-sm text-muted-foreground"><Link href={`/dashboard/publications/${messageRef.split("/")[0]}`} className="underline">Publication d’origine</Link>{page.ancestors.filter(entry => !entry.deleted).map((entry, index) => <Link key={entry.ref} href={messageHref(entry.ref)} className="underline">› Message parent {index + 1}</Link>)}</nav> : null}
     </header>

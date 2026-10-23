@@ -1,3 +1,4 @@
+import { migrateAvatarPreferences } from "../src/lib/avatar-preferences";
 import { getMigrations } from "better-auth/db/migration";
 import { createAuth } from "../src/lib/auth";
 import { migratePublicationIndex } from "../src/lib/publications/index-db";
@@ -7,6 +8,7 @@ async function main() {
   try {
     const migrations = await getMigrations(auth.options);
     await migrations.runMigrations();
+    migrateAvatarPreferences(database);
     migratePublicationIndex(database);
     console.log("SQLite authentication and publication index schemas are up to date.");
   } finally {

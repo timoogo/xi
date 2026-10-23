@@ -65,7 +65,7 @@ test("thread preview keeps only three main messages with immutable permalink anc
   const preview = renderToStaticMarkup(<PublicationContent {...props} fullHref="/thread" />);
   assert.match(preview, /Troisième principal/);
   assert.doesNotMatch(preview, /Réponse secondaire|Quatrième principal|id="m-/);
-  assert.match(preview, /aria-hidden="true" class="absolute bottom-0/);
+  assert.equal((preview.match(/data-thread-connector/g) ?? []).length, 2);
   const full = renderToStaticMarkup(<PublicationContent {...props} />);
   assert.match(full, /id="m-8"/);
   assert.match(preview, /href="\/dashboard\/publications\/00000000-0000-4000-8000-000000000001\/conversation\/8"/);

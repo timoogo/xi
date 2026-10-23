@@ -2,7 +2,7 @@ import type { PublicationSnapshot } from "@/lib/publications/types";
 
 export type FeedPage = {
   items: PublicationSnapshot[];
-  authors: Record<string, { name: string; handle: string; image?: string | null }>;
+  authors: Record<string, { name: string; handle: string; bloubSeed?: string | null; image?: string | null }>;
   nextCursor: string | null;
 };
 export class FeedChanged extends Error {}

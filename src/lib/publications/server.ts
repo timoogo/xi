@@ -30,15 +30,15 @@ export async function getViewer(): Promise<Viewer | null> {
   return session ? { id: session.user.id } : null;
 }
 
-export type Author = { id: string; name: string; image: string | null; handle: string; description?: string; parentId?: string | null };
+export type Author = { bloubSeed?: string | null; ai: boolean; id: string; name: string; image: string | null; handle: string; description?: string; parentId?: string | null };
 
 export function getAuthors(ids: string[]): Map<string, Author> {
   const unique = [...new Set(ids)];
   if (!unique.length) return new Map();
   const rows = getAppDatabase()
-    .prepare(`SELECT id, name, image FROM "user" WHERE id IN (${unique.map(() => "?").join(", ")})`)
-    .all(...unique) as { id: string; name: string; image: string | null }[];
-  return new Map(rows.map((row) => [row.id, { ...row, handle: handleFor(row.id) }]));
+    .prepare(`SELECT u.id, u.name, u.image, CASE WHEN a.mode = 'bloub' THEN a.seed END AS bloubSeed FROM "user" u LEFT JOIN user_avatar a ON a.user_id = u.id WHERE u.id IN (${unique.map(() => "?").join(", ")})`)
+    .all(...unique) as { id: string; name: string; image: string | null; bloubSeed: string | null }[];
+  return new Map(rows.map((row) => [row.id, { ...row, ai: false, handle: handleFor(row.id) }]));
 }
 
 /** Unreadable or missing publications render as 404 pages; storage failures go to the error boundary. */
@@ -54,7 +54,7 @@ export async function orNotFound<T>(load: () => Promise<T>): Promise<T> {
 export async function getFeedAuthors(viewer: Viewer, ids: string[]): Promise<Map<string, Author>> {
   const authors = getAuthors(ids);
   for (const generator of await (await getPublicationStore()).generators(viewer)) {
-    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, handle: `@${generator.handle}` });
+    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, ai: true, handle: `@${generator.handle}` });
   }
   return authors;
 }

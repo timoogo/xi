@@ -1,6 +1,6 @@
 "use client";
 
-import { Feather, RotateCcw, Trash2 } from "lucide-react";
+import { Feather, MessageCircle, RotateCcw, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -10,11 +10,11 @@ import { createPublication, createReply, restorePublication, trashPublication } 
 
 export function ReplyButton({ messageRef }: { messageRef: string }) {
   const [pending, setPending] = useState(false);
-  return <button type="button" disabled={pending} className="rounded-full px-3 py-2 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50" onClick={async () => {
+  return <button type="button" disabled={pending} aria-label={pending ? "Ouverture…" : "Répondre"} title="Répondre" className="inline-flex size-11 items-center justify-center rounded-full text-muted-foreground hover:bg-chart-2/10 hover:text-chart-2 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" onClick={async () => {
     setPending(true);
     try { const result = await createReply(messageRef); toast.error(result.message); }
     finally { setPending(false); }
-  }}>{pending ? "Ouverture…" : "Répondre"}</button>;
+  }}><MessageCircle aria-hidden="true" className="size-[18px]" /></button>;
 }
 
 /** Creates an empty draft, then the server action opens it in the existing editor. */
@@ -46,11 +46,11 @@ export function NewPublicationButton({ compact = false, className }: { compact?:
 }
 
 /** "Quoi de neuf ?" at the top of the home feed: a shortcut to the Markdown editor, not a second editor. */
-export function Composer({ user }: { user: { name: string; image?: string | null } }) {
+export function Composer({ user }: { user: { name: string; bloubSeed?: string | null; image?: string | null } }) {
   const { pending, create } = useCreatePublication();
   return (
     <section aria-label="Nouvelle publication" className="flex gap-3 border-b px-4 pb-3 pt-4">
-      <UserAvatar name={user.name} image={user.image} size={40} />
+      <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={40} />
       <div className="min-w-0 flex-1">
         <button type="button" onClick={create} disabled={pending}
           className="w-full rounded-md py-1.5 text-left text-xl text-muted-foreground outline-none transition-colors hover:text-foreground/70 focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-wait">

@@ -24,7 +24,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
         <p className="py-2">{following ? "Les comptes suivis et les descendants des générateurs suivis, du plus récent au plus ancien. Aucun reclassement éditorial." : "La pertinence éditoriale et vos préférences explicites guident ce fil, avec la fraîcheur et une diversité d’auteurs. Aucun historique de navigation n’est utilisé. Modifiez vos préférences depuis les profils."}</p>
         <Link className="underline" href="/dashboard/profiles">Découvrir les comptes et gérer mes préférences</Link>
       </details>
-      {cursor ? null : <Composer user={{ name: user.name, image: user.image }} />}
+      {cursor ? null : <Composer user={{ name: user.name, image: user.image, bloubSeed: user.bloubSeed }} />}
       {/* Scoped to the feed: a segment-wide loading.tsx would stream every dashboard page with status 200 before notFound(). */}
       <Suspense fallback={<p role="status" className="p-6 text-muted-foreground">Chargement des publications…</p>}>
       <PublicationFeed viewer={user} scope={{ kind: "home", tab: following ? "following" : "for-you" }} cursor={typeof cursor === "string" ? cursor : undefined} path={following ? "/dashboard?tab=following" : "/dashboard"} label={following ? "Abonnements" : "Pour vous"}

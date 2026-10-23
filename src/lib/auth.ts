@@ -1,3 +1,4 @@
+import { migrateAvatarPreferences } from "./avatar-preferences";
 import { betterAuth } from "better-auth";
 import { nextCookies } from "better-auth/next-js";
 import Database from "better-sqlite3";
@@ -19,6 +20,7 @@ export function createAuth() {
   database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 5000");
+  migrateAvatarPreferences(database);
   const auth = betterAuth({
     appName: "Xi",
     baseURL: url.origin,

@@ -17,7 +17,9 @@
     "test:topics": "tsx --tsconfig tests/tsconfig.json --test tests/topics.test.ts",
     "test:topics:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/topics-browser.test.ts",
     "test:accounts": "tsx --tsconfig tests/tsconfig.json --test tests/accounts.test.ts",
-    "test:accounts:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/accounts-browser.test.ts"
+    "test:accounts:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/accounts-browser.test.ts",
+    "test:avatars": "tsx --tsconfig tests/tsconfig.json --test tests/avatars.test.ts tests/bloub.test.ts",
+    "test:avatars:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/avatars-browser.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
@@ -44,6 +46,7 @@
     "react-infinite-scroll-component": "^6.1.0",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
+    "sharp": "0.34.5",
     "sonner": "^2.0.6",
     "tailwind-merge": "^3.3.1",
     "tailwind-scrollbar-hide": "^4.0.0",

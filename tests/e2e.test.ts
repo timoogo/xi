@@ -71,6 +71,9 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
     }
     assert.equal(await card.getByRole("button", { name: "Supprimer" }).count(), 0);
     assert.equal(await card.getByRole("link", { name: "Modifier" }).count(), 0);
+    await card.getByRole("button", { name: "Actions du message" }).first().click();
+    assert.equal(await reader.getByRole("menuitem", { name: /Modifier|Supprimer/ }).count(), 0);
+    await reader.keyboard.press("Escape");
     assert.equal(await reader.getByText("Note privée").count(), 0);
     await author.goto(`${app.origin}/dashboard`);
     const privateCard = author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Note privée" });
@@ -80,8 +83,11 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
 
   await t.test("deleting from the feed hides it everywhere, and Undo restores it", async () => {
     const card = author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" });
-    await card.getByRole("button", { name: "Supprimer" }).click();
-    await card.getByRole("button", { name: "Mettre à la corbeille" }).click();
+    await card.getByRole("button", { name: "Actions du message" }).first().focus();
+    await author.keyboard.press("Enter");
+    await author.getByRole("menuitem", { name: "Supprimer", exact: true }).click();
+    await author.getByRole("dialog").getByRole("button", { name: "Supprimer", exact: true }).click();
+    await author.getByRole("button", { name: "Mettre à la corbeille" }).click();
     await author.getByText("Déplacée dans votre corbeille").waitFor();
     await author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" }).waitFor({ state: "detached" });
     const trashed = join(app.vaultPath, "posts", ".trash", folder.split("/").at(-2)!, id);
@@ -101,7 +107,9 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
 
   await t.test("deleting from the publication page, then restoring from the trash, with a folder collision", async () => {
     await author.goto(`${app.origin}/dashboard/publications/${id}`);
-    await author.getByRole("button", { name: "Supprimer" }).click();
+    await author.getByRole("button", { name: "Actions du message" }).first().click();
+    await author.getByRole("menuitem", { name: "Supprimer", exact: true }).click();
+    await author.getByRole("dialog").getByRole("button", { name: "Supprimer", exact: true }).click();
     await author.getByRole("button", { name: "Mettre à la corbeille" }).click();
     await author.waitForURL(`${app.origin}/dashboard/publications`);
     await author.getByText("Déplacée dans votre corbeille").waitFor();

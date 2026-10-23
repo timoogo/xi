@@ -139,7 +139,7 @@ test("real Next.js authentication with temporary SQLite and process restart", { 
         assert.ok(!html.includes('href="/dashboard/profile/') );
         assert.ok(html.includes('aria-label="Ouvrir le menu"'));
         assert.ok(html.includes('href="/dashboard/notifications"'));
-        assert.ok(html.includes('aria-label="Default avatar"'));
+        assert.ok(html.includes('aria-label="Avatar Bloub de'));
       }
       if (path === "/dashboard/profile") {
         assert.ok(firstHtml.includes(credentials.email));

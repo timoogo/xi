@@ -207,7 +207,7 @@ export type ConnectionItem = {
 /** Newest relations first; `total` counts the filtered authorized relations of the scope. */
 export type ConnectionsResponse = { items: ConnectionItem[]; total: number; nextCursor: string | null };
 
-export type AuthorSummary = { id: string; name: string; handle: string; image: string | null };
+export type AuthorSummary = { id: string; name: string; handle: string; bloubSeed?: string | null; image: string | null };
 
 export type MessagePreview = {
   ref: MessageRef;

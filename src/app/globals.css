@@ -148,3 +148,24 @@
 .xi-markdown th, .xi-markdown td { border: 1px solid var(--border); padding: 0.25rem 0.5rem; }
 .xi-markdown hr { border-color: var(--border); }
 .xi-wikilink { color: var(--chart-2); border-bottom: 1px dashed currentColor; }
+
+/* Publication surfaces only; navigation and dashboard retain their own theme. */
+.xi-publication {
+  --background: #000;
+  --foreground: #e7e9ea;
+  --muted: #16181c;
+  --muted-foreground: #91989e;
+  --border: #2f3336;
+  --accent: #181c20;
+  --chart-2: #58b6f5;
+  --ring: #58b6f5;
+  background: var(--background);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.xi-publication .xi-markdown { line-height: 1.5; }
+.xi-publication .xi-markdown > * + * { margin-top: .65em; }
+.xi-publication :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
