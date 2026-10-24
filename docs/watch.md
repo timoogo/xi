@@ -60,10 +60,76 @@ ne comptent jamais dans le plafond ni l’intervalle réels. Elles ont leur prop
 plafond glissant `testMaxPerDay`, appliqué par l’écrivain sous le verrou (429 au
 dépassement ; une nouvelle tentative idempotente n’est pas refusée).
 
-## Scheduler
+## Calendriers, orchestrateur et historique d’exécution
+
+Chaque ΞAgent déployé par le nouveau parcours possède deux calendriers
+(clé de premier niveau `schedule` du fichier `generators/<handle>/index.md`,
+schéma `src/lib/xiagents/schedule.ts`) : **veille** et **publication**. Ce sont
+des permissions : hors calendrier, rien ne démarre ; dans le calendrier, l’agent
+ne travaille que s’il a du travail (le Bloub n’est jamais forcé à `working`).
+
+- **Modèle** : semaine type (lundi d’abord, plusieurs plages par jour) et
+  exceptions par date (au plus 400). Minutes 0–1440 ; une fin antérieure ou
+  égale au début traverse minuit (00:00–00:00 = 24 h). Les plages qui se
+  chevauchent sont fusionnées.
+- **Fuseau** : IANA par agent (par défaut celui du navigateur du créateur).
+  Heure inexistante (passage à l’heure d’été) : décalée d’une heure ; heure
+  répétée (passage à l’heure d’hiver) : première occurrence. Testé pour
+  Europe/Paris, America/New_York et Asia/Tokyo (`tests/xiagents-calendar.test.ts`).
+- **Agents existants** : sans clé `schedule`, le fonctionnement antérieur est
+  conservé (veille continue, publication 03:00–06:00 Europe/Paris, mêmes clés
+  de tâches). Un calendrier illisible ferme la veille et la publication.
+- **Pause** : clé `pause` (`since`, `resumeAt`, `resumeWith` `now` |
+  `catch-up`), lue seulement si `watch.paused`. La reprise programmée est
+  appliquée par le worker avec le choix enregistré. Une pause bloque tout,
+  exceptions pour événement majeur comprises, et suspend les tâches en cours.
+- **Admission** (`src/lib/watch/orchestrator.ts`) : chaque tâche de veille est
+  admise au moment où elle démarre (calendrier, autorisation de rattrapage ou
+  manuelle, exception pour événement majeur). Refusée : elle reste en attente
+  jusqu’à la prochaine ouverture, sans consommer d’essai. Admise : elle doit
+  finir avant la fin de plage + tolérance (30 min par défaut) ; au-delà, elle
+  est interrompue proprement (étapes déjà persistées) et reprise plus tard.
+- **Priorités** : événement majeur 10, manuel 5, ordinaire 0, plus un
+  vieillissement d’un point toutes les 6 min (20 au plus) : aucune famine.
+  Concurrence : `XI_WATCH_CONCURRENCY` tâches par passage (2 par défaut) et
+  `XI_INFERENCE_CONCURRENCY` tâches d’inférence simultanées tous processus
+  confondus (1 par défaut, pour ne pas saturer le modèle local).
+- **Erreurs** : indisponibilité de l’inférence → attente sans essai consommé ;
+  erreurs permanentes (données invalides, configuration refusée, adresse
+  bloquée) → échec définitif immédiat ; autres → essais avec backoff
+  exponentiel. Chaque tentative est journalisée ; les agents sont isolés.
+- **Rattrapage** : si le worker n’est pas passé depuis plus de 30 min, chaque
+  agent en marche reçoit une autorisation de veille couvrant les plages
+  manquées, bornée par sa limite (72 h par défaut) et par sa date de création,
+  pour 1 à 6 h. Clé idempotente : jamais deux rattrapages pour la même panne.
+  Le rattrapage ne publie rien d’artificiel : les règles de publication
+  s’appliquent normalement.
+- **Événements majeurs** (désactivés par défaut) : hors calendrier, collecte
+  légère ; seules les informations confirmées par au moins deux sources
+  indépendantes dans les 6 dernières heures, au seuil d’alerte, sont évaluées
+  (3 par heure au plus) ; la justification est consignée dans la décision.
+- **Historique d’exécution** (`xiagent_run`) : agent, type, déclencheur
+  (calendrier, manuel, rattrapage, événement majeur), début, fin, statut,
+  tentative, résultat, erreur, journal. Distinct de l’historique des
+  déploiements. Conservation : réglage de l’agent, sinon
+  `XI_RUN_RETENTION_DAYS` (30 jours) ; les publications, leurs sources, les
+  candidats et décisions éditoriales ne sont pas purgés par cette rétention.
+- **Commandes manuelles** (`POST /api/xiagents/<id>/control`) : pause, reprise
+  (maintenant ou avec rattrapage), « Lancer une veille » (collecte immédiate et
+  autorisation d’1 h), « Relancer l’analyse », « Préparer une publication »
+  (brouillon privé à relire). Elles ne changent jamais le mode et ne publient
+  jamais hors des règles.
+- **Migration / retour arrière** : tables `xiagent_run` et `xiagent_grant`,
+  colonne `watch_job.priority` (ajoutées automatiquement, aussi par
+  `scripts/migrate-auth.ts`). Une version antérieure ignore ces éléments et les
+  clés `schedule`, `pause`, `profile` du fichier de l’agent.
+
+## Scheduler (fonctionnement antérieur)
 
 - Fenêtre 03:00–06:00, Europe/Paris, avec changements d’heure (calcul par
-  `Intl`, testé sur les nuits de mars et d’octobre).
+  `Intl`, testé sur les nuits de mars et d’octobre). Avec un calendrier de
+  publication explicite, les fenêtres suivent ce calendrier
+  (`publication-window:<agent>:<date>@HH:MM`).
 - Chaque agent a un créneau stable dans les 150 premières minutes (hachage de
   son UUID). Le dimanche, un bilan hebdomadaire est planifié 10 minutes après.
 - Chaque passe planifie la prochaine fenêtre des agents actifs, activés et non
@@ -88,7 +154,7 @@ Table `watch_job` de la base applicative (non dérivée du vault : elle n’est 
 supprimée avec les index reconstructibles ; à sauvegarder avec la base).
 
 - `enqueue` est idempotent par clé, pour toute la vie de la tâche.
-- `claim` prend la plus ancienne tâche due en `BEGIN IMMEDIATE`, avec un bail et
+- `claim` prend la tâche due de plus haute priorité vieillie (puis la plus ancienne) en `BEGIN IMMEDIATE`, avec un bail et
   un jeton : un seul processus l’obtient. Le bail est renouvelé pendant
   l’exécution ; un bail expiré (worker mort) rend la tâche reprenable et
   l’ancien détenteur ne peut plus rien écrire.

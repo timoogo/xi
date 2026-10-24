@@ -6,7 +6,8 @@ import type { PublicationStore } from "../publications/store";
 import { migrateWatchCollection, runningAgents } from "./collect";
 import { migrateWatchCandidates, normalizeQuote } from "./evaluate";
 import type { JobQueue } from "./jobs";
-import { inNightWindow, nightWindow, publicationGate, type GateReason } from "./schedule";
+import { publicationGate, type GateReason } from "./schedule";
+import { agentSchedule, localSunday, nextPublishOpening, publishOpen, publishWindow } from "../xiagents/schedule";
 import type { SourceStore } from "./sources";
 import { tokens } from "./stories";
 import type { Handler } from "./worker";
@@ -49,6 +50,12 @@ export function migrateWatchDecisions(db: Database.Database) {
   `);
 }
 
+/** The publish calendar of an agent, as the gate expects it. */
+const windowOf = (agent: WatchAgent, at: number) => {
+  const next = nextPublishOpening(agent, at);
+  return { open: publishOpen(agent, at), next: next === null ? null : new Date(next), sunday: localSunday(agent, at) };
+};
+const outsideWindow = (agent: WatchAgent | undefined) => agent && agentSchedule(agent).explicit ? "Hors du calendrier de publication." : GATE_REASONS["outside-window"];
 const GATE_REASONS: Record<GateReason, string> = {
   "auto-disabled": "Publication automatique désactivée.", inactive: "ΞAgent désactivé.", "invalid-policy": "Configuration de veille illisible.",
   disabled: "Veille désactivée.", paused: "Veille en pause.", "outside-window": "Hors de la fenêtre 3 h–6 h.", "not-weekly-window": "Hors de la fenêtre du dimanche.",
@@ -154,6 +161,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
 
     // Under the cross-process lock: configuration and ceilings re-read at the exact moment.
     let retryAt: number | null = null;
+    const offHours = lane === "immediate" && !publishOpen(agent, now());
     const result = await publications.publishWatchDraft(agent.owner, agentId, draftId, {
       visibility: policy.visibility, revision: data.draft.revision,
       details: { lane, story: storyId, importance: row.importance, decided_by: "watch-auto" },
@@ -162,13 +170,15 @@ export function createPublisher({ db, accounts, sources, publications, settings,
         const block = agentBlock(fresh);
         if (block || !fresh) return block ?? "ΞAgent introuvable.";
         if (fresh.watch.policy.visibility !== policy.visibility) return "Visibilité modifiée pendant la publication : reportée.";
-        const gate = publicationGate({ lane: lane === "immediate" ? "immediate" : "night", now: new Date(now()), autoPublish: true, active: fresh.active, policyValid: fresh.watch.valid, policy: fresh.watch.policy, publishedAt: publications.agentPublications(agentId).filter(p => !p.test).map(p => p.publishedAt) });
-        if (!gate.allowed) { retryAt = gate.retryAt?.getTime() ?? null; return GATE_REASONS[gate.reason]; }
+        const gate = publicationGate({ lane: lane === "immediate" ? "immediate" : "night", now: new Date(now()), autoPublish: true, active: fresh.active, policyValid: fresh.watch.valid, policy: fresh.watch.policy, publishedAt: publications.agentPublications(agentId).filter(p => !p.test).map(p => p.publishedAt), window: windowOf(fresh, now()) });
+        if (!gate.allowed) { retryAt = gate.retryAt?.getTime() ?? null; return gate.reason === "outside-window" ? outsideWindow(fresh) : GATE_REASONS[gate.reason]; }
+        // Outside the publish calendar, only an allowed major event may go out.
+        if (lane === "immediate" && !publishOpen(fresh, now()) && !agentSchedule(fresh).majorEvents.enabled) return "Hors du calendrier de publication et exception pour événement majeur désactivée.";
         if (lane === "immediate" && immediatesSince(agentId, now() - DAY) >= fresh.watch.policy.maxImmediatePerDay) return "Plafond d’alertes immédiates atteint : fenêtre nocturne.";
         return null;
       },
       record: () => db.transaction(() => {
-        decide(agent, { id: `published:${draftId}`, story: storyId, draft: draftId, lane, outcome: "published", reason: `Publication ${policy.visibility === "public" ? "publique" : "privée"} automatique (${lane === "immediate" ? "alerte majeure" : data.weeklySelected ? "bilan hebdomadaire" : "fenêtre nocturne"}).`, visibility: policy.visibility });
+        decide(agent, { id: `published:${draftId}`, story: storyId, draft: draftId, lane, outcome: "published", reason: `Publication ${policy.visibility === "public" ? "publique" : "privée"} automatique (${lane === "immediate" ? "alerte majeure" : data.weeklySelected ? "bilan hebdomadaire" : "fenêtre nocturne"}).${offHours ? ` Hors calendrier de publication : événement majeur (importance ${row.importance ?? "?"} ≥ seuil d’alerte ${policy.alertThreshold}, affirmations établies par plusieurs voix ou une source primaire).` : ""}`, visibility: policy.visibility });
         setCandidate(agentId, storyId, { status: "published", reason: "Publiée automatiquement." });
       })(),
     });
@@ -187,7 +197,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     const agent = (await accounts.watchAgents()).find(item => item.id === agentId);
     const blocked = agentBlock(agent);
     if (blocked) return { status: "done", result: { outcome: "skipped", reason: blocked } };
-    if (!inNightWindow(new Date(now()))) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["outside-window"] } };
+    if (!publishOpen(agent!, now())) return { status: "done", result: { outcome: "skipped", reason: outsideWindow(agent) } };
     const rows = db.prepare<[string], { story_id: string }>("SELECT story_id FROM watch_candidate WHERE agent_id = ? AND status = 'drafted' AND lane IN ('night', 'immediate') ORDER BY importance DESC, updated_at").all(agentId);
     if (!rows.length) return { status: "done", result: { outcome: "no-candidates" } };
     let published = 0;
@@ -195,7 +205,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
       const result = await attempt(agentId, row.story_id, "night");
       if (result.outcome === "published") published++;
       if (result.outcome === "deferred" && result.retryAt) {
-        if (result.retryAt < nightWindow(new Date(now())).end.getTime()) return { status: "wait", until: new Date(result.retryAt), reason: result.reason };
+        if (result.retryAt < (publishWindow(agent!, now())?.end ?? 0)) return { status: "wait", until: new Date(result.retryAt), reason: result.reason };
         break;
       }
     }
@@ -205,6 +215,14 @@ export function createPublisher({ db, accounts, sources, publications, settings,
   /** Immediate alert, outside the window if needed; otherwise it waits for the night window. */
   const alert: Handler = async job => {
     const { agentId, storyId } = job.payload as { agentId: string; storyId: string };
+    const agent = (await accounts.watchAgents()).find(item => item.id === agentId);
+    // Without the major-event exception, an alert only goes out inside the publish calendar.
+    if (agent && !publishOpen(agent, now()) && !agentSchedule(agent).majorEvents.enabled) {
+      const reason = "Hors du calendrier de publication et exception pour événement majeur désactivée : différée au calendrier.";
+      setCandidate(agentId, storyId, { lane: "night", reason: `Alerte différée : ${reason}` });
+      decide(agent, { story: storyId, lane: "immediate", outcome: "deferred", reason, visibility: agent.watch.policy.visibility });
+      return { status: "done", result: { outcome: "deferred", reason } };
+    }
     const result = await attempt(agentId, storyId, "immediate");
     if (result.outcome === "deferred") setCandidate(agentId, storyId, { lane: "night", reason: `Alerte différée : ${result.reason}` });
     return { status: "done", result: { outcome: result.outcome, reason: result.reason } };
@@ -219,8 +237,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     const { agentId } = job.payload as { agentId: string };
     const agent = (await accounts.watchAgents()).find(item => item.id === agentId);
     if (!agent || !runningAgents([agent]).length) return { status: "done", result: { outcome: "skipped", reason: "not-running" } };
-    const window = nightWindow(new Date(now()));
-    if (!window.sunday || !inNightWindow(new Date(now()))) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["not-weekly-window"] } };
+    if (!localSunday(agent, now()) || !publishOpen(agent, now())) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["not-weekly-window"] } };
     await publications.ensureIndexed();
     if (publications.agentPublications(agentId).some(p => !p.test && now() - p.publishedAt.getTime() < 7 * DAY)) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["recent-publication"] } };
     const rows = db.prepare<[string, number, number, number], { story_id: string; importance: number }>(`SELECT story_id, importance FROM watch_candidate WHERE agent_id = ? AND status = 'accepted' AND lane = 'weekly'

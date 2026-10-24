@@ -205,11 +205,11 @@ test("drain: handler outcomes, lease renewal while running, unknown kinds left a
       return { status: "done" };
     },
   } });
-  assert.deepEqual(summary, { done: 2, waiting: 1, retried: 1, failed: 0, lost: 0 });
+  assert.deepEqual(summary, { done: 2, waiting: 1, retried: 1, failed: 0, lost: 0, interrupted: 0, deferred: 0 });
   assert.deepEqual(queue.get("ok")!.result, 42);
   assert.equal(queue.get("wait")!.attempts, 0);
   assert.equal(queue.get("nobody")!.state, "pending");
-  assert.deepEqual(await drainJobs({ queue, handlers: {} }), { done: 0, waiting: 0, retried: 0, failed: 0, lost: 0 });
+  assert.deepEqual(await drainJobs({ queue, handlers: {} }), { done: 0, waiting: 0, retried: 0, failed: 0, lost: 0, interrupted: 0, deferred: 0 });
 });
 
 test("watch policy: owner-only, revisioned, preserved by the configuration form, invalid fails closed", async t => {
@@ -265,7 +265,7 @@ test("tick: plans windows, runs due jobs with the gate, pause and missed windows
   const now = () => clock;
   let autoPublish = false;
   const run = () => tick({ db, accounts, now, handlers: windowHandlers({ db, accounts, sources, publications, settings: { autoPublish, allowPublic: false }, now: () => clock.getTime() }) });
-  const noJobs = { done: 0, waiting: 0, retried: 0, failed: 0, lost: 0, purged: 0, purgedItems: 0 };
+  const noJobs = { done: 0, waiting: 0, retried: 0, failed: 0, lost: 0, interrupted: 0, deferred: 0, resumed: 0, caughtUp: 0, purged: 0, purgedItems: 0, purgedRuns: 0 };
   assert.deepEqual(await run(), { planned: 0, ...noJobs, queue: {} }, "disabled by default");
   const saved = await accounts.setWatchPolicy("alice", agentId, { revision: null, policy: enabled });
   assert.deepEqual(await run(), { planned: 1, ...noJobs, queue: { pending: 1 } });
@@ -279,6 +279,8 @@ test("tick: plans windows, runs due jobs with the gate, pause and missed windows
   };
   const key = `publication-window:${agentId}:2026-01-16`;
   clock = new Date(queue.get(key)!.runAfter);
+  // 15 h without a pass is an outage, but nothing is missed before the agent existed (created at the real
+  // current time, after this simulated date): no catch-up. Catch-up itself: tests/xiagents-orchestrator.test.ts.
   assert.deepEqual(await run(), { planned: 0, ...noJobs, done: 1, queue: { done: 1 } });
   assert.deepEqual(outcome(key), { outcome: "skipped", reason: "Publication automatique désactivée par l’opérateur (XI_WATCH_AUTOPUBLISH)." });
   // Next night, operator flag on but the agent's autonomous mode off, then on: nothing drafted to publish.
@@ -297,18 +299,21 @@ test("tick: plans windows, runs due jobs with the gate, pause and missed windows
   // Saturday → Sunday night also has a weekly review.
   clock = at("2026-01-17T12:00:00Z");
   assert.equal((await run()).planned, 2);
-  // Paused after planning: the jobs run and skip.
+  // Paused after planning: the jobs are suspended (not started, no attempt consumed) until the pause ends.
   void saved;
   await accounts.setWatchPolicy("alice", agentId, { revision: autonomous.revision, policy: { ...enabled, autoPublish: true, paused: true } });
   clock = at("2026-01-18T04:50:00Z");
-  await run();
-  assert.deepEqual(outcome(`publication-window:${agentId}:2026-01-18`), { outcome: "skipped", reason: "Veille en pause." });
-  assert.deepEqual(outcome(`weekly-review:${agentId}:2026-01-18`), { outcome: "skipped", reason: "not-running" });
-  // Missed window (worker down): run once, skipped, not retried; a later window is unaffected.
+  assert.equal((await run()).deferred, 2);
+  assert.equal(queue.get(`publication-window:${agentId}:2026-01-18`)!.state, "pending");
+  assert.equal(queue.get(`publication-window:${agentId}:2026-01-18`)!.attempts, 0);
+  // Resumed after its window: the suspended window runs once, outside the window, and is not replayed.
   const resumed = await accounts.watchPolicy("alice", agentId);
   await accounts.setWatchPolicy("alice", agentId, { revision: resumed.revision, policy: { ...enabled, autoPublish: true } });
   clock = at("2026-01-18T12:00:00Z");
   await run();
+  assert.deepEqual(outcome(`publication-window:${agentId}:2026-01-18`), { outcome: "skipped", reason: "Hors de la fenêtre 3 h–6 h." });
+  assert.deepEqual(outcome(`weekly-review:${agentId}:2026-01-18`), { outcome: "skipped", reason: "Hors de la fenêtre du dimanche." });
+  // Missed window (worker down): run once, skipped, not retried; a later window is unaffected.
   clock = at("2026-01-19T09:00:00Z");
   await run();
   assert.deepEqual(outcome(`publication-window:${agentId}:2026-01-19`), { outcome: "skipped", reason: "Hors de la fenêtre 3 h–6 h." });

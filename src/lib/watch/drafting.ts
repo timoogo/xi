@@ -10,7 +10,7 @@ import { TopicError } from "../topics/types";
 import { runningAgents } from "./collect";
 import { folded, migrateWatchCandidates, normalizeQuote, numbersIn, PROMPT_VERSION } from "./evaluate";
 import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError, type Inference } from "./inference";
-import type { JobQueue } from "./jobs";
+import { PRIORITY, type JobQueue } from "./jobs";
 import { isOfficialUrl } from "./sources";
 import type { Handler } from "./worker";
 
@@ -98,14 +98,27 @@ export function draftId(agentId: string, storyId: string, version: number) {
 }
 
 /** Drafting jobs for accepted candidates of the night and alert lanes (weekly material waits for the review). */
-export function planDrafting(db: Database.Database, queue: JobQueue, agents: WatchAgent[], ready: (agent: WatchAgent) => boolean, now: number) {
+/** Drafting jobs for accepted candidates; off-hours (`major`), only immediate alerts are drafted, at high priority. */
+export function planDrafting(db: Database.Database, queue: JobQueue, agents: WatchAgent[], ready: (agent: WatchAgent) => boolean, now: number, { major = false } = {}) {
   migrateWatchCandidates(db);
   let planned = 0;
   for (const agent of runningAgents(agents).filter(ready)) {
-    const rows = db.prepare<[string], { story_id: string; story_version: number }>("SELECT story_id, story_version FROM watch_candidate WHERE agent_id = ? AND status = 'accepted' AND lane IN ('night', 'immediate')").all(agent.id);
-    for (const row of rows) if (queue.enqueue({ kind: "draft-candidate", key: `draft-candidate:${agent.id}:${row.story_id}:${row.story_version}`, payload: { agentId: agent.id, storyId: row.story_id, version: row.story_version }, runAfter: now, maxAttempts: 3 }).created) planned++;
+    const rows = db.prepare<[string], { story_id: string; story_version: number }>(`SELECT story_id, story_version FROM watch_candidate WHERE agent_id = ? AND status = 'accepted' AND lane IN (${major ? "'immediate'" : "'night', 'immediate'"})`).all(agent.id);
+    for (const row of rows) if (queue.enqueue({ kind: "draft-candidate", key: `draft-candidate:${agent.id}:${row.story_id}:${row.story_version}`, payload: { agentId: agent.id, storyId: row.story_id, version: row.story_version, ...(major ? { trigger: "major-event" } : {}) }, runAfter: now, maxAttempts: 3, priority: major ? PRIORITY.major : PRIORITY.ordinary }).created) planned++;
   }
   return planned;
+}
+
+/**
+ * Manual "prepare a publication from validated information": a private draft for review is written
+ * from an accepted candidate (verified claims only). It is never published by this action.
+ */
+export function prepareDraft(db: Database.Database, queue: JobQueue, agent: WatchAgent, storyId: string, now: number, runId: string) {
+  migrateWatchCandidates(db);
+  const row = db.prepare<[string, string], { status: string; story_version: number }>("SELECT status, story_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agent.id, storyId);
+  if (!row) throw new TopicError("Information introuvable.", 404);
+  if (row.status !== "accepted") throw new TopicError("Seules les informations vérifiées et retenues peuvent préparer une publication.", 409);
+  queue.enqueue({ kind: "draft-candidate", key: `draft-candidate:manual:${runId}`, payload: { agentId: agent.id, storyId, version: row.story_version, trigger: "manual" }, runAfter: now, maxAttempts: 3, priority: PRIORITY.manual });
 }
 
 type CandidateRow = { story_id: string; story_version: number; status: string; lane: string | null; topic_id: string | null; relevance: number | null; novelty: number | null; importance: number | null; related_publication_id: string | null; data: string; prompt_version: string };
@@ -158,6 +171,9 @@ export function draftHandler({ db, accounts, topics, publications, inference, de
           const output = await askJson(inference, { model, system: SYSTEM, prompt: [
             `Tu rédiges pour le ΞAgent « ${account.name} » (@${account.handle}). Sujet : ${topic?.name ?? "sujet"} — ${topic?.scope ?? ""}`,
             `Charte : ${CHARTER}`,
+            // The agent's own perimeter and charter, when its owner wrote them; they never relax the common charter.
+            agent.profile?.charter ? `Charte propre au ΞAgent (en plus de la charte commune) : ${agent.profile.charter}` : "",
+            agent.profile?.perimeter ? `Périmètre éditorial du ΞAgent : ${agent.profile.perimeter}` : "",
             settings ? `Style : ton ${settings.tone} ; structure ${settings.structure} ; profondeur ${settings.depth} ; public ${settings.audience}.` : "",
             `Affirmations vérifiées, seule matière autorisée :\n${usable.map(describeClaim).join("\n")}`,
             "Règles : une seule actualité. N’ajoute aucun fait, chiffre, nom, date, citation ou URL absent de ces affirmations ; n’utilise pas tes connaissances. Les déclarations restent attribuées (« selon… », « a déclaré… ») ; hypothèses et interprétations restent présentées comme telles. Post (un message) par défaut ; thread de 2 à 10 messages seulement si au moins trois affirmations distinctes justifient un approfondissement : chaque message apporte au moins une affirmation nouvelle, jamais plus de messages que d’affirmations. Markdown simple, sans lien ni section « Sources » : Ξ les ajoute. Chaque message liste les affirmations qu’il utilise.",

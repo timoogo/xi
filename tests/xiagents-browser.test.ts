@@ -164,8 +164,10 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   await watch.getByRole("button", { name: "Enregistrer les paramètres" }).click();
   await watch.getByRole("status").filter({ hasText: "Paramètres de veille enregistrés." }).waitFor();
   await watch.getByText("Active", { exact: true }).waitFor();
-  await watch.getByRole("button", { name: "Mettre la veille en pause" }).click();
-  await watch.getByRole("status").filter({ hasText: "Veille mise en pause." }).waitFor();
+  // Pause lives in the Pilotage section (pause details and resume choice recorded).
+  const control = page.getByRole("region", { name: "Pilotage" });
+  await control.getByRole("button", { name: "Mettre en pause" }).click();
+  await control.getByRole("status").filter({ hasText: "Pause indéfinie." }).waitFor();
   await watch.getByText("En pause", { exact: true }).waitFor();
   assert.deepEqual((await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json()).policy, { enabled: true, paused: true, maxPerDay: 2, minIntervalMinutes: 240, testMaxPerDay: 10, alertThreshold: 0.85, nightThreshold: 0.45, autoPublish: false, visibility: "private", maxImmediatePerDay: 1 });
   // Autonomous public mode: its own confirmation, saving is impossible without it.

@@ -5,9 +5,10 @@ import type { AccountStore } from "../accounts/store";
 import type { WatchAgent, WatchPolicy } from "../accounts/types";
 import type { PublicationStore } from "../publications/store";
 import type { TopicStore } from "../topics/store";
+import { TopicError } from "../topics/types";
 import { runningAgents } from "./collect";
 import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError, type Inference } from "./inference";
-import type { JobQueue } from "./jobs";
+import { PRIORITY, type JobQueue } from "./jobs";
 import { publicationGate } from "./schedule";
 import { isOfficialUrl, type SourceStore } from "./sources";
 import { EVENT_THRESHOLD, eventSimilarity, mergeStories, migrateWatchItems, signature, tokens } from "./stories";
@@ -239,21 +240,51 @@ const data = (row: CandidateRow | null): StageData => (row ? JSON.parse(row.data
 
 // ---------------------------------------------------------------- planning
 
+/**
+ * Light off-hours detection (major events): only stories seen in the last hours and already carried
+ * by several independent voices are evaluated, a few per agent and hour, at high priority. The
+ * importance threshold, verification and alert ceilings of the evaluation still decide.
+ */
+export const MAJOR_SIGNAL = { recentMs: 6 * HOUR, minIndependent: 2, perHour: 3 };
+
 /** Evaluation jobs for recent stories of each running agent's topics: new ones, and held or accepted ones that grew. */
-export function planEvaluation(db: Database.Database, queue: JobQueue, agents: WatchAgent[], ready: (agent: WatchAgent) => boolean, now: number) {
+export function planEvaluation(db: Database.Database, queue: JobQueue, agents: WatchAgent[], ready: (agent: WatchAgent) => boolean, now: number,
+  { major = false, grants }: { major?: boolean; grants?: Map<string, { kind: "catch-up" | "manual" }> } = {}) {
   migrateWatchCandidates(db);
   let planned = 0;
   for (const agent of runningAgents(agents).filter(ready)) {
     const topics = new Set([agent.primaryTopicId, ...agent.secondaryTopicIds]);
-    const stories = db.prepare<[string, number], { id: string; item_count: number; topic_ids: string }>("SELECT id, item_count, topic_ids FROM watch_story WHERE owner = ? AND last_seen_at >= ?").all(agent.owner, now - RECENT_MS);
+    let budget = major ? MAJOR_SIGNAL.perHour - (db.prepare("SELECT count(*) AS n FROM watch_job WHERE kind = 'evaluate-story' AND json_extract(payload, '$.agentId') = ? AND json_extract(payload, '$.trigger') = 'major-event' AND created_at > ?").get(agent.id, now - HOUR) as { n: number }).n : Infinity;
+    const stories = db.prepare<[string, number, number], { id: string; item_count: number; topic_ids: string }>("SELECT id, item_count, topic_ids FROM watch_story WHERE owner = ? AND last_seen_at >= ? AND independent_count >= ? ORDER BY independent_count DESC, last_seen_at DESC")
+      .all(agent.owner, now - (major ? MAJOR_SIGNAL.recentMs : RECENT_MS), major ? MAJOR_SIGNAL.minIndependent : 0);
+    const trigger = major ? "major-event" : grants?.get(agent.id)?.kind;
     for (const story of stories) {
+      if (budget <= 0) break;
       if (!(JSON.parse(story.topic_ids) as string[]).some(topic => topics.has(topic))) continue;
       const existing = db.prepare<[string, string], { story_version: number; status: string }>("SELECT story_version, status FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agent.id, story.id);
       if (existing && (existing.story_version === story.item_count || !["held", "accepted", "evaluating"].includes(existing.status))) continue;
-      if (queue.enqueue({ kind: "evaluate-story", key: `evaluate-story:${agent.id}:${story.id}:${story.item_count}`, payload: { agentId: agent.id, storyId: story.id, version: story.item_count }, runAfter: now, maxAttempts: 3 }).created) planned++;
+      if (queue.enqueue({ kind: "evaluate-story", key: `evaluate-story:${agent.id}:${story.id}:${story.item_count}`, payload: { agentId: agent.id, storyId: story.id, version: story.item_count, ...(trigger ? { trigger } : {}) }, runAfter: now, maxAttempts: 3, priority: major ? PRIORITY.major : PRIORITY.ordinary }).created) { planned++; budget--; }
     }
   }
   return planned;
+}
+
+/**
+ * Manual "relaunch an analysis": a candidate is evaluated again from its first stage (previous
+ * stages are cleared; the run history keeps what they concluded). Published candidates are final.
+ */
+export function relaunchEvaluation(db: Database.Database, queue: JobQueue, agent: WatchAgent, storyId: string, now: number, runId: string) {
+  migrateWatchCandidates(db);
+  const row = db.prepare<[string, string], { status: string; reason: string | null; story_version: number }>("SELECT status, reason, story_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agent.id, storyId);
+  if (!row) throw new TopicError("Analyse introuvable.", 404);
+  if (["published", "drafted", "evaluating"].includes(row.status)) throw new TopicError("Cette analyse ne peut pas être relancée dans son état actuel.", 409);
+  const story = db.prepare<[string, string], { item_count: number }>("SELECT item_count FROM watch_story WHERE id = ? AND owner = ?").get(storyId, agent.owner);
+  if (!story) throw new TopicError("Actualité expirée : analyse impossible à relancer.", 409);
+  db.prepare("UPDATE watch_candidate SET status = 'evaluating', stage = 'relevance', lane = NULL, data = json_object('title', json_extract(data, '$.title')), reason = ?, updated_at = ? WHERE agent_id = ? AND story_id = ?")
+    .run("Analyse relancée manuellement.", now, agent.id, storyId);
+  db.prepare("DELETE FROM watch_claim WHERE agent_id = ? AND story_id = ?").run(agent.id, storyId);
+  queue.enqueue({ kind: "evaluate-story", key: `evaluate-story:manual:${runId}`, payload: { agentId: agent.id, storyId, version: story.item_count, trigger: "manual" }, runAfter: now, maxAttempts: 3, priority: PRIORITY.manual });
+  return { previous: { status: row.status, reason: row.reason } };
 }
 
 /** Candidates and claims are kept 30 days after their last update. */
@@ -319,7 +350,7 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, i
       const catalog = await topics.list();
       const agentTopics = [agent.primaryTopicId, ...agent.secondaryTopicIds].map(id => catalog.find(topic => topic.id === id)).filter(topic => !!topic);
       if (!stages.relevance) {
-        const answer = await ask(`Périmètre du ΞAgent (un topic par ligne) :\n${agentTopics.map((topic, i) => `[T${i + 1}] ${topic.tag} — ${topic.name} : ${topic.scope}`).join("\n")}\n\nActualité :\n${render(evidence)}\n\nÉvalue l’adéquation de cette actualité au périmètre (pas sa popularité). Choisis au plus UN topic, celui qui correspond le mieux ; signale les aspects hors périmètre.\nFormat : {"relevant": booléen, "score": nombre de 0 à 1, "topic": "T1" ou null, "justification": "…", "outOfScope": ["…"]}`, relevanceSchema);
+        const answer = await ask(`${agent.profile?.perimeter ? `Périmètre éditorial défini par le propriétaire : ${agent.profile.perimeter}\n\n` : ""}Périmètre du ΞAgent (un topic par ligne) :\n${agentTopics.map((topic, i) => `[T${i + 1}] ${topic.tag} — ${topic.name} : ${topic.scope}`).join("\n")}\n\nActualité :\n${render(evidence)}\n\nÉvalue l’adéquation de cette actualité au périmètre (pas sa popularité). Choisis au plus UN topic, celui qui correspond le mieux ; signale les aspects hors périmètre.\nFormat : {"relevant": booléen, "score": nombre de 0 à 1, "topic": "T1" ou null, "justification": "…", "outOfScope": ["…"]}`, relevanceSchema);
         const index = answer.topic && /^T\d+$/.test(answer.topic) ? Number(answer.topic.slice(1)) - 1 : -1;
         stages.relevance = { ...answer, topicId: agentTopics[index]?.id ?? null };
         save("merge", { relevance: answer.score, topic_id: stages.relevance.topicId });

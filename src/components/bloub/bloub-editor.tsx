@@ -3,6 +3,7 @@
 import { BloubBot, EXPRESSIONS, MAX_BLOCK, POSES, SEQUENCE, SHAPES, STEP, clampDuration, defaultCycle, makeBlock, minDurationOf, totalDuration, type Block, type StateId } from "bloub-react";
 import { useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { COLOR_LABELS, READABLE_COLORS } from "@/lib/bloub/colors";
 import { OPEN_EYES_AT } from "@/lib/bloub/state-mapping";
 import { BLOUB_ACTIVITIES, type BloubActivity, type BloubConfig } from "@/lib/bloub/types";
 import { BLOUB_EYES } from "./bloub-avatar";
@@ -26,7 +27,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
  * Studio-style editor of a Bloub appearance: shape, expression, activity
  * preview, demo sequences, playback, pointer follow and SVG export. Only
  * `value` / `onChange` are persisted by the host; everything else is a preview.
- * Colour is part of the configuration but intentionally not editable yet.
+ * Colours are limited to those keeping the white eyes readable (see lib/bloub/colors.ts).
  */
 export function BloubEditor({ value, onChange, name }: { value: BloubConfig; onChange: (value: BloubConfig) => void; name: string }) {
   const [activity, setActivity] = useState<BloubActivity>("idle");
@@ -90,6 +91,11 @@ export function BloubEditor({ value, onChange, name }: { value: BloubConfig; onC
     <Group title="Forme">
       {SHAPES.map(shape => <Tile key={shape.id} label={SHAPE_LABELS[shape.id]} pressed={value.shape === shape.id} onClick={() => update({ shape: shape.id })}>
         {thumb({ shape: shape.id, expression: value.expression, color: value.color })}
+      </Tile>)}
+    </Group>
+    <Group title="Couleur">
+      {[...READABLE_COLORS, ...(READABLE_COLORS.some(color => color.id === value.color) ? [] : [{ id: value.color, hex: "" }])].map(color => <Tile key={color.id} label={`${COLOR_LABELS[color.id]}${color.id === "encre" ? " (par défaut)" : ""}${color.hex ? "" : " (actuelle, peu contrastée)"}`} pressed={value.color === color.id} onClick={() => update({ color: color.id })}>
+        {thumb({ shape: value.shape, expression: value.expression, color: color.id })}
       </Tile>)}
     </Group>
     <Group title="Expression">

@@ -9,13 +9,13 @@ import type Database from "better-sqlite3";
  */
 export type JobState = "pending" | "running" | "done" | "failed";
 export type Job = {
-  id: string; kind: string; key: string; payload: unknown; state: JobState;
+  id: string; kind: string; key: string; payload: unknown; state: JobState; priority?: number;
   runAfter: number; attempts: number; maxAttempts: number;
   leaseToken: string | null; leaseUntil: number | null;
   lastError: string | null; result: unknown; createdAt: number; updatedAt: number;
 };
 type Row = {
-  id: string; kind: string; key: string; payload: string; state: JobState; run_after: number; attempts: number; max_attempts: number;
+  id: string; kind: string; key: string; payload: string; state: JobState; priority: number; run_after: number; attempts: number; max_attempts: number;
   lease_token: string | null; lease_until: number | null; last_error: string | null; result: string | null; created_at: number; updated_at: number;
 };
 
@@ -39,10 +39,25 @@ export function migrateWatchJobs(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS watch_job_due ON watch_job (state, run_after);
   `);
+  // Additive: older rows (and older binaries, which ignore the column) keep priority 0.
+  if (!db.prepare<[], { name: string }>("SELECT name FROM pragma_table_info('watch_job')").all().some(column => column.name === "priority")) {
+    db.exec("ALTER TABLE watch_job ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
+/** Ordinary work: 0. Manual runs: 5. Major events: 10. */
+export const PRIORITY = { ordinary: 0, manual: 5, major: 10 } as const;
+/**
+ * Anti-starvation: a due job gains one priority point per AGING_MS of waiting (capped), so an
+ * ordinary job waiting an hour ranks with a fresh major event and then passes by age.
+ */
+export const AGING_MS = 6 * 60_000;
+const MAX_AGING = 20;
+/** At most `max` jobs of these kinds may hold a live lease at once, across every process. */
+export type ConcurrencyLimit = { kinds: readonly string[]; max: number };
+
 const toJob = (row: Row): Job => ({
-  id: row.id, kind: row.kind, key: row.key, payload: JSON.parse(row.payload), state: row.state,
+  id: row.id, kind: row.kind, key: row.key, payload: JSON.parse(row.payload), state: row.state, priority: row.priority ?? 0,
   runAfter: row.run_after, attempts: row.attempts, maxAttempts: row.max_attempts,
   leaseToken: row.lease_token, leaseUntil: row.lease_until, lastError: row.last_error,
   result: row.result === null ? null : JSON.parse(row.result), createdAt: row.created_at, updatedAt: row.updated_at,
@@ -57,12 +72,17 @@ const describe = (error: unknown) => (error instanceof Error ? `${error.name}: $
 export function createJobQueue(db: Database.Database, now: () => number = Date.now) {
   migrateWatchJobs(db);
 
-  /** Idempotent: the key identifies the job for its whole life, even once done or failed. */
-  function enqueue(input: { kind: string; key: string; payload: unknown; runAfter?: number; maxAttempts?: number }) {
+  /**
+   * Idempotent: the key identifies the job for its whole life, even once done or failed.
+   * Re-planning a pending job with a higher priority raises it (an ordinary job found to be a major event).
+   */
+  function enqueue(input: { kind: string; key: string; payload: unknown; runAfter?: number; maxAttempts?: number; priority?: number }) {
     const at = now();
-    const inserted = db.prepare(`INSERT INTO watch_job (id, kind, key, payload, state, run_after, max_attempts, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING`)
-      .run(randomUUID(), input.kind, input.key, JSON.stringify(input.payload ?? null), input.runAfter ?? at, input.maxAttempts ?? 5, at, at).changes === 1;
+    const priority = input.priority ?? PRIORITY.ordinary;
+    const inserted = db.prepare(`INSERT INTO watch_job (id, kind, key, payload, state, run_after, max_attempts, created_at, updated_at, priority)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING`)
+      .run(randomUUID(), input.kind, input.key, JSON.stringify(input.payload ?? null), input.runAfter ?? at, input.maxAttempts ?? 5, at, at, priority).changes === 1;
+    if (!inserted && priority > PRIORITY.ordinary) db.prepare("UPDATE watch_job SET priority = ?, updated_at = ? WHERE key = ? AND state = 'pending' AND priority < ?").run(priority, at, input.key, priority);
     const job = get(input.key)!;
     if (job.kind !== input.kind) throw new Error("Job key already used by another kind.");
     return { job, created: inserted };
@@ -73,14 +93,22 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
     return row ? toJob(row) : null;
   }
 
-  /** Claims the oldest due job of the given kinds. BEGIN IMMEDIATE: one claimer at a time across processes. */
-  const claimTransaction = db.transaction((kinds: string[], leaseMs: number) => {
+  /**
+   * Claims the due job of the given kinds with the highest aged priority (oldest first on ties).
+   * Kinds whose concurrency limit is reached are skipped. BEGIN IMMEDIATE: one claimer at a time across processes.
+   */
+  const claimTransaction = db.transaction((wanted: string[], leaseMs: number, limits: readonly ConcurrencyLimit[]) => {
     const at = now();
+    const running = (kinds: readonly string[]) => (db.prepare<unknown[], { n: number }>(`SELECT count(*) AS n FROM watch_job WHERE state = 'running' AND lease_until > ? AND kind IN (${kinds.map(() => "?").join(", ")})`).get(at, ...kinds)!).n;
+    const full = new Set(limits.filter(limit => limit.kinds.length && running(limit.kinds) >= limit.max).flatMap(limit => limit.kinds));
+    const kinds = wanted.filter(kind => !full.has(kind));
+    if (!kinds.length) return null;
     const placeholders = kinds.map(() => "?").join(", ");
     const due = db.prepare<unknown[], Row>(`SELECT * FROM watch_job WHERE kind IN (${placeholders})
-      AND ((state = 'pending' AND run_after <= ?) OR (state = 'running' AND lease_until <= ?)) ORDER BY run_after, created_at, rowid LIMIT 1`);
+      AND ((state = 'pending' AND run_after <= ?) OR (state = 'running' AND lease_until <= ?))
+      ORDER BY priority + min((? - run_after) / ${AGING_MS}, ${MAX_AGING}) DESC, run_after, created_at, rowid LIMIT 1`);
     for (;;) {
-      const row = due.get(...kinds, at, at);
+      const row = due.get(...kinds, at, at, at);
       if (!row) return null;
       // A job whose holder kept crashing has used its attempts: stop instead of looping forever.
       if (row.state === "running" && row.attempts >= row.max_attempts) {
@@ -94,9 +122,9 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
       return toJob(db.prepare<[string], Row>("SELECT * FROM watch_job WHERE id = ?").get(row.id)!);
     }
   });
-  function claim(kinds: string[], leaseMs: number): Job | null {
+  function claim(kinds: string[], leaseMs: number, limits: readonly ConcurrencyLimit[] = []): Job | null {
     if (!kinds.length) return null;
-    return claimTransaction.immediate(kinds, leaseMs);
+    return claimTransaction.immediate(kinds, leaseMs, limits);
   }
 
   /** Every transition below requires the current lease: false means the lease was lost. */
@@ -113,9 +141,10 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
     return db.prepare(`UPDATE watch_job SET state = 'pending', attempts = attempts - 1, run_after = @until, last_error = @reason, lease_token = NULL, lease_until = NULL, updated_at = @at ${held}`)
       .run({ id: job.id, token: job.leaseToken, until, reason: reason.slice(0, 500), at: now() }).changes === 1;
   }
-  function fail(job: Job, error: unknown) {
+  /** A permanent error (invalid data, refused configuration) is final at once: never retried in a loop. */
+  function fail(job: Job, error: unknown, { permanent = false } = {}) {
     const at = now();
-    const final = job.attempts >= job.maxAttempts;
+    const final = permanent || job.attempts >= job.maxAttempts;
     return db.prepare(`UPDATE watch_job SET state = @state, run_after = @runAfter, last_error = @error, lease_token = NULL, lease_until = NULL, updated_at = @at ${held}`)
       .run({ id: job.id, token: job.leaseToken, state: final ? "failed" : "pending", runAfter: final ? job.runAfter : at + retryDelay(job.attempts), error: describe(error), at }).changes === 1;
   }

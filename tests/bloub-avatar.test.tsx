@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { BloubBot, EXPRESSIONS, SHAPES } from "bloub-react";
 import { BloubAvatar } from "../src/components/bloub/bloub-avatar";
+import { READABLE_COLORS } from "../src/lib/bloub/colors";
 import { BloubEditor } from "../src/components/bloub/bloub-editor";
 import { EXPRESSION_LABELS, SHAPE_LABELS } from "../src/components/bloub/labels";
 import { UserAvatar } from "../src/components/user-avatar";
@@ -75,9 +76,11 @@ test("editor exposes the library catalogs, the four states and accessible contro
   const html = renderToStaticMarkup(<BloubEditor value={DEFAULT_BLOUB_CONFIG} onChange={() => {}} name="Veilleur" />);
   for (const shape of SHAPES) assert.ok(html.includes(`aria-label="${SHAPE_LABELS[shape.id]}"`), shape.id);
   for (const expression of EXPRESSIONS) assert.ok(html.includes(`aria-label="${EXPRESSION_LABELS[expression.id]}"`), expression.id);
-  assert.equal((html.match(/<button[^>]*aria-pressed="true"[^>]*title=/g) ?? []).length, 2, "selected shape and expression");
-  assert.equal((html.match(/title="/g) ?? []).length, SHAPES.length + EXPRESSIONS.length);
+  assert.equal((html.match(/<button[^>]*aria-pressed="true"[^>]*title=/g) ?? []).length, 3, "selected shape, colour and expression");
+  assert.equal((html.match(/title="/g) ?? []).length, SHAPES.length + EXPRESSIONS.length + READABLE_COLORS.length);
   for (const label of ["En veille", "Disponible", "Au travail", "Indisponible", "Suivre le curseur", "Exporter l’image (SVG)", "Séquence de démonstration"]) assert.ok(html.includes(label), label);
   assert.match(html, /aria-label="Aperçu de l’avatar de Veilleur"/);
-  assert.doesNotMatch(html, /couleur/i, "no colour picker in the MVP");
+  // Colour (P2): only colours keeping the white eyes readable, black by default.
+  assert.match(html, /aria-label="Encre \(par défaut\)" aria-pressed="true"/);
+  assert.doesNotMatch(html, /aria-label="Crème"|aria-label="Gris"/);
 });

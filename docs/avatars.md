@@ -26,7 +26,7 @@ validée contre les catalogues de `bloub-react`, stockée sous la clé `bloub` d
 sans clé (ou avec une valeur illisible) s’affiche avec la configuration par
 défaut. `GET`/`PATCH /api/xiagents/<id>/avatar` : propriétaire uniquement
 (404 sinon), Origin exact, révision optimiste (409), champs inconnus refusés.
-La couleur fait partie du format mais n’est pas éditable dans l’interface.
+La couleur est éditable dans l’éditeur, limitée aux teintes qui gardent les yeux blancs lisibles (contraste ≥ 3:1 : encre, brun, rouge, bleu, violet, rose ; `src/lib/bloub/colors.ts`). Encre (noir) reste la couleur par défaut ; une couleur déjà enregistrée hors de cette liste est conservée et signalée.
 
 Un avatar affiché comme identité (profils, publications, conversations, graphe,
 listes d’agents, en-tête et éditeur de la page de gestion) est toujours neutre

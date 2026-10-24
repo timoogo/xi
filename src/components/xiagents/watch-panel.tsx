@@ -174,7 +174,7 @@ function PolicyForm({ agentId, watch, busy, act }: { agentId: string; watch: Wat
         </fieldset>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" disabled={needsConfirmation && !confirmPublic}>Enregistrer les paramètres</Button>
-          <Button type="button" variant="outline" onClick={() => void save({ ...watch.policy, paused: !watch.policy.paused }, watch.policy.paused ? "Veille reprise." : "Veille mise en pause.")}>{watch.policy.paused ? "Reprendre la veille" : "Mettre la veille en pause"}</Button>
+          <a href="#xiagent-control" className="inline-flex items-center px-2 text-sm underline">Pause et reprise : section Pilotage</a>
         </div>
       </fieldset>
     </form>

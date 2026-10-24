@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { GENERATOR_SLUG } from "../graph/types";
 import type { Step, RunEvent } from "../topics/types";
+import type { Pause, ResolvedSchedule } from "../xiagents/schedule";
 
 export const CHARTER = "Transparence, traçabilité des sources, distinction entre faits et interprétations, respect du scope du topic principal.";
 export const settingsSchema = z.object({
@@ -43,7 +44,14 @@ export type WatchPolicy = z.infer<typeof watchPolicySchema>;
 export const DEFAULT_WATCH_POLICY: WatchPolicy = { enabled: false, paused: false, maxPerDay: 3, minIntervalMinutes: 240, testMaxPerDay: 10, alertThreshold: 0.85, nightThreshold: 0.45, autoPublish: false, visibility: "private", maxImmediatePerDay: 1 };
 /** `valid: false` means an unreadable `watch` key: the agent stays disabled until its owner rewrites it. */
 export type WatchSettings = { policy: WatchPolicy; revision: string | null; valid: boolean; publicConfirmedAt: string | null };
-export type WatchAgent = { id: string; handle: string; owner: string; active: boolean; primaryTopicId: string; secondaryTopicIds: string[]; modelRef: string | null; watch: WatchSettings };
+/**
+ * Agent-specific editorial perimeter and charter: top-level `profile` key of the generator file
+ * (outside `editorial`, whose strict schema older versions still read). The common CHARTER applies too.
+ */
+export const profileSchema = z.object({ perimeter: z.string().trim().max(4000), charter: z.string().trim().max(4000) }).strict();
+export type Profile = z.infer<typeof profileSchema>;
+/** `schedule`, `pause` and `profile` are absent from fixtures built before calendars: readers fall back to the legacy behaviour. */
+export type WatchAgent = { id: string; handle: string; owner: string; active: boolean; primaryTopicId: string; secondaryTopicIds: string[]; modelRef: string | null; watch: WatchSettings; schedule?: ResolvedSchedule; pause?: Pause | null; profile?: Profile | null; createdAt?: string | null };
 export const presetSchema =z.object({ id: z.string().min(1).max(100), version: z.number().int().positive(), name: z.string().trim().min(1).max(160), settings: settingsSchema, owner: z.string().nullable(), createdAt: z.iso.datetime() });
 export type Settings = z.infer<typeof settingsSchema>;
 export type AccountDraft = z.infer<typeof accountDraftSchema>;

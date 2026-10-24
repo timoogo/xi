@@ -51,7 +51,7 @@ async function main() {
     const handlers = engineHandlers({ db, accounts, topics, publications, sources, fetch, inference, defaultModel, settings, now });
     const canEvaluate = (agent: { modelRef: string | null }) => !!inference && !!(agent.modelRef ?? defaultModel);
     // Leave room before the next timer run; leases cover a pass that overruns anyway.
-    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, canEvaluate, now, deadline: Date.now() + 8 * 60_000 })));
+    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, canEvaluate, now, deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency: positive(process.env.XI_INFERENCE_CONCURRENCY, 1) })));
   } finally {
     db.close();
   }
@@ -67,3 +67,9 @@ main().catch((error) => {
   } catch { /* nothing more to report */ }
   process.exitCode = 1;
 });
+
+/** Bounded positive integer from the environment (1–16), else the default. */
+function positive(value: string | undefined, fallback: number) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 && number <= 16 ? number : fallback;
+}

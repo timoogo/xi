@@ -7,16 +7,18 @@ import { createPoliteFetch, createSafeFetch, type PoliteFetch } from "./net";
 import { createSourceStore, type SourceStore } from "./sources";
 
 type WatchServices = { sources: SourceStore; fetch: PoliteFetch };
-const singleton = globalThis as typeof globalThis & { xiWatch?: Promise<WatchServices>; xiWatchFactory?: typeof createSourceStore };
+const singleton = globalThis as typeof globalThis & { xiWatch?: Promise<WatchServices>; xiWatchFactory?: typeof createSourceStore; xiWatchTopics?: unknown };
 
 /** Web-side services; the worker builds its own with the same factories. */
 export function getWatchServices() {
   // Next dev reloads modules but keeps globalThis: never reuse closures of an older implementation.
-  if (process.env.NODE_ENV !== "production" && singleton.xiWatchFactory !== createSourceStore) {
+  const topics = getTopicStore();
+  if (process.env.NODE_ENV !== "production" && (singleton.xiWatchFactory !== createSourceStore || singleton.xiWatchTopics !== topics)) {
     singleton.xiWatch = undefined;
     singleton.xiWatchFactory = createSourceStore;
+    singleton.xiWatchTopics = topics;
   }
-  singleton.xiWatch ??= Promise.all([openVault(vaultPathFromEnv()), getTopicStore()])
+  singleton.xiWatch ??= Promise.all([openVault(vaultPathFromEnv()), topics])
     .then(([vault, topics]) => ({ sources: createSourceStore({ vault, topics }), fetch: createPoliteFetch({ db: getAppDatabase(), fetch: createSafeFetch() }) }))
     .catch(error => { singleton.xiWatch = undefined; throw error; });
   return singleton.xiWatch;

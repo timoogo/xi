@@ -283,7 +283,34 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       await recover(); index(await all()); return topic;
     });
   }
-  return { list, reindex: list, propose, proposeParent, confirm, resume, cancel, update,
+  /**
+   * Direct creation with a preallocated UUID, for a confirmed ΞAgent deployment: same validation,
+   * Markdown, index and routing as a confirmed run. Idempotent: a retry finds the topic already
+   * written by this owner. A tag reserved by another topic is refused with its id.
+   */
+  async function create(owner: string, id: string, input: unknown) {
+    uuid(id);
+    const draft = draftSchema.parse(input);
+    return exclusive(async () => {
+      const topics = await all();
+      const existing = topics.find(t => t.id === id);
+      if (existing) {
+        if (existing.createdBy !== owner) throw new TopicError("Identifiant de topic déjà réservé.", 409);
+        return { topic: existing, created: false };
+      }
+      const collision = topics.find(t => t.tag === draft.tag || t.aliases.includes(draft.tag));
+      if (collision) throw new TopicError(`Tag déjà réservé par le topic « ${collision.name} » (${collision.id}) : sélectionnez-le plutôt que de le recréer.`, 409);
+      const at = new Date().toISOString();
+      const topic: Topic = { ...draft, id, aliases: [], createdBy: owner, updatedBy: owner, createdAt: at, updatedAt: at, revision: randomUUID() };
+      validateTopics([...topics, topic]);
+      await writeAtomic(join(directory, `${topic.id}.md`), encode(topic));
+      const saved = await all();
+      index(saved, false);
+      refreshRouting(saved);
+      return { topic, created: true };
+    });
+  }
+  return { list, reindex: list, propose, proposeParent, confirm, resume, cancel, update, create,
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },
     route: async (intent: string, correction?: { primaryId: string; secondaryIds: string[] }) => {
       return routeRequest(intentSchema.parse(intent), await list(), correction);

@@ -11,7 +11,9 @@ import { TopicError } from "../topics/types";
 import type { TopicStore } from "../topics/store";
 import { bloubConfigSchema } from "../bloub/config";
 import { readAgentBloub, type AgentBloubSettings } from "../xiagents/avatar";
-import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type WatchAgent, type WatchSettings } from "./types";
+import { agentPins, migrateAgentPins, setAgentPin } from "../xiagents/pins";
+import { pauseSchema, readSchedule, scheduleSchema, type Pause, type ResolvedSchedule } from "../xiagents/schedule";
+import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, profileSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type Profile, type WatchAgent, type WatchSettings } from "./types";
 
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
 function decode(text: string) { const match = /^---\n([\s\S]*?)\n---\n/.exec(text); if (!match) throw new TopicError("Markdown invalide."); return parse(match[1]); }
@@ -23,6 +25,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
   const presetsPath = join(privateDir, "presets.md");
   const journal = join(privateDir, "pending.md");
   db.exec("CREATE TABLE IF NOT EXISTS editorial_account_index (id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, data TEXT NOT NULL)");
+  migrateAgentPins(db);
   async function safe(path: string) { if (await assertWithin(vault.root, path) !== path) throw new TopicError("Lien symbolique interdit."); }
   async function read(path: string) { await safe(path); return readFile(path, "utf8"); }
   async function prepare() {
@@ -237,11 +240,147 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
     return exclusive(async () => (await all()).flatMap(entry => entry.account.editorial ? [{
       id: entry.account.id, handle: entry.account.handle, owner: entry.account.owner, active: entry.account.editorial.active,
       primaryTopicId: entry.account.editorial.primaryTopicId, secondaryTopicIds: entry.account.editorial.secondaryTopicIds, modelRef: entry.account.editorial.modelRef, watch: watchOf(entry),
+      schedule: scheduleOf(entry), pause: pauseOf(entry), profile: profileOf(entry), createdAt: entry.account.createdAt,
     }] : []));
   }
-  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents, setAvatar,
+
+  const raw = (entry: Entry) => entry.parsed.doc.toJS() as Record<string, unknown>;
+  const persist = (entry: Entry) => writeAtomic(entry.path, serializeGenerator(entry.parsed.generator, entry.parsed.description, entry.parsed.doc));
+  const scheduleOf = (entry: Entry): ResolvedSchedule => readSchedule(raw(entry).schedule);
+  /** Pause details only matter while the watch is paused (older writers toggle `watch.paused` alone). */
+  function pauseOf(entry: Entry): Pause | null {
+    if (!watchOf(entry).policy.paused) return null;
+    const parsed = pauseSchema.safeParse(raw(entry).pause);
+    return parsed.success ? parsed.data : null;
+  }
+  function profileOf(entry: Entry): Profile | null {
+    const parsed = profileSchema.strip().safeParse(raw(entry).profile);
+    return parsed.success ? parsed.data : null;
+  }
+  /** Writes the watch key with a new revision, keeping the public confirmation as recorded. */
+  function setWatch(entry: Entry, owner: string, patch: Partial<WatchSettings["policy"]>) {
+    const current = watchOf(entry);
+    if (!current.valid) throw new TopicError("Configuration de veille illisible : réenregistrez-la depuis la page du ΞAgent.", 409);
+    const stored = (raw(entry).watch ?? {}) as { publicConfirmedBy?: string | null };
+    const revision = randomUUID();
+    entry.parsed.doc.set("watch", { ...current.policy, ...patch, revision, updatedAt: new Date().toISOString(), updatedBy: owner, publicConfirmedAt: current.publicConfirmedAt, publicConfirmedBy: current.publicConfirmedAt ? stored.publicConfirmedBy ?? owner : null });
+    return revision;
+  }
+
+  /**
+   * Creation with a preallocated id (deployments): idempotent. A retry finds the agent and only
+   * completes what an interruption left missing; another owner's id or a different handle is refused.
+   */
+  async function createAgent(owner: string, id: string, input: unknown) {
+    z.uuid().parse(id);
+    const data = z.object({ draft: accountDraftSchema, profile: profileSchema, bloub: bloubConfigSchema }).strict().parse(input);
+    return exclusive(async () => {
+      let entry = (await all()).find(e => e.account.id === id);
+      if (entry && (entry.account.owner !== owner || entry.account.handle !== data.draft.handle)) throw new TopicError("Identifiant déjà réservé.", 409);
+      const created = !entry;
+      if (!entry) { await save(owner, id, data.draft); entry = (await all()).find(e => e.account.id === id)!; }
+      const at = new Date().toISOString();
+      let changed = false;
+      if (!profileOf(entry)) { entry.parsed.doc.set("profile", { ...data.profile, revision: randomUUID(), updatedAt: at, updatedBy: owner }); changed = true; }
+      if (bloubOf(entry).revision === null) { entry.parsed.doc.set("bloub", { config: data.bloub, revision: randomUUID(), updatedAt: at, updatedBy: owner }); changed = true; }
+      if (changed) await persist(entry);
+      index(await all());
+      return { account: entry.account, created };
+    });
+  }
+
+  /** Owner-only schedule, optimistic on `revision` (null while the agent follows the legacy behaviour). */
+  async function setSchedule(owner: string, id: string, input: unknown): Promise<ResolvedSchedule> {
+    const data = z.object({ revision: z.uuid().nullable(), schedule: scheduleSchema }).strict().parse(input);
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      const current = scheduleOf(entry);
+      if (current.revision !== data.revision) throw new TopicError("Les calendriers ont été modifiés depuis votre lecture. Rechargez.", 409);
+      entry.parsed.doc.set("schedule", { ...data.schedule, revision: randomUUID(), updatedAt: new Date().toISOString(), updatedBy: owner });
+      await persist(entry);
+      return scheduleOf(entry);
+    });
+  }
+  async function setProfile(owner: string, id: string, input: unknown): Promise<Profile> {
+    const profile = profileSchema.parse(input);
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      entry.parsed.doc.set("profile", { ...profile, revision: randomUUID(), updatedAt: new Date().toISOString(), updatedBy: owner });
+      await persist(entry);
+      return profile;
+    });
+  }
+
+  /**
+   * Pause: `watch.paused` (honoured by every task, major events included) plus its details. The
+   * resume choice of a scheduled pause is recorded now. Pausing again replaces the details.
+   */
+  async function pauseAgent(owner: string, id: string, input: unknown, now = new Date()): Promise<Pause> {
+    const data = z.object({ resumeAt: z.iso.datetime().nullable(), resumeWith: z.enum(["now", "catch-up"]) }).strict().parse(input);
+    if (data.resumeAt && Date.parse(data.resumeAt) <= now.getTime()) throw new TopicError("La reprise programmée doit être dans le futur.");
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      const details: Pause = { since: pauseOf(entry)?.since ?? now.toISOString(), ...data };
+      setWatch(entry, owner, { paused: true });
+      entry.parsed.doc.set("pause", details);
+      await persist(entry);
+      return details;
+    });
+  }
+  /** Ends a pause; returns its details (null when not paused) so the caller can plan a catch-up. */
+  async function resumeEntry(entry: Entry, by: string) {
+    if (!watchOf(entry).policy.paused) return null;
+    const details = pauseOf(entry);
+    setWatch(entry, by, { paused: false });
+    entry.parsed.doc.delete("pause");
+    await persist(entry);
+    return details;
+  }
+  async function resumeAgent(owner: string, id: string, input: unknown) {
+    const { resumeWith } = z.object({ resumeWith: z.enum(["now", "catch-up"]) }).strict().parse(input);
+    return exclusive(async () => {
+      const details = await resumeEntry(await owned(owner, id), owner);
+      return details ? { ...details, resumeWith } : null;
+    });
+  }
+  /** Worker: scheduled pauses whose time has come, with the choice recorded when pausing. */
+  async function resumeDue(now: Date) {
+    return exclusive(async () => {
+      const resumed: { agentId: string; owner: string; pause: Pause }[] = [];
+      for (const entry of await all()) {
+        const details = pauseOf(entry);
+        if (!details?.resumeAt || Date.parse(details.resumeAt) > now.getTime()) continue;
+        await resumeEntry(entry, "scheduler");
+        resumed.push({ agentId: entry.account.id, owner: entry.account.owner, pause: details });
+      }
+      return resumed;
+    });
+  }
+  /** Handles are unique across every owner, legacy directories included; `exceptId` keeps an agent's own handle. */
+  async function handleAvailable(handle: string, exceptId: string | null = null) {
+    // Compare the normalised handle (trimmed, without "@"), as it would be saved.
+    const parsed = accountDraftSchema.shape.handle.safeParse(handle);
+    if (!parsed.success) return false;
+    const wanted = parsed.data;
+    return exclusive(async () => {
+      const owner = (await all()).find(e => e.account.handle === wanted);
+      if (owner) return owner.account.id === exceptId;
+      return !(await listDir(directory)).some(e => e.name === wanted);
+    });
+  }
+  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents, setAvatar, createAgent, setSchedule, setProfile, pauseAgent, resumeAgent, resumeDue, handleAvailable,
+    schedule: (owner: string, id: string) => exclusive(async () => scheduleOf(await owned(owner, id))),
+    profile: (owner: string, id: string) => exclusive(async () => profileOf(await owned(owner, id))),
+    pauseState: (owner: string, id: string) => exclusive(async () => pauseOf(await owned(owner, id))),
     avatar: (owner: string, id: string) => exclusive(async () => bloubOf(await owned(owner, id))),
     watchPolicy: (owner: string, id: string) => exclusive(async () => watchOf(await owned(owner, id))),
+    /** The owner's pins (agent id → pin time); only the owner's own agents can be pinned. */
+    pins: (owner: string) => agentPins(db, owner),
+    setPin: (owner: string, id: string, input: unknown) => exclusive(async () => {
+      const { pinned } = z.object({ pinned: z.boolean() }).strict().parse(input);
+      await owned(owner, id);
+      setAgentPin(db, owner, id, pinned);
+    }),
     listPresets: (owner: string) => exclusive(async () => (await presets()).filter(p => !p.owner || p.owner === owner)),
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },
     resume: (owner: string, id: string) => exclusive(async () => { const run = await loadRun(owner, id); return run.state === "completed" || run.state === "waiting" ? run : execute(run); }),

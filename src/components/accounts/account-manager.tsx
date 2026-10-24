@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { UserAvatar } from "@/components/user-avatar";
+import { CreateXiAgent } from "@/components/xiagents/create/create-xiagent";
 import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ async function request<T>(url: string, method = "GET", data?: unknown): Promise<
   const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Requête impossible."); return result;
 }
 const selectClass = "w-full rounded-md border bg-background px-3 py-2";
-export function AccountManager({ owner }: { owner: string }) {
+export function AccountManager({ owner, duplicateId }: { owner: string; duplicateId?: string }) {
   const [catalog, setCatalog] = useState<Catalog>({ accounts: [], topics: [], presets: [] });
   const [topicId, setTopicId] = useState("");
   const [run, setRun] = useState<AccountRun | null>(null);
@@ -49,11 +50,18 @@ export function AccountManager({ owner }: { owner: string }) {
   const selectedPreset = catalog.presets.find(p => p.id === draft?.presetId && p.version === draft?.presetVersion);
   return <div className="space-y-6 p-4 pb-24">
     <p className="text-sm text-muted-foreground">Vos ΞAgents partagent les topics sans en copier le scope. Ouvrez leur page pour générer des publications fictives de test.</p>
-    <section className="space-y-3 rounded-xl border p-4" aria-labelledby="create-account">
-      <h2 id="create-account" className="font-semibold">Créer un ΞAgent</h2>
-      <label className="block space-y-1">Topic de départ<select className={selectClass} value={topicId} onChange={e => setTopicId(e.target.value)}><option value="">Choisir un topic</option>{catalog.topics.map(t => <option key={t.id} value={t.id}>{t.name} · {t.tag}</option>)}</select></label>
-      {!catalog.topics.length && <p>Créez d’abord un topic depuis la gestion des topics.</p>}
-      <Button disabled={busy || !topicId} onClick={() => void act(async () => { const { run } = await request<{ run: AccountRun }>("/api/accounts/runs", "POST", { topicId }); setEditing(null); setDraft(null); setConfirmed(false); setRun(run); window.history.replaceState(null, "", `?run=${run.id}`); await resume(run.id); })}>Proposer un ΞAgent</Button>
+    <section className="space-y-2 rounded-xl border p-4" aria-labelledby="create-account">
+      <h2 id="create-account" className="font-semibold">Créer</h2>
+      <p className="text-sm text-muted-foreground">Quelques mots-clés, un fichier YAML ou une saisie manuelle : Ξ prépare la configuration, vous la vérifiez, puis le déploiement la crée étape par étape.</p>
+      <div className="flex flex-wrap gap-3">
+        {catalog.presets.length > 0 && <CreateXiAgent topics={catalog.topics} presets={catalog.presets} duplicateId={duplicateId} />}
+        <Link href="/dashboard/xiagents/deployments" className="inline-flex items-center py-2 text-sm underline">Historique des déploiements</Link>
+      </div>
+      <div className="space-y-2 border-t pt-3">
+        <p className="text-sm text-muted-foreground">Ou proposer un ΞAgent à partir d’un topic existant, sans calendrier ni veille activée (à configurer ensuite sur sa page).</p>
+        <label className="block space-y-1 text-sm">Topic de départ<select className={selectClass} value={topicId} onChange={e => setTopicId(e.target.value)}><option value="">Choisir un topic</option>{catalog.topics.map(t => <option key={t.id} value={t.id}>{t.name} · {t.tag}</option>)}</select></label>
+        <Button variant="outline" disabled={busy || !topicId} onClick={() => void act(async () => { const { run } = await request<{ run: AccountRun }>("/api/accounts/runs", "POST", { topicId }); setEditing(null); setDraft(null); setConfirmed(false); setRun(run); window.history.replaceState(null, "", `?run=${run.id}`); await resume(run.id); })}>Proposer un ΞAgent</Button>
+      </div>
     </section>
     <p role="alert">{error}</p><p role="status">{notice}</p>
     {run && <section className="space-y-2 rounded-xl border p-4"><h2 className="font-semibold">Parcours de création</h2><p aria-live="polite">État : {run.state === "waiting" ? "En attente de confirmation" : run.state === "completed" ? "ΞAgent créé" : run.state === "failed" ? "Échec — reprise possible" : "En cours"}</p><ol className="list-inside list-decimal text-sm">{run.steps.map((step, n) => <li key={n}>{step.name} — {step.status}{step.error && <span className="text-destructive"> : {step.error}</span>}</li>)}</ol><details><summary>Journal backend</summary><ol className="text-xs">{run.events.map(e => <li key={e.id}>{e.id} · {new Date(e.at).toLocaleTimeString()} · {run.steps[e.step].name} : {e.status}{e.error ? ` — ${e.error}` : ""}</li>)}</ol></details>{(run.state === "failed" || run.state === "running") && <Button disabled={busy} onClick={() => void act(() => resume(run.id))}>Reprendre le parcours</Button>}</section>}

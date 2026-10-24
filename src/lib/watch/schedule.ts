@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { WatchPolicy } from "../accounts/types";
+import { currentInterval, formatTime, localDate, localMinutes, nextOpening } from "../xiagents/calendar";
+import type { ResolvedSchedule } from "../xiagents/schedule";
 
 /** Editorial calendar: publications mainly between 03:00 and 06:00, Paris time (DST-aware). */
 export const WATCH_TIME_ZONE = "Europe/Paris";
@@ -70,7 +72,9 @@ export type Gate = { allowed: true } | { allowed: false; reason: GateReason; ret
  * `publishedAt`: the agent's publication instants (any order). `retryAt` is null when only a
  * configuration change can lift the refusal.
  */
-export function publicationGate(input: { lane: Lane; now: Date; autoPublish: boolean; active: boolean; policyValid: boolean; policy: WatchPolicy; publishedAt: readonly Date[] }): Gate {
+export function publicationGate(input: { lane: Lane; now: Date; autoPublish: boolean; active: boolean; policyValid: boolean; policy: WatchPolicy; publishedAt: readonly Date[];
+  /** The agent's publish calendar; absent: the legacy 03:00–06:00 Paris window. */
+  window?: { open: boolean; next: Date | null; sunday: boolean } }): Gate {
   const { lane, now, policy } = input;
   const refuse = (reason: GateReason, retryAt: Date | null = null): Gate => ({ allowed: false, reason, retryAt });
   if (!input.autoPublish) return refuse("auto-disabled");
@@ -78,8 +82,9 @@ export function publicationGate(input: { lane: Lane; now: Date; autoPublish: boo
   if (!input.policyValid) return refuse("invalid-policy");
   if (!policy.enabled) return refuse("disabled");
   if (policy.paused) return refuse("paused");
-  const window = nightWindow(now);
-  if (lane !== "immediate" && !inNightWindow(now)) return refuse("outside-window", window.start);
+  const legacy = nightWindow(now);
+  const window = input.window ?? { open: inNightWindow(now), next: legacy.start, sunday: legacy.sunday };
+  if (lane !== "immediate" && !window.open) return refuse("outside-window", window.next);
   const times = input.publishedAt.map(date => date.getTime()).filter(time => time <= now.getTime()).sort((a, b) => b - a);
   if (lane === "weekly") {
     if (!window.sunday) return refuse("not-weekly-window");
@@ -96,13 +101,36 @@ export function publicationGate(input: { lane: Lane; now: Date; autoPublish: boo
 
 export type PlannedJob = { kind: "publication-window" | "weekly-review"; key: string; runAfter: Date; payload: { agentId: string; date: string } };
 
-/** Jobs an agent needs for the coming window. Keys are per agent and date: re-planning is idempotent. */
-export function planAgentJobs(agent: { id: string; active: boolean; watch: { valid: boolean; policy: WatchPolicy } }, now: Date): PlannedJob[] {
+/**
+ * Jobs an agent needs for its coming publication window. Keys are per agent and window: re-planning
+ * is idempotent. Agents without an explicit schedule keep the legacy night window and keys.
+ */
+export function planAgentJobs(agent: { id: string; active: boolean; watch: { valid: boolean; policy: WatchPolicy }; schedule?: ResolvedSchedule }, now: Date): PlannedJob[] {
   if (!agent.active || !agent.watch.valid || !agent.watch.policy.enabled || agent.watch.policy.paused) return [];
+  if (agent.schedule?.explicit) return planScheduled(agent.id, agent.schedule, now);
   const window = nightWindow(now);
   const slot = agentSlot(agent.id, window);
   const payload = { agentId: agent.id, date: window.date };
   const jobs: PlannedJob[] = [{ kind: "publication-window", key: `publication-window:${agent.id}:${window.date}`, runAfter: slot, payload }];
   if (window.sunday) jobs.push({ kind: "weekly-review", key: `weekly-review:${agent.id}:${window.date}`, runAfter: new Date(slot.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
+  return jobs;
+}
+
+/** The current or next publish interval within 36 h; agents spread over its first 80 % (150 min at most). */
+function planScheduled(agentId: string, schedule: ResolvedSchedule, now: Date): PlannedJob[] {
+  const at = now.getTime();
+  const start = nextOpening(schedule.publish, schedule.timeZone, at, 2);
+  if (start === null || start > at + 36 * 3_600_000) return [];
+  const span = currentInterval(schedule.publish, schedule.timeZone, start);
+  if (!span) return [];
+  const opening = span.start;
+  const spread = Math.max(1, Math.min(SLOT_SPREAD_MINUTES, Math.floor((span.end - opening) / 60_000 * 0.8)));
+  const offset = parseInt(createHash("sha256").update(agentId).digest("hex").slice(0, 8), 16) % spread;
+  const date = localDate(opening, schedule.timeZone);
+  const window = `${date}@${formatTime(localMinutes(opening, schedule.timeZone))}`;
+  const runAfter = new Date(opening + offset * 60_000);
+  const payload = { agentId, date };
+  const jobs: PlannedJob[] = [{ kind: "publication-window", key: `publication-window:${agentId}:${window}`, runAfter, payload }];
+  if (new Date(`${date}T12:00:00Z`).getUTCDay() === 0) jobs.push({ kind: "weekly-review", key: `weekly-review:${agentId}:${window}`, runAfter: new Date(runAfter.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
   return jobs;
 }
