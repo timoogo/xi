@@ -10,6 +10,7 @@ import { messageHref } from "./message-links";
 import { FeedArticle } from "./feed-article";
 import { formatShortDate } from "./publication-badges";
 import { ReplyBranch } from "./conversation-view";
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 
 export { messageAnchor } from "@/lib/publications/conversation";
 const FEED_MESSAGES = 3;
@@ -23,7 +24,7 @@ export function PublicationContent({ summary, messages, sources, fullHref, publi
   fullHref?: string;
   sourcesOpen?: boolean;
   publicationId?: string;
-  author?: { name: string; bloubSeed?: string | null; image?: string | null; id?: string; handle?: string; ai?: boolean };
+  author?: { name: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null; id?: string; handle?: string; ai?: boolean };
   messageRefs?: string[];
   date?: string;
   visibility?: string;
@@ -42,7 +43,7 @@ export function PublicationContent({ summary, messages, sources, fullHref, publi
 
     return <li key={message.key} id={fullHref ? undefined : anchor ?? undefined} className="relative min-w-0 scroll-mt-24 target:bg-chart-2/10">
       <FeedArticle href={fullHref ? href : undefined} label={`Message de ${author?.name ?? "l’auteur"}`} className="flex gap-3">
-        {author ? <div className="relative flex w-10 shrink-0 flex-col items-center pt-2"><UserAvatar name={author.name} image={author.image} bloubSeed={author.bloubSeed} size={40} ai={author.ai} />{index < siblings - 1 ? <span aria-hidden="true" data-thread-connector className="absolute bottom-[-8px] top-[52px] w-0.5 bg-border" /> : null}</div> : null}
+        {author ? <div className="relative flex w-10 shrink-0 flex-col items-center pt-2"><UserAvatar name={author.name} image={author.image} bloubSeed={author.bloubSeed} bloub={author.bloub} size={40} ai={author.ai} />{index < siblings - 1 ? <span aria-hidden="true" data-thread-connector className="absolute bottom-[-8px] top-[52px] w-0.5 bg-border" /> : null}</div> : null}
         <div className="min-w-0 flex-1 pb-3 pt-2">
           {author ? <header className="relative min-h-10 pr-11 flex flex-wrap content-center items-center gap-x-1 text-[15px] leading-5">
             <Link href={`/dashboard/profiles/${author.id ?? ""}`} className="max-w-full truncate font-bold hover:underline">{author.name}</Link>

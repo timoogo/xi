@@ -21,7 +21,7 @@
     "test:xiagents:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/xiagents-browser.test.ts",
     "test:accounts": "tsx --tsconfig tests/tsconfig.json --test tests/accounts.test.ts",
     "test:accounts:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/accounts-browser.test.ts",
-    "test:avatars": "tsx --tsconfig tests/tsconfig.json --test tests/avatars.test.ts tests/bloub.test.ts",
+    "test:avatars": "tsx --tsconfig tests/tsconfig.json --test tests/avatars.test.ts tests/bloub.test.ts tests/bloub-avatar.test.tsx",
     "test:avatars:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/avatars-browser.test.ts",
     "watch:tick": "tsx --env-file-if-exists=.env.local scripts/watch-worker.ts tick",
     "test:watch": "tsx --tsconfig tests/tsconfig.json --test tests/watch.test.ts tests/watch-collect.test.ts tests/watch-evaluate.test.ts tests/watch-draft.test.ts tests/watch-publish.test.ts"
@@ -36,6 +36,7 @@
     "@radix-ui/react-slot": "^1.2.3",
     "better-auth": "1.7.11",
     "better-sqlite3": "13.0.3",
+    "bloub-react": "1.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "embla-carousel-autoplay": "^8.6.0",

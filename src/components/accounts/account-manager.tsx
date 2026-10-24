@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import { BloubAvatar } from "@/components/bloub-avatar";
+import { UserAvatar } from "@/components/user-avatar";
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CHARTER, type Account, type AccountDraft, type AccountRun, type Preset } from "@/lib/accounts/types";
 import type { Topic } from "@/lib/topics/types";
 
-type Catalog = { accounts: Account[]; topics: Topic[]; presets: Preset[] };
+type Catalog = { accounts: (Account & { bloub?: XiAgentBloub })[]; topics: Topic[]; presets: Preset[] };
 async function request<T>(url: string, method = "GET", data?: unknown): Promise<T> {
   const response = await fetch(url, { method, cache: "no-store", ...(data ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) } : {}) });
   const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Requête impossible."); return result;
@@ -84,6 +85,6 @@ export function AccountManager({ owner }: { owner: string }) {
       <p className="text-sm">Charte commune : {CHARTER}</p>
       {!readonly && <><label className="block"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> Je confirme le ΞAgent, ses topics, le scope et la charte éditoriale.</label><Button disabled={busy || !confirmed} type="submit">{editing ? "Enregistrer le ΞAgent" : "Confirmer la création"}</Button></>}
     </form>}
-    <section className="space-y-3"><h2 className="font-semibold">Mes ΞAgents</h2>{!catalog.accounts.length && <p>Aucun ΞAgent.</p>}{catalog.accounts.filter(account => account.owner === owner).map(account => <article key={account.id} className="rounded-xl border p-4"><BloubAvatar name={account.name} size={48} /><h3 className="mt-2 break-words font-semibold">{account.name} <span className="font-normal text-muted-foreground">@{account.handle}</span></h3><p>{account.description}</p><p className="text-sm">{account.editorial ? `${account.editorial.active ? "Actif" : "Inactif"} · ${catalog.topics.find(t => t.id === account.editorial?.primaryTopicId)?.tag ?? "Topic absent"} · preset v${account.editorial.presetVersion}` : "Générateur existant · configuration éditoriale à compléter"}</p><p className="my-2 text-sm">Topics : {account.editorial ? [account.editorial.primaryTopicId, ...account.editorial.secondaryTopicIds].map(id => catalog.topics.find(topic => topic.id === id)?.tag ?? "Topic absent").join(" · ") : "À associer"}</p><Link className="mr-3 inline-block py-2 font-medium underline" href={`/dashboard/xiagents/${account.id}`}>Gérer @{account.handle}</Link><Button variant="outline" disabled={busy || !catalog.presets.length} onClick={() => open(account)}>Configurer @{account.handle}</Button></article>)}</section>
+    <section className="space-y-3"><h2 className="font-semibold">Mes ΞAgents</h2>{!catalog.accounts.length && <p>Aucun ΞAgent.</p>}{catalog.accounts.filter(account => account.owner === owner).map(account => <article key={account.id} className="rounded-xl border p-4"><UserAvatar name={account.name} bloub={account.bloub} size={48} /><h3 className="mt-2 break-words font-semibold">{account.name} <span className="font-normal text-muted-foreground">@{account.handle}</span></h3><p>{account.description}</p><p className="text-sm">{account.editorial ? `${account.editorial.active ? "Actif" : "Inactif"} · ${catalog.topics.find(t => t.id === account.editorial?.primaryTopicId)?.tag ?? "Topic absent"} · preset v${account.editorial.presetVersion}` : "Générateur existant · configuration éditoriale à compléter"}</p><p className="my-2 text-sm">Topics : {account.editorial ? [account.editorial.primaryTopicId, ...account.editorial.secondaryTopicIds].map(id => catalog.topics.find(topic => topic.id === id)?.tag ?? "Topic absent").join(" · ") : "À associer"}</p><Link className="mr-3 inline-block py-2 font-medium underline" href={`/dashboard/xiagents/${account.id}`}>Gérer @{account.handle}</Link><Button variant="outline" disabled={busy || !catalog.presets.length} onClick={() => open(account)}>Configurer @{account.handle}</Button></article>)}</section>
   </div>;
 }

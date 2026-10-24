@@ -11,9 +11,10 @@ import { PublicationPanel } from "./publication-panel";
 import { useLiveSync } from "./live-sync";
 import { formatShortDate } from "./publication-badges";
 import { FeedArticle } from "./feed-article";
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 
 type Entry = { ref: string; publicationId: string; message: PublicationSnapshot["messages"][number] | null; publication: PublicationSnapshot | null; deleted: boolean; replyCount?: number };
-type Author = { name: string; handle: string; bloubSeed?: string | null; image?: string | null };
+type Author = { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null };
 type Page = { parent: Entry; ancestors: Entry[]; thread?: Entry[]; children: Entry[]; nextCursor: string | null; authors: Record<string, Author> };
 const unique = (items: Entry[]) => [...new Map(items.map(item => [item.ref, item])).values()];
 
@@ -31,7 +32,7 @@ function Message({ entry, authors, fresh = false, threaded, focused = false, hre
   const message = entry.message as typeof entry.message & { createdAt?: string; updatedAt?: string };
   const date = message.createdAt ?? publication.publishedAt ?? publication.createdAt;
   return <FeedArticle id={`m-${entry.ref.split("/")[1]}`} href={href} label={`Message de ${author?.name ?? "l’auteur"}`} className={`grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 min-w-0 scroll-mt-24 py-3 ${focused ? "-mx-2 rounded-lg bg-chart-2/10 px-2" : ""} ${fresh ? "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500" : ""}`}>
-    <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} bloubSeed={author?.bloubSeed} size={40} ai={publication.authorType === "ai"} /></Link>
+    <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} bloubSeed={author?.bloubSeed} bloub={author?.bloub} size={40} ai={publication.authorType === "ai"} /></Link>
     <header className="relative flex min-h-10 flex-wrap content-center items-center gap-x-1 pr-11 text-[15px] leading-5">
       <Link href={`/dashboard/profiles/${publication.authorId}`} className="max-w-full truncate font-bold hover:underline">{author?.name ?? "Auteur"}</Link>
       <span className="max-w-full truncate text-muted-foreground">{author?.handle}</span>

@@ -55,7 +55,7 @@ export function MessagePreviewView({ messageRef, onOpenMessage }: { messageRef: 
   return (
     <article aria-label={`Message ${preview.position} sur ${preview.total}`} className="space-y-4">
       <header className="flex items-start gap-3">
-        {preview.author ? <UserAvatar name={preview.author.name} image={preview.author.image} bloubSeed={preview.author.bloubSeed} size={36} /> : null}
+        {preview.author ? <UserAvatar name={preview.author.name} image={preview.author.image} bloubSeed={preview.author.bloubSeed} bloub={preview.author.bloub} size={36} /> : null}
         <div className="min-w-0 flex-1 text-[13.5px] leading-5">
           <p className="truncate font-bold">{preview.author?.name ?? "Auteur inconnu"}</p>
           {preview.author ? <p className="truncate text-muted-foreground">{preview.author.handle}</p> : null}

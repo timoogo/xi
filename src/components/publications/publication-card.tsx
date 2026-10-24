@@ -8,8 +8,9 @@ import { ReplyButton } from "./publication-actions";
 
 import { ShareButton } from "./message-menu";
 import { messageAnchor } from "@/lib/publications/conversation";
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 
-type Author = { name: string; handle: string; bloubSeed?: string | null; image?: string | null };
+type Author = { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null };
 
 /** One publication as a social feed entry: used by the home feed, the profile, Publications and the detail page. */
 export function PublicationCard({ publication, author, viewerId, full = false, afterTrash, replies }: {
@@ -44,7 +45,7 @@ export function PublicationCard({ publication, author, viewerId, full = false, a
               const anchor = messageAnchor(message.file);
               return anchor ? [`${publication.id}/${anchor.slice(2)}`] : [];
             })}
-            author={{ name, image: author?.image, bloubSeed: author?.bloubSeed, handle: author?.handle, id: publication.authorId, ai: publication.authorType === "ai" }}
+            author={{ name, image: author?.image, bloubSeed: author?.bloubSeed, bloub: author?.bloub, handle: author?.handle, id: publication.authorId, ai: publication.authorType === "ai" }}
             date={date}
             visibility={publication.visibility}
             summary={publication.summary}

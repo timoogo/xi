@@ -3,12 +3,14 @@ import { Document, parseDocument } from "yaml";
 import { parseGenerator } from "../graph/format";
 import { assertWithin, inside, listDir, USER_ID, writeAtomic, type Vault } from "./vault";
 import { splitFrontmatter } from "./markdown";
+import { agentStatus } from "../xiagents/avatar";
 import type { Viewer } from "./types";
 
 export const PREFERENCES = ["priority", "normal", "less", "hidden"] as const;
 export type Preference = typeof PREFERENCES[number];
 export type SocialSettings = { following: string[]; preferences: Record<string, Preference> };
-export type GeneratorAccount = { id: string; name: string; image: string | null; handle: string; parentId: string | null; description: string; ownerId: string; visibility: string };
+/** `status` feeds the avatar (appearance + activity inputs); callers derive what they expose from it. */
+export type GeneratorAccount = { id: string; name: string; image: string | null; handle: string; parentId: string | null; description: string; ownerId: string; visibility: string; status: ReturnType<typeof agentStatus> };
 
 export async function readGenerators(vault: Vault, viewer: Viewer): Promise<GeneratorAccount[]> {
   const dir = inside(vault.root, "generators");
@@ -24,7 +26,7 @@ export async function readGenerators(vault: Vault, viewer: Viewer): Promise<Gene
     const g = parsed.generator;
     slugs.add(g.slug);
     const image = parsed.doc.get("avatar");
-    accounts.push({ id: g.id, name: g.title, handle: g.slug, image: typeof image === "string" && /^https?:\/\//.test(image) ? image : null, parentId: null, description: parsed.description, ownerId: g.ownerId, visibility: g.visibility });
+    accounts.push({ id: g.id, name: g.title, handle: g.slug, image: typeof image === "string" && /^https?:\/\//.test(image) ? image : null, parentId: null, description: parsed.description, ownerId: g.ownerId, visibility: g.visibility, status: agentStatus(parsed.doc.toJS()) });
   }
   for (const account of accounts) account.parentId = accounts.filter(a => account.handle.startsWith(a.handle + ".")).sort((a,b) => b.handle.length-a.handle.length)[0]?.id ?? null;
   const visible = new Set<string>();

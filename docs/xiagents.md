@@ -103,3 +103,8 @@ build et les tests navigateur lorsqu’un serveur de développement tourne.
 Le moteur de veille et la politique de publication par agent (activation,
 pause, plafond, intervalle) sont décrits dans [watch.md](watch.md). Il réutilise
 `publishGenerated`, désormais protégé par un verrou interprocessus.
+
+## Avatar
+
+La page de gestion inclut l’éditeur de l’avatar Bloub et ses quatre états
+universels pilotés par l’activité réelle ; voir [avatars.md](avatars.md).

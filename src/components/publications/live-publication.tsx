@@ -6,7 +6,8 @@ import { messageAnchor } from "@/lib/publications/conversation";
 import { PublicationCard } from "./publication-card";
 import { messageHref } from "./message-links";
 import { useLiveSync } from "./live-sync";
-type Author = { name: string; handle: string; bloubSeed?: string | null; image?: string | null };
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
+type Author = { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null };
 export function LivePublication({ initial, initialAuthors, viewerId }: { initial: PublicationSnapshot; initialAuthors: Record<string, Author>; viewerId: string }) {
   const [publication, setPublication] = useState<PublicationSnapshot | null>(initial);
   const [authors, setAuthors] = useState(initialAuthors);

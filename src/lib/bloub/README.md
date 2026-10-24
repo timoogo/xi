@@ -1,15 +1,18 @@
-# Bloub attribution
+# Bloub module
 
-Source: https://github.com/jeremy-prt/bloub
-Revision: b4bb3c1b5f93c7b87a2e8d620f667c4093d97749
-Copyright (c) 2026 Jérémy Perret — MIT (see LICENSE).
+Generic avatar layer over [bloub-react](https://github.com/ShunquanWang/bloub-react)
+(MIT, © 2026 Shunquan Wang), itself a React port of
+[bloub](https://github.com/jeremy-prt/bloub) (MIT, © 2026 Jérémy Perret).
+The library is used through its public API only (`BloubBot`, catalogs, cycle
+helpers); no library file is copied or modified. Its licence ships with the
+package in `node_modules/bloub-react/LICENSE.md`.
 
-The framework-independent face.ts, math.ts, shape.ts, profiles.ts and skins.ts
-are copied unchanged. BloubAvatar adapts the SVG geometry, projected gaze and
-blinking to React. No Vue application or external service is imported.
-appearance.ts defines the local deterministic v1 seed mapping. Keep that
-mapping and the underlying geometry stable to preserve saved appearances.
-Reduced motion and server rendering use the static rest pose.
+- `types.ts` — `BloubConfig` (versioned, serialisable) and the activity vocabulary.
+- `config.ts` — strict validation against the library catalogs, defaults.
+- `presets.ts` — deterministic appearance from a 128-bit seed.
+- `state-mapping.ts` — activity → `BloubBot` props (closed eyes, busy eyes).
+- `src/components/bloub/` — avatar, editor preview and studio-style editor.
 
-The MIT license covers the upstream code, not the x.ai design it recreates.
-This integration is not affiliated with x.ai.
+Nothing here imports Ξ code: the host decides the activity and stores the
+configuration. `bloub-react` is pinned to an exact version because the closed
+eyes frame depends on the engine's blink schedule (checked by tests/bloub-avatar.test.tsx).

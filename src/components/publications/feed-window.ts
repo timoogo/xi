@@ -1,8 +1,9 @@
 import type { PublicationSnapshot } from "@/lib/publications/types";
+import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 
 export type FeedPage = {
   items: PublicationSnapshot[];
-  authors: Record<string, { name: string; handle: string; bloubSeed?: string | null; image?: string | null }>;
+  authors: Record<string, { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null }>;
   nextCursor: string | null;
 };
 export class FeedChanged extends Error {}

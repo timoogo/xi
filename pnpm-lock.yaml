@@ -35,6 +35,9 @@ importers:
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
+      bloub-react:
+        specifier: 1.0.0
+        version: 1.0.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -1623,6 +1626,13 @@ packages:
   better-sqlite3@13.0.3:
     resolution: {integrity: sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==}
     engines: {node: '>=22'}
+
+  bloub-react@1.0.0:
+    resolution: {integrity: sha512-/mTGNnUw7l4kUVkqH5rVQKxIdLZvn2CE7zw+bnO8wpHzX61DimZ3i2nZbECypsrqEO1q463hOUu92Dw3QjkcYQ==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      react: ^19.0.0
+      react-dom: ^19.0.0
 
   brace-expansion@1.1.21:
     resolution: {integrity: sha512-9zeA+KLZNNzglF2TPKRQEDyx6Yby7daAkuy8MiPzpXPsYDWi/DRM8jmwUDxokQjYqBpv5DgPiwD4h4ZZSy1Ujw==}
@@ -4382,6 +4392,11 @@ snapshots:
   better-sqlite3@13.0.3:
     dependencies:
       node-addon-api: 8.9.2
+
+  bloub-react@1.0.0(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
+    dependencies:
+      react: 19.1.0
+      react-dom: 19.1.0(react@19.1.0)
 
   brace-expansion@1.1.21:
     dependencies:

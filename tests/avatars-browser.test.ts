@@ -50,7 +50,7 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   const preference = (id = user.id) => preferences.prepare("SELECT seed, mode, revision FROM user_avatar WHERE user_id=?").get(id) as { seed: string; mode: string; revision: number };
   const original = preference();
   assert.equal(original.mode, "bloub"); assert.notEqual(original.seed, preference(other.id).seed);
-  const preview = page.getByLabel("Aperçu de l’avatar").locator("svg");
+  const preview = page.getByLabel("Aperçu de l’avatar").locator("[data-bloub]");
   assert.equal(await preview.getAttribute("data-seed"), original.seed);
   for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Régénérer" }).click();
   assert.notEqual(await preview.getAttribute("data-seed"), original.seed);
@@ -62,12 +62,14 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   await page.getByRole("status").filter({ hasText: "Avatar enregistré." }).waitFor();
   assert.equal(preference().seed, chosen);
   await page.reload(); assert.equal(await preview.getAttribute("data-seed"), chosen);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.waitForFunction(() => document.querySelector('[aria-label="Aperçu de l’avatar"] svg')?.getAttribute("data-animating") === "false");
-  const staticEyes = await preview.locator("rect").first().getAttribute("transform");
-  await page.waitForTimeout(150); assert.equal(await preview.locator("rect").first().getAttribute("transform"), staticEyes);
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.waitForFunction(() => document.querySelector('[aria-label="Aperçu de l’avatar"] svg')?.getAttribute("data-animating") === "true");
+  // Human Bloubs are still frames: no animation loop, whatever the motion preference.
+  for (const reducedMotion of ["reduce", "no-preference"] as const) {
+    await page.emulateMedia({ reducedMotion });
+    const staticEyes = await preview.locator('mask path[fill="#000"]').first().getAttribute("transform");
+    await page.waitForTimeout(150);
+    assert.equal(await preview.getAttribute("data-animating"), "false");
+    assert.equal(await preview.locator('mask path[fill="#000"]').first().getAttribute("transform"), staticEyes);
+  }
   const patch = (context: typeof alice, data: unknown, origin = app.origin) => context.request.patch(`${app.origin}/api/account/avatar`, { headers: { Origin: origin }, data });
   assert.equal((await patch(anonymous, preference())).status(), 401);
   assert.equal((await patch(alice, preference(), "https://foreign.example")).status(), 403);

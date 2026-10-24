@@ -3,16 +3,24 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import Database from "better-sqlite3";
 import { chromium } from "playwright-core";
+import { createJobQueue } from "../src/lib/watch/jobs";
 import { createTestServer } from "./helpers/next-server";
 
-test("publication design: connected threads, mobile, media privacy and visible-only Bloub motion", { timeout: 120_000 }, async t => {
+test("publication design: connected threads, mobile, media privacy and still identity Bloubs", { timeout: 120_000 }, async t => {
   const app = await createTestServer();
   await app.migrate();
   const generator = randomUUID();
   const account = join(app.vaultPath, "generators", "science.biologie");
   await mkdir(account, { recursive: true });
-  await writeFile(join(account, "index.md"), `---\nid: ${generator}\nslug: science.biologie\ntitle: Science Biologie\nowner_id: fixture-owner\nvisibility: public\ncreated_at: 2026-10-20T12:00:00Z\n---\n`);
+  await writeFile(join(account, "index.md"), `---\nid: ${generator}\nslug: science.biologie\ntitle: Science Biologie\nowner_id: fixture-owner\nvisibility: public\ncreated_at: 2026-10-20T12:00:00Z\neditorial:\n  active: true\n---\n`);
+  // A watch job claimed by a live worker: the agent is working, yet its identity avatar stays neutral and still.
+  const db = new Database(app.databasePath);
+  const queue = createJobQueue(db);
+  queue.enqueue({ kind: "publication-window", key: `publication-window:${generator}:fixture`, payload: { agentId: generator, date: "fixture" }, runAfter: 0 });
+  assert.ok(queue.claim(["publication-window"], 30 * 60_000));
+  db.close();
   const ids: string[] = [];
   for (const count of [1, 2, 3, 4]) {
     const id = randomUUID(); ids.push(id);
@@ -54,13 +62,13 @@ test("publication design: connected threads, mobile, media privacy and visible-o
   await card.scrollIntoViewIfNeeded();
   const avatar = card.locator("[data-bloub]").first();
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.waitForFunction(() => !!document.querySelector('[data-bloub][data-animating="true"]'));
   await avatar.scrollIntoViewIfNeeded();
-  await page.waitForFunction(id => document.querySelector(`[data-feed-id="${id}"] [data-bloub]`)?.getAttribute("data-animating") === "true", ids[2]);
-  const eyeBefore = await avatar.locator("rect").first().getAttribute("transform");
-  await page.waitForFunction(({ id, before }) => document.querySelector(`[data-feed-id="${id}"] [data-bloub] rect`)?.getAttribute("transform") !== before, { id: ids[2], before: eyeBefore });
+  assert.equal(await avatar.getAttribute("data-activity"), "idle");
+  const eyeBefore = await avatar.locator('mask path[fill="#000"]').first().getAttribute("transform");
+  await page.waitForTimeout(300);
+  assert.equal(await avatar.locator('mask path[fill="#000"]').first().getAttribute("transform"), eyeBefore);
+  assert.equal(await page.locator('[data-bloub][data-animating="true"]').count(), 0);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.waitForFunction(() => !document.querySelector('[data-bloub][data-animating="true"]'));
   const media = card.getByRole("button", { name: /Afficher l’image/ });
   const before = await media.locator("..").boundingBox();
   await media.click();
@@ -81,12 +89,5 @@ test("publication design: connected threads, mobile, media privacy and visible-o
     assert.ok(line.y >= a.y + a.height && Math.abs(line.y + line.height - b.y) <= 1);
   }
   await page.screenshot({ path: "/tmp/xi-publications-mobile.png" });
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.evaluate(id => {
-    const avatar = document.querySelector(`[data-feed-id="${id}"] [data-bloub]`)!;
-    const top = avatar.getBoundingClientRect().top + scrollY;
-    window.scrollTo(0, top > innerHeight ? 0 : document.documentElement.scrollHeight);
-  }, ids[2]);
-  await page.waitForFunction(id => document.querySelector(`[data-feed-id="${id}"] [data-bloub]`)?.getAttribute("data-animating") !== "true", ids[2]);
   assert.deepEqual(errors, []);
 });

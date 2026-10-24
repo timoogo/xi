@@ -2,6 +2,7 @@
 // Dependency-free so it can be bundled client-side. See docs/graph.md for the vault format and the rules.
 
 import type { Visibility } from "../publications/types";
+import type { XiAgentBloub } from "../xiagents/avatar";
 
 export const SEMANTIC_TYPES = ["supports", "contradicts", "expands", "related_to", "updates"] as const;
 export type SemanticType = (typeof SEMANTIC_TYPES)[number];
@@ -207,7 +208,7 @@ export type ConnectionItem = {
 /** Newest relations first; `total` counts the filtered authorized relations of the scope. */
 export type ConnectionsResponse = { items: ConnectionItem[]; total: number; nextCursor: string | null };
 
-export type AuthorSummary = { id: string; name: string; handle: string; bloubSeed?: string | null; image: string | null };
+export type AuthorSummary = { id: string; name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image: string | null };
 
 export type MessagePreview = {
   ref: MessageRef;

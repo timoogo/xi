@@ -36,6 +36,36 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   await page.getByRole("link", { name: "Gérer @politiks", exact: true }).click();
   await page.getByRole("heading", { name: "Générer une publication" }).waitFor();
   const agentId = new URL(page.url()).pathname.split("/").at(-1)!;
+  // Avatar: test the universal states in the preview only, then customise, save and reload.
+  const panel = page.getByRole("region", { name: "Avatar" });
+  // Identity avatars stay neutral; the real state (active agent, watch disabled → sleeping) is only reported.
+  const identity = page.locator("section").first().locator("[data-bloub]");
+  assert.equal(await identity.getAttribute("data-activity"), "idle");
+  assert.equal(await panel.locator("[data-bloub]").getAttribute("data-activity"), "idle");
+  await panel.getByText("État réel : En veille.").waitFor();
+  await panel.getByRole("button", { name: "Au travail", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("[data-bloub-preview]")?.getAttribute("data-animating") === "true");
+  await panel.getByRole("button", { name: "Indisponible", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("[data-bloub-preview]")?.getAttribute("data-animating") === "false");
+  await panel.getByRole("button", { name: "En veille", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("[data-bloub-preview]")?.getAttribute("data-animating") === "false");
+  assert.equal(await identity.getAttribute("data-activity"), "idle", "previewing never changes what others see");
+  await panel.getByRole("button", { name: "Goutte", exact: true }).click();
+  await panel.getByRole("button", { name: "Curieux", exact: true }).click();
+  await panel.getByRole("button", { name: "Enregistrer l’avatar", exact: true }).click();
+  await panel.getByRole("status").filter({ hasText: "Avatar enregistré." }).waitFor();
+  const avatarEndpoint = `${app.origin}/api/xiagents/${agentId}/avatar`;
+  const stored = await (await alice.request.get(avatarEndpoint)).json();
+  assert.deepEqual(stored.config, { version: 1, shape: "goutte", expression: "curieux", color: "encre" });
+  assert.equal((await anon.request.patch(avatarEndpoint, { headers, data: stored })).status(), 401);
+  assert.equal((await bob.request.patch(avatarEndpoint, { headers, data: stored })).status(), 404);
+  assert.equal((await alice.request.patch(avatarEndpoint, { headers: { Origin: "https://foreign.example" }, data: stored })).status(), 403);
+  assert.equal((await alice.request.patch(avatarEndpoint, { headers, data: { ...stored, revision: crypto.randomUUID() } })).status(), 409);
+  assert.equal((await alice.request.patch(avatarEndpoint, { headers, data: { ...stored, config: { ...stored.config, shape: "carré" } } })).status(), 400);
+  assert.match(await readFile(join(app.vaultPath, "generators/politiks/index.md"), "utf8"), /shape: goutte/);
+  await page.reload();
+  await panel.getByRole("button", { name: "Goutte", exact: true }).and(page.locator('[aria-pressed="true"]')).waitFor();
+  await page.getByRole("heading", { name: "Générer une publication" }).waitFor();
   const catalog = await (await alice.request.get(`${app.origin}/api/accounts`)).json();
   const revision = catalog.accounts.find((account: { id: string }) => account.id === agentId).editorial.revision;
   assert.equal((await (await bob.request.get(`${app.origin}/api/accounts`)).json()).accounts.length, 0);

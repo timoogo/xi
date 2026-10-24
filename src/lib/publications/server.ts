@@ -6,6 +6,7 @@ import { createPublicationStore, PublicationError, type PublicationStore } from 
 import type { Viewer } from "./types";
 import { openVault, vaultPathFromEnv } from "./vault";
 import { watchPublications } from "./runtime";
+import { busyAgents, xiAgentBloub, type XiAgentBloub } from "../xiagents/avatar";
 
 // One store per server process: its per-publication locks must be shared by every request.
 const storeGlobal = globalThis as typeof globalThis & {
@@ -40,7 +41,7 @@ export async function getViewer(): Promise<Viewer | null> {
   return session ? { id: session.user.id } : null;
 }
 
-export type Author = { bloubSeed?: string | null; ai: boolean; id: string; name: string; image: string | null; handle: string; description?: string; parentId?: string | null };
+export type Author = { bloubSeed?: string | null; bloub?: XiAgentBloub; ai: boolean; id: string; name: string; image: string | null; handle: string; description?: string; parentId?: string | null };
 
 export function getAuthors(ids: string[]): Map<string, Author> {
   const unique = [...new Set(ids)];
@@ -63,8 +64,10 @@ export async function orNotFound<T>(load: () => Promise<T>): Promise<T> {
 
 export async function getFeedAuthors(viewer: Viewer, ids: string[]): Promise<Map<string, Author>> {
   const authors = getAuthors(ids);
-  for (const generator of await (await getPublicationStore()).generators(viewer)) {
-    if (ids.includes(generator.id)) authors.set(generator.id, { ...generator, image: null, ai: true, handle: `@${generator.handle}` });
+  const generators = (await (await getPublicationStore()).generators(viewer)).filter(generator => ids.includes(generator.id));
+  const busy = busyAgents(getAppDatabase(), generators.map(generator => generator.id));
+  for (const { status, ...generator } of generators) {
+    authors.set(generator.id, { ...generator, image: null, ai: true, handle: `@${generator.handle}`, bloub: xiAgentBloub(status, busy.has(generator.id)) });
   }
   return authors;
 }

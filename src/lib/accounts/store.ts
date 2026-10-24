@@ -9,6 +9,8 @@ import { assertWithin, inside, listDir, writeAtomic, type Vault } from "../publi
 import { locked } from "../topics/lock";
 import { TopicError } from "../topics/types";
 import type { TopicStore } from "../topics/store";
+import { bloubConfigSchema } from "../bloub/config";
+import { readAgentBloub, type AgentBloubSettings } from "../xiagents/avatar";
 import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type WatchAgent, type WatchSettings } from "./types";
 
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
@@ -217,6 +219,19 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       return { policy: data.policy, revision, valid: true, publicConfirmedAt: confirmation?.at ?? null };
     });
   }
+  const bloubOf = (entry: Entry) => readAgentBloub((entry.parsed.doc.toJS() as Record<string, unknown>).bloub);
+  /** Owner-only avatar appearance, optimistic on `revision` (null until first saved). */
+  async function setAvatar(owner: string, id: string, input: unknown): Promise<AgentBloubSettings> {
+    const data = z.object({ revision: z.uuid().nullable(), config: bloubConfigSchema }).strict().parse(input);
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      if (bloubOf(entry).revision !== data.revision) throw new TopicError("L’avatar a été modifié depuis votre lecture. Rechargez.", 409);
+      const revision = randomUUID();
+      entry.parsed.doc.set("bloub", { config: data.config, revision, updatedAt: new Date().toISOString(), updatedBy: owner });
+      await writeAtomic(entry.path, serializeGenerator(entry.parsed.generator, entry.parsed.description, entry.parsed.doc));
+      return { config: data.config, revision };
+    });
+  }
   /** Worker only: every configured agent, whatever its visibility. Never exposed through an API. */
   async function watchAgents(): Promise<WatchAgent[]> {
     return exclusive(async () => (await all()).flatMap(entry => entry.account.editorial ? [{
@@ -224,7 +239,8 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       primaryTopicId: entry.account.editorial.primaryTopicId, secondaryTopicIds: entry.account.editorial.secondaryTopicIds, modelRef: entry.account.editorial.modelRef, watch: watchOf(entry),
     }] : []));
   }
-  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents,
+  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents, setAvatar,
+    avatar: (owner: string, id: string) => exclusive(async () => bloubOf(await owned(owner, id))),
     watchPolicy: (owner: string, id: string) => exclusive(async () => watchOf(await owned(owner, id))),
     listPresets: (owner: string) => exclusive(async () => (await presets()).filter(p => !p.owner || p.owner === owner)),
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },

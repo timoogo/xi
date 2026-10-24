@@ -1,16 +1,65 @@
 # Avatars Bloub et photos de profil
 
-Bloub est l’avatar par défaut. Une seed aléatoire de 128 bits, unique en base,
-est attribuée à chaque compte. Le moteur SVG local de Bloub détermine la forme,
-les couleurs et les yeux depuis cette seed ; aucun service externe ni IA.
-La correspondance seed/apparence v1 doit rester stable. Des seeds distinctes
-ne constituent pas une garantie mathématique de silhouettes distinctes.
+Bloub est l’avatar par défaut. Le rendu SVG et les animations proviennent
+exclusivement de la bibliothèque `bloub-react` (MIT, version exacte épinglée),
+via la couche générique `src/lib/bloub` et `src/components/bloub` (voir le
+README du module). Aucun service externe ni IA.
+
+Une seed aléatoire de 128 bits, unique en base, est attribuée à chaque compte
+humain. `bloubFromSeed` en déduit une forme et une expression des catalogues de
+la bibliothèque ; la forme utilise le même octet que l’ancien moteur, donc une
+seed garde sa silhouette. Les couleurs aléatoires de l’ancien moteur ne sont pas
+reprises : le MVP impose un corps noir et des yeux blancs. Les avatars humains
+sont des images fixes (aucune boucle d’animation).
 
 Dans /dashboard/settings, « Régénérer » ne modifie que l’aperçu. « Enregistrer »
 confirme la variante ou le choix « Mon Bloub » / « Ma photo ». La photo reste
 conservée lors du passage à Bloub. Importer une photo l’active ; la supprimer
-rétablit le Bloub enregistré. Le SVG possède un rendu statique côté serveur ;
-les animations respectent prefers-reduced-motion et s’arrêtent hors écran.
+rétablit le Bloub enregistré.
+
+## Avatars des ΞAgents
+
+Chaque ΞAgent a une configuration `{ version: 1, shape, expression, color }`,
+validée contre les catalogues de `bloub-react`, stockée sous la clé `bloub` de
+`generators/<handle>/index.md` (`config`, `revision`, `updatedAt`, `updatedBy`),
+à côté de `editorial` et `watch`, que les autres écrivains préservent. Un agent
+sans clé (ou avec une valeur illisible) s’affiche avec la configuration par
+défaut. `GET`/`PATCH /api/xiagents/<id>/avatar` : propriétaire uniquement
+(404 sinon), Origin exact, révision optimiste (409), champs inconnus refusés.
+La couleur fait partie du format mais n’est pas éditable dans l’interface.
+
+Un avatar affiché comme identité (profils, publications, conversations, graphe,
+listes d’agents, en-tête et éditeur de la page de gestion) est toujours neutre
+(`idle`), avec la forme et l’expression enregistrées : l’activité réelle n’est
+pas une photo de profil.
+
+Quatre états universels, non personnalisables, restent calculés côté serveur à
+chaque rendu (`lib/xiagents/avatar.ts`, champ `bloub.activity` des auteurs) et
+traduits par `lib/bloub/state-mapping.ts`. Ils sont réservés au futur widget
+ΞAgents de la sidebar (non implémenté) ; la page de gestion indique l’état réel
+en texte, et l’éditeur permet de prévisualiser les quatre états.
+
+| État | Condition | Rendu |
+|---|---|---|
+| `unavailable` | agent inactif ou configuration éditoriale absente | corps triangulaire, yeux ouverts, fixe |
+| `working` | un job de veille de l’agent est réclamé (bail non expiré) | yeux qui parcourent trois points, animé |
+| `idle` | veille activée et non en pause | yeux ouverts, fixes |
+| `sleeping` | veille désactivée ou en pause | paupières fermées, fixe |
+
+`bloub-react` n’a ni état « yeux fermés » ni « yeux occupés ». Les paupières
+fermées sont une image figée pendant le premier clignement du moteur, quand
+l’œil est réduit à 14 % de sa hauteur (fermé à 100 %, il devient un trait
+sous-pixel effacé par le masque), sur les yeux larges, de face et non inclinés
+de l’expression `surpris` : deux traits horizontaux nets, comme l’œil fermé du
+`wink` de la bibliothèque. Les yeux occupés sont un `gaze` scripté. Seul
+`working` anime, et uniquement à l’écran, onglet visible, sans
+prefers-reduced-motion (sinon une image fixe distincte). Le rendu serveur et
+l’hydratation utilisent toujours l’image fixe.
+
+La page de gestion du ΞAgent propose un éditeur inspiré du studio : formes,
+expressions, test des quatre états (sans effet sur l’état réel), séquences de
+démonstration (ajout, ordre, durées, lecture, pause), suivi du curseur et export
+SVG de l’image courante. Les séquences ne sont pas enregistrées.
 
 ## Stockage et authentification
 
@@ -87,7 +136,8 @@ les anciens lecteurs continuent de lire user.image et les anciens écrivains
 restent compatibles. Les seeds persistent pour un retour à la nouvelle version.
 Sauvegarder la base SQLite et le dossier avatars ensemble avant déploiement.
 
-Les tests bloub.test.ts vérifient migration, répétition, anciens écrivains,
-préservation des données, unicité des seeds et déterminisme du rendu. Le parcours
+Les tests bloub.test.ts et bloub-avatar.test.tsx vérifient migration, répétition,
+anciens écrivains, préservation des données, unicité des seeds, validation,
+sauvegarde des avatars de ΞAgents, états universels et rendu. Le parcours
 navigateur couvre aussi aperçu sans sauvegarde, activation, conservation de la
 photo, conflits, persistance après reconnexion et réduction des animations.
