@@ -10,20 +10,27 @@ import { messageHref } from "./message-links";
 import { PublicationPanel } from "./publication-panel";
 import { useLiveSync } from "./live-sync";
 import { formatShortDate } from "./publication-badges";
+import { FeedArticle } from "./feed-article";
 
 type Entry = { ref: string; publicationId: string; message: PublicationSnapshot["messages"][number] | null; publication: PublicationSnapshot | null; deleted: boolean; replyCount?: number };
 type Author = { name: string; handle: string; bloubSeed?: string | null; image?: string | null };
-type Page = { parent: Entry; ancestors: Entry[]; children: Entry[]; nextCursor: string | null; authors: Record<string, Author> };
+type Page = { parent: Entry; ancestors: Entry[]; thread?: Entry[]; children: Entry[]; nextCursor: string | null; authors: Record<string, Author> };
 const unique = (items: Entry[]) => [...new Map(items.map(item => [item.ref, item])).values()];
 
-function Message({ entry, authors, fresh = false }: { entry: Entry; authors: Page["authors"]; fresh?: boolean }) {
-  if (entry.deleted) return <div className="py-4 text-sm text-muted-foreground">Ce message a été supprimé</div>;
+/** Thread link to the next message, drawn under the avatar like a social thread. */
+const connector = <span aria-hidden="true" data-thread-connector className="col-start-1 row-start-2 -mb-6 mt-1 w-0.5 justify-self-center bg-border" />;
+
+/** `threaded` places the message in a thread; `href` makes its free space open it. */
+function Message({ entry, authors, fresh = false, threaded, focused = false, href }: { entry: Entry; authors: Page["authors"]; fresh?: boolean; threaded?: { next: boolean }; focused?: boolean; href?: string }) {
+  if (entry.deleted) return threaded
+    ? <div className="grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 py-3"><span aria-hidden="true" className="size-10 rounded-full bg-muted" /><p className="self-center text-sm text-muted-foreground">Ce message a été supprimé</p>{threaded.next ? connector : null}</div>
+    : <div className="py-4 text-sm text-muted-foreground">Ce message a été supprimé</div>;
   if (!entry.message || !entry.publication) return null;
   const publication = entry.publication;
   const author = authors[publication.authorId];
   const message = entry.message as typeof entry.message & { createdAt?: string; updatedAt?: string };
   const date = message.createdAt ?? publication.publishedAt ?? publication.createdAt;
-  return <article id={`m-${entry.ref.split("/")[1]}`} className={`grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 min-w-0 scroll-mt-24 py-3 ${fresh ? "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500" : ""}`}>
+  return <FeedArticle id={`m-${entry.ref.split("/")[1]}`} href={href} label={`Message de ${author?.name ?? "l’auteur"}`} className={`grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 min-w-0 scroll-mt-24 py-3 ${focused ? "-mx-2 rounded-lg bg-chart-2/10 px-2" : ""} ${fresh ? "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500" : ""}`}>
     <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} bloubSeed={author?.bloubSeed} size={40} ai={publication.authorType === "ai"} /></Link>
     <header className="relative flex min-h-10 flex-wrap content-center items-center gap-x-1 pr-11 text-[15px] leading-5">
       <Link href={`/dashboard/profiles/${publication.authorId}`} className="max-w-full truncate font-bold hover:underline">{author?.name ?? "Auteur"}</Link>
@@ -33,8 +40,11 @@ function Message({ entry, authors, fresh = false }: { entry: Entry; authors: Pag
       {fresh ? <span className="text-xs text-muted-foreground">Nouvelle réponse</span> : null}
       <span className="absolute right-0 top-0"><MessageMenu messageRef={entry.ref} sources={publication.sources} /></span>
     </header>
-    <div className="col-start-2"><MarkdownView markdown={message.body} /><PublicationPanel sources={publication.sources} messageRefs={[entry.ref]} preview={message.body} /></div>
-  </article>;
+    <div className="col-start-2 row-start-2"><MarkdownView markdown={message.body} /><PublicationPanel sources={publication.sources} messageRefs={[entry.ref]} preview={message.body} />
+      {threaded && !focused && entry.replyCount ? <Link href={messageHref(entry.ref)} className="mt-1 inline-block rounded px-1 py-2 text-sm text-chart-2 hover:underline">{entry.replyCount} réponse{entry.replyCount > 1 ? "s" : ""}</Link> : null}
+    </div>
+    {threaded?.next ? connector : null}
+  </FeedArticle>;
 }
 
 /** Each branch owns its cursor and disclosure; sibling refreshes cannot close it. */
@@ -138,12 +148,30 @@ export function ConversationView({ messageRef }: { messageRef: string }) {
     return () => controller.abort();
   }, [messageRef, attempt]);
   useLiveSync(event => { if (event.removed?.includes(messageRef.split("/")[0])) setPage(null); setAttempt(value => value + 1); });
+  const thread = page && (page.thread?.length ?? 0) > 1 ? page.thread! : null;
+  const position = thread?.findIndex(entry => entry.ref === messageRef) ?? -1;
+  // A direct opening lands on the selected message; earlier messages stay just above it.
+  // History restoration (ReplyBranch) and explicit anchors keep their own position.
+  const central = useRef<HTMLLIElement>(null);
+  const placed = useRef(false);
+  useEffect(() => {
+    if (placed.current || !page) return;
+    placed.current = true;
+    if (position <= 0 || location.hash || Number.isFinite(history.state?.xiConversationY)) return;
+    requestAnimationFrame(() => central.current?.scrollIntoView({ block: "start" }));
+  }, [page, position]);
   return <section className="xi-publication min-w-0">
-    <header className="border-b px-4 py-3"><button type="button" className="mr-3 rounded px-2 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => window.history.length > 1 ? router.back() : router.push(`/dashboard/publications/${messageRef.split("/")[0]}`)}>← Retour</button><h1 className="inline text-lg font-semibold">Sous-conversation</h1>
+    <header className="border-b px-4 py-3"><button type="button" className="mr-3 rounded px-2 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => window.history.length > 1 ? router.back() : router.push(`/dashboard/publications/${messageRef.split("/")[0]}`)}>← Retour</button><h1 className="inline text-lg font-semibold">{thread ? "Fil" : "Sous-conversation"}</h1>
       {page ? <nav aria-label="Fil d’Ariane" className="mt-2 flex flex-wrap gap-2 text-sm text-muted-foreground"><Link href={`/dashboard/publications/${messageRef.split("/")[0]}`} className="underline">Publication d’origine</Link>{page.ancestors.filter(entry => !entry.deleted).map((entry, index) => <Link key={entry.ref} href={messageHref(entry.ref)} className="underline">› Message parent {index + 1}</Link>)}</nav> : null}
     </header>
-    <div className="px-4">{error ? <p role="alert" className="py-6">Cette conversation est indisponible. <button className="underline" onClick={() => setAttempt(value => value + 1)}>Réessayer</button></p> : page ? <Message entry={page.parent} authors={page.authors} /> : <p role="status" className="py-4">Chargement…</p>}
-      <ReplyBranch messageRef={messageRef} depth={0} initialOpen />
+    <div className="px-4">{error ? <p role="alert" className="py-6">Cette conversation est indisponible. <button className="underline" onClick={() => setAttempt(value => value + 1)}>Réessayer</button></p> : thread ? <ol aria-label={`Fil de ${thread.length} messages`}>{thread.map((entry, index) => {
+        const focused = index === position;
+        return <li key={entry.ref} ref={focused ? central : undefined} aria-current={focused ? "true" : undefined} className="min-w-0 scroll-mt-24">
+          <Message entry={entry} authors={page!.authors} threaded={{ next: index < thread.length - 1 }} focused={focused} href={focused || entry.deleted ? undefined : messageHref(entry.ref)} />
+        </li>;
+      })}</ol> : page ? <Message entry={page.parent} authors={page.authors} /> : <p role="status" className="py-4">Chargement…</p>}
+      {thread && page!.parent.replyCount ? <h2 className="mt-2 border-t pt-3 text-sm font-semibold">Réponses au message {position + 1}/{thread.length}</h2> : null}
+      <ReplyBranch messageRef={messageRef} depth={0} initialOpen count={thread ? page!.parent.replyCount ?? 0 : undefined} />
     </div>
   </section>;
 }

@@ -1,6 +1,7 @@
 import { labelTestMessage } from "./test-content";
 import { locked } from "../topics/lock";
 import { parseMessage } from "./message-metadata";
+import { threadNumbers } from "./conversation";
 import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
@@ -601,8 +602,9 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   // Trash is structural only when this exact message still has an independently readable child.
   const structuralReadableSql = (publication: string, message: string) => readablePublicationSql(publication).replace(`${publication}.trashed_at IS NULL`, `(${publication}.trashed_at IS NULL OR EXISTS (SELECT 1 FROM publication_message child JOIN publication cp ON cp.id=child.publication_id WHERE child.reply_to=(${message}.publication_id || '/' || ${message}.n) AND child.deleted=0 AND ${readablePublicationSql("cp")}))`);
 
+  // Thread continuation (`thread_continuation`) is indexed as reply_to but is never a reply.
   function withReplyCounts(item: PublicationSnapshot, viewer: Viewer) {
-    const counts = db.prepare<{viewer:string;parent:string},{reply_to:string;total:number}>(`SELECT m.reply_to, COUNT(*) AS total FROM publication_message m JOIN publication p ON p.id=m.publication_id WHERE m.reply_to LIKE @parent AND ${structuralReadableSql("p", "m")} AND (m.deleted=0 OR EXISTS (SELECT 1 FROM publication_message child JOIN publication cp ON cp.id=child.publication_id WHERE child.reply_to=(m.publication_id || '/' || m.n) AND child.deleted=0 AND ${readablePublicationSql("cp")})) GROUP BY m.reply_to`).all({viewer:viewer.id,parent:item.id+"/%"});
+    const counts = db.prepare<{viewer:string;parent:string;self:string;thread:string},{reply_to:string;total:number}>(`SELECT m.reply_to, COUNT(*) AS total FROM publication_message m JOIN publication p ON p.id=m.publication_id WHERE m.reply_to LIKE @parent AND NOT (m.publication_id=@self AND m.n IN (SELECT value FROM json_each(@thread))) AND ${structuralReadableSql("p", "m")} AND (m.deleted=0 OR EXISTS (SELECT 1 FROM publication_message child JOIN publication cp ON cp.id=child.publication_id WHERE child.reply_to=(m.publication_id || '/' || m.n) AND child.deleted=0 AND ${readablePublicationSql("cp")})) GROUP BY m.reply_to`).all({viewer:viewer.id,parent:item.id+"/%",self:item.id,thread:JSON.stringify(threadNumbers(item.messages, item.id))});
     const byRef = new Map(counts.map(row => [row.reply_to,row.total]));
     const messages = item.messages.map(message => ({...message,replyCount:byRef.get(`${item.id}/${parseInt(message.file,10)}`) ?? 0}));
     for (const row of index.messages(item.id)) {
@@ -899,20 +901,23 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     if (!/^[0-9a-f-]{36}\/[1-9]\d*$/.test(ref)) throw notFound();
     await ensureIndexed();
     const {viewer: reader} = await authorized(viewer);
-    const folders = new Map<string, Promise<Folder | null>>();
-    const load = (row: IndexRow) => {
-      if (!folders.has(row.id)) folders.set(row.id, readFolder(fromVaultRelative(vault, row.path)));
-      return folders.get(row.id)!;
+    // One snapshot (and one reply count query) per publication, whatever the number of entries.
+    const sources = new Map<string, Promise<{row: IndexRow; publication: PublicationSnapshot} | null>>();
+    const readable = (id: string) => {
+      if (!sources.has(id)) sources.set(id, (async () => {
+        const row = index.get(id);
+        const folder = row && await readFolder(fromVaultRelative(vault, row.path));
+        return row && folder && canRead(reader, folder.meta) ? {row, publication: withReplyCounts(snapshot(folder), reader)} : null;
+      })());
+      return sources.get(id)!;
     };
     const entry = async (target: string): Promise<ConversationEntry | null> => {
       const [id, number] = target.split("/");
-      const row = index.get(id);
-      if (!row) return null;
-      const folder = await load(row);
-      if (!folder || !canRead(reader, folder.meta)) return null;
+      const source = await readable(id);
+      if (!source) return null;
       const indexed = index.messages(id).find(message => message.n === Number(number));
       if (!indexed) return null;
-      const publication = withReplyCounts(snapshot(folder), reader);
+      const {row, publication} = source;
       const replyCount = publication.messages.find(message => parseInt(message.file,10) === Number(number))?.replyCount ?? db.prepare<{viewer:string;ref:string},{total:number}>(`SELECT COUNT(*) AS total FROM publication_message m JOIN publication p ON p.id=m.publication_id WHERE m.reply_to=@ref AND m.deleted=0 AND ${readablePublicationSql("p")}`).get({viewer:viewer.id,ref:target})!.total;
       if (row.trashed_at || indexed.deleted) {
         const child = db.prepare<{viewer:string;ref:string}, {n:number}>(`SELECT m.n FROM publication_message m JOIN publication p ON p.id = m.publication_id WHERE m.reply_to = @ref AND m.deleted = 0 AND ${readablePublicationSql("p")} LIMIT 1`).get({viewer:viewer.id,ref:target});
@@ -923,9 +928,22 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     };
     const parent = await entry(ref);
     if (!parent) throw notFound();
+    // The thread of the selected message is built from its publication's order, never from dates;
+    // its members are neither ancestors nor replies of one another.
+    const publicationId = ref.split("/")[0];
+    const own = await readable(publicationId);
+    const spine = new Set<string>();
+    const thread: ConversationEntry[] = [];
+    if (own && !own.row.trashed_at) {
+      for (const n of threadNumbers(own.publication.messages, publicationId)) spine.add(`${publicationId}/${n}`);
+      if (spine.size > 1 && spine.has(ref)) for (const target of spine) {
+        const member = target === ref ? parent : await entry(target);
+        if (member) thread.push(member);
+      }
+    }
     const ancestors: ConversationEntry[] = [];
-    const seen = new Set([ref]);
-    let current = ref;
+    const seen = new Set([ref, ...thread.map(member => member.ref)]);
+    let current = thread[0]?.ref ?? ref;
     while (true) {
       const [id, number] = current.split("/");
       const next = index.messages(id).find(message => message.n === Number(number))?.reply_to;
@@ -958,7 +976,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       for (const row of rows) {
         const childRef = `${row.publication_id}/${row.n}`;
         after = [row.created_at ?? "",childRef];
-        if (seen.has(childRef)) continue;
+        if (seen.has(childRef) || spine.has(childRef)) continue;
         const child = await entry(childRef);
         if (!child) continue;
         if (children.length === 10) { more = true; break; }
@@ -967,7 +985,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       }
       if (more || rows.length < 11) break;
     }
-    return {parent,ancestors,children,nextCursor:more && last ? Buffer.from(JSON.stringify([ref,last.created_at,`${last.publication_id}/${last.n}`])).toString("base64url") : null};
+    return {parent,ancestors,thread,children,nextCursor:more && last ? Buffer.from(JSON.stringify([ref,last.created_at,`${last.publication_id}/${last.n}`])).toString("base64url") : null};
   }
 
   const replies = (viewer: Viewer, publicationId: string, cursor?: string | null) => page(viewer, { kind: "conversation", publicationId }, cursor);

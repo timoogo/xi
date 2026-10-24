@@ -184,7 +184,8 @@ test("drafting: threads only when justified, hallucinations corrected or held, c
   const threadDraft = await w.publications.get({ id: "alice" }, draftId(w.agentId, a.story, a.version));
   assert.deepEqual([threadDraft.type, threadDraft.messages.length], ["thread", 3]);
   const conversation = await w.publications.conversation({ id: "alice" }, `${threadDraft.id}/3`);
-  assert.deepEqual(conversation.ancestors.map(entry => entry.ref), [`${threadDraft.id}/1`, `${threadDraft.id}/2`]);
+  assert.deepEqual(conversation.thread.map(entry => entry.ref), [1, 2, 3].map(n => `${threadDraft.id}/${n}`));
+  assert.deepEqual([conversation.ancestors.length, conversation.children.length], [0, 0]);
 
   // Hallucinated figure, invented quotation and URL: refused, corrected on the second attempt.
   const b = w.candidate([{ publisher: "La Gazette", title: "Le Sénat vote la loi sur l'eau", summary: "Le Sénat a adopté mardi la loi sur la gestion de l'eau par 210 voix contre 98." }, { publisher: "Le Soir", title: "Loi sur l'eau adoptée au Sénat", summary: "Les sénateurs ont adopté mardi la loi sur l'eau." }],

@@ -31,3 +31,9 @@ export function conversationTree(messages: ConversationMessage[], publicationId?
   }
   return { main: messages.filter(message => !parents.has(message.key)), branches };
 }
+
+/** A publication's own thread: messages not attached to a local message, in thread order. */
+export function threadNumbers(messages: { file: string; body: string; replyTo?: string | null }[], publicationId: string): number[] {
+  const tree = conversationTree(messages.map(message => ({ key: message.file, body: message.body, replyTo: message.replyTo })), publicationId);
+  return [...new Set(tree.main.map(message => parseInt(message.key, 10)))];
+}

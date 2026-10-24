@@ -80,7 +80,8 @@ test("ΞAgent management page: owner renders identity, topics and history; missi
     assert.equal(seen.authors[agent.id].handle, "@politiks");
     assert.deepEqual(seen.publication.messages.map((m: { body: string }) => m.body), ["**Contenu de test fictif — 1/2**\n\nTexte **modifié**", "**Contenu de test fictif — 2/2**\n\nSuite modifiée"]);
     const conversation = await (await read(other, `/api/conversations?ref=${publicId}/2`)).json();
-    assert.deepEqual(conversation.ancestors.map((entry: { ref: string }) => entry.ref), [`${publicId}/1`]);
+    assert.deepEqual(conversation.thread.map((entry: { ref: string }) => entry.ref), [`${publicId}/1`, `${publicId}/2`]);
+    assert.deepEqual([conversation.ancestors.length, conversation.children.length], [0, 0]);
   }
   await checkAccess();
   await app.stop(); await app.start();

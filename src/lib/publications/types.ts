@@ -49,7 +49,11 @@ export type ConversationEntry = {
 };
 export type ConversationPage = {
   parent: ConversationEntry;
+  /** Context before the thread (or before the message when it is not part of one). */
   ancestors: ConversationEntry[];
+  /** The whole publication thread containing `parent`, in thread order; empty for a single message. */
+  thread: ConversationEntry[];
+  /** Replies to `parent` only: its thread continuation is never a reply. */
   children: ConversationEntry[];
   nextCursor: string | null;
 };

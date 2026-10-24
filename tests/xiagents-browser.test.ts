@@ -87,8 +87,15 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   await page.getByText("Contenu de test fictif — 10/10", { exact: true }).waitFor();
   const conversationLink = page.locator(`a[href="/dashboard/publications/${row.id}/conversation/1"]`).first();
   await conversationLink.click();
-  await page.locator("#m-1").first().waitFor();
-  await page.getByRole("list", { name: "Réponses chronologiques" }).getByText("Contenu de test fictif — 2/10", { exact: true }).waitFor();
+  // The whole thread is read on one page around the selected message; continuation is never a reply.
+  const thread = page.getByRole("list", { name: "Fil de 10 messages" });
+  await thread.getByText("Contenu de test fictif — 10/10", { exact: true }).waitFor();
+  assert.match((await thread.locator("li[aria-current=true]").textContent())!, /1\/10/);
+  assert.equal(await page.getByRole("list", { name: "Réponses chronologiques" }).getByText(/Contenu de test fictif/).count(), 0);
+  await thread.locator("li").nth(4).locator(".xi-markdown").first().click();
+  await page.waitForURL(`${app.origin}/dashboard/publications/${row.id}/conversation/5`);
+  await page.getByRole("list", { name: "Fil de 10 messages" }).locator("li[aria-current=true]").getByText("Contenu de test fictif — 5/10", { exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => window.scrollY > 0), "a direct thread position scrolls to the selected message");
   // Markdown editing, final preview with the enforced test label, explicit public confirmation.
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
   await page.getByRole("combobox", { name: /^Format/ }).selectOption("post");

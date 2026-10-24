@@ -11,7 +11,7 @@ const INTERACTIVE = "a, button, summary, details, input, textarea, select, label
  * Links, buttons, folded sources and text selection keep their own behaviour;
  * keyboard users reach the detail page through the date link.
  */
-export function FeedArticle({ href, label, className, children }: { href?: string; label: string; className?: string; children: ReactNode }) {
+export function FeedArticle({ href, label, className, children, id }: { href?: string; label: string; className?: string; children: ReactNode; id?: string }) {
   const router = useRouter();
   function open(event: MouseEvent<HTMLElement>) {
     if (!href || event.defaultPrevented || event.button !== 0) return;
@@ -24,7 +24,7 @@ export function FeedArticle({ href, label, className, children }: { href?: strin
     else router.push(href);
   }
   return (
-    <article aria-label={label} onClick={href ? open : undefined}
+    <article id={id} aria-label={label} onClick={href ? open : undefined}
       className={cn(className, href && "cursor-pointer transition-colors hover:bg-foreground/[0.025]")}>
       {children}
     </article>

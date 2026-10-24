@@ -22,7 +22,15 @@ async function fixture(t: { after(fn: () => Promise<void>): unknown }) {
     await store.publish(alice, id, saved.snapshot.revision);
     return `${id}/1`;
   }
-  return { store, publish };
+  async function publishThread(bodies: string[], visibility: "public" | "private" = "public") {
+    const id = await store.create(alice);
+    const draft = await store.getEditable(alice, id);
+    const saved = await store.save(alice, id, { baseRevision: draft.revision, summary: "", visibility, messages: bodies.map((body, i) => ({ key: `k${i}`, file: null, body })) });
+    assert.ok(saved.ok);
+    await store.publish(alice, id, saved.snapshot.revision);
+    return bodies.map((_, i) => `${id}/${i + 1}`);
+  }
+  return { store, publish, publishThread };
 }
 
 test("conversation cursor appends batches of ten in stable chronological/ref order without duplicates", async t => {
@@ -88,4 +96,68 @@ test("deleted parent exposes only neutral structure while allowed replies surviv
   assert.equal(JSON.stringify(result.parent).includes("Sensitive original body"), false);
   assert.equal(JSON.stringify(result.parent).includes("alice"), false);
   assert.deepEqual(result.children.map(entry => entry.ref), [reply]);
+});
+
+test("a single post has no thread", async t => {
+  const { store, publish } = await fixture(t);
+  const root = await publish("Seul");
+  const reply = await publish("Réponse", root);
+  const result = await store.conversation(bob, root);
+  assert.deepEqual(result.thread, []);
+  assert.deepEqual(result.children.map(entry => entry.ref), [reply]);
+});
+
+test("every thread message stays central over the whole ordered thread", async t => {
+  const { store, publishThread } = await fixture(t);
+  const short = await publishThread(["Un", "Deux", "Trois"]);
+  const first = await store.conversation(bob, short[0]);
+  assert.equal(first.parent.ref, short[0]);
+  assert.deepEqual(first.thread.map(entry => entry.ref), short);
+  const long = await publishThread(Array.from({ length: 10 }, (_, i) => `Message ${i + 1}`));
+  for (const ref of [long[2], long[9]]) {
+    const result = await store.conversation(bob, ref);
+    assert.equal(result.parent.ref, ref);
+    assert.deepEqual(result.thread.map(entry => entry.ref), long);
+    assert.deepEqual([result.ancestors.length, result.children.length], [0, 0]);
+  }
+});
+
+test("thread replies belong to their own message and sub-conversations stay distinct", async t => {
+  const { store, publish, publishThread } = await fixture(t);
+  const origin = await publish("Origine");
+  const thread = await publishThread(["Un", "Deux", "Trois"]);
+  const id = thread[0].split("/")[0];
+  // The thread itself answers another publication: that context precedes the thread.
+  const draft = await store.getEditable(alice, id);
+  const saved = await store.save(alice, id, { baseRevision: draft.revision, summary: "", visibility: "public", messages: draft.messages.map((message, i) => ({ key: `k${i}`, file: message.file, body: i === 0 ? `---\nreply_to: ${origin}\n---\n${message.body}` : message.body })) });
+  assert.ok(saved.ok);
+  const reply = await publish("Réponse au 2", thread[1]);
+  const nested = await publish("Sous-réponse", reply);
+  const second = await store.conversation(bob, thread[1]);
+  assert.deepEqual(second.ancestors.map(entry => entry.ref), [origin]);
+  assert.deepEqual(second.thread.map(entry => entry.ref), thread);
+  assert.deepEqual(second.children.map(entry => entry.ref), [reply]);
+  assert.deepEqual(second.thread.map(entry => entry.replyCount), [0, 1, 0]);
+  assert.deepEqual((await store.conversation(bob, thread[0])).children, []);
+  const sub = await store.conversation(bob, reply);
+  assert.deepEqual(sub.thread, []);
+  assert.deepEqual(sub.ancestors.map(entry => entry.ref), [thread[1]]);
+  assert.deepEqual(sub.children.map(entry => entry.ref), [nested]);
+});
+
+test("unavailable thread messages are neutral or absent, and private threads stay owner-only", async t => {
+  const { store, publish, publishThread } = await fixture(t);
+  const thread = await publishThread(["Un", "Deux secret", "Trois"]);
+  const id = thread[0].split("/")[0];
+  const reply = await publish("Réponse", thread[1]);
+  const draft = await store.getEditable(alice, id);
+  const saved = await store.save(alice, id, { baseRevision: draft.revision, summary: "", visibility: "public", messages: draft.messages.filter((_, i) => i !== 1).map((message, i) => ({ key: `k${i}`, file: message.file, body: message.body })) });
+  assert.ok(saved.ok);
+  const result = await store.conversation(bob, thread[2]);
+  assert.deepEqual(result.thread.map(entry => [entry.ref, entry.deleted]), [[thread[0], false], [thread[1], true], [thread[2], false]]);
+  assert.equal(JSON.stringify(result.thread[1]).includes("secret"), false);
+  assert.deepEqual((await store.conversation(bob, thread[1])).children.map(entry => entry.ref), [reply]);
+  const secret = await publishThread(["Privé 1", "Privé 2"], "private");
+  await assert.rejects(store.conversation(bob, secret[1]), /introuvable/);
+  assert.equal((await store.conversation(alice, secret[1])).thread.length, 2);
 });

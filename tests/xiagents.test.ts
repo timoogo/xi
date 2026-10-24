@@ -60,8 +60,11 @@ test("ΞAgents: local preview, private publication, ownership, Markdown, threads
   assert.ok(markdown.includes(agent.id)); assert.ok(markdown.includes(run.topicId));
   for (let n = 1; n <= 4; n++) {
     const page = await publications.conversation({ id: "alice" }, `${choice.seed}/${n}`);
-    assert.equal(page.ancestors.length, n - 1);
-    assert.equal(page.children.length, n === 4 ? 0 : 1);
+    assert.deepEqual(page.thread.map(entry => entry.ref), [1, 2, 3, 4].map(i => `${choice.seed}/${i}`));
+    assert.equal(page.parent.ref, `${choice.seed}/${n}`);
+    assert.equal(page.ancestors.length, 0);
+    assert.equal(page.children.length, 0);
+    assert.ok(page.thread.every(entry => entry.replyCount === 0));
   }
   await assert.rejects(publications.conversation({ id: "bob" }, `${choice.seed}/1`), /introuvable/);
   const graph = createGraphRepository({ vault, db, publications });
@@ -85,7 +88,7 @@ test("ΞAgents: local preview, private publication, ownership, Markdown, threads
   const publicRead = await publications.get({ id: "bob" }, publicChoice.seed);
   assert.equal(publicRead.messages[0].body, "**Contenu de test fictif — 1/2**\n\n" + publicChoice.messages[0]);
   assert.equal(publicRead.messages[1].replyTo, null); // user Markdown never injects conversation metadata
-  assert.equal((await publications.conversation({ id: "bob" }, `${publicChoice.seed}/2`)).ancestors[0].ref, `${publicChoice.seed}/1`);
+  assert.equal((await publications.conversation({ id: "bob" }, `${publicChoice.seed}/2`)).thread[0].ref, `${publicChoice.seed}/1`);
   assert.ok((await publications.page({ id: "bob" }, { kind: "home" })).items.some(p => p.id === publicChoice.seed));
   assert.ok((await graph.authorizedGraph({ id: "bob" })).publications.some(p => p.id === publicChoice.seed && p.generatorId === agent.id));
   const publicRow = db.prepare("SELECT path FROM publication WHERE id=?").get(publicChoice.seed) as { path: string };
@@ -130,8 +133,8 @@ test("ΞAgents: local preview, private publication, ownership, Markdown, threads
   assert.deepEqual((await rebuilt.get({ id: "alice" }, choice.seed)).messages.map(m => m.body), preview.preview!.messages);
   for (let n = 1; n <= 4; n++) {
     const page = await rebuilt.conversation({ id: "alice" }, `${choice.seed}/${n}`);
-    assert.deepEqual(page.ancestors.map(entry => entry.ref), Array.from({ length: n - 1 }, (_, i) => `${choice.seed}/${i + 1}`));
-    assert.ok(page.ancestors.every(entry => entry.publication?.authorId === agent.id));
+    assert.deepEqual(page.thread.map(entry => entry.ref), Array.from({ length: 4 }, (_, i) => `${choice.seed}/${i + 1}`));
+    assert.ok(page.thread.every(entry => entry.publication?.authorId === agent.id));
   }
   const bobFeed = (await rebuilt.page({ id: "bob" }, { kind: "home" })).items.map(p => p.id);
   assert.ok(bobFeed.includes(publicChoice.seed) && !bobFeed.includes(choice.seed) && !bobFeed.includes(altered.publication!.id));
