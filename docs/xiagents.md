@@ -97,3 +97,9 @@ compte et leur maintien après redémarrage.
 édition Markdown, confirmation privée et publique, post et thread de dix
 messages, feed, conversations, isolation, redirection, mobile et redémarrage. Utiliser `NEXT_DIST_DIR=.next-verify` pour le
 build et les tests navigateur lorsqu’un serveur de développement tourne.
+
+## Veille autonome
+
+Le moteur de veille et la politique de publication par agent (activation,
+pause, plafond, intervalle) sont décrits dans [watch.md](watch.md). Il réutilise
+`publishGenerated`, désormais protégé par un verrou interprocessus.

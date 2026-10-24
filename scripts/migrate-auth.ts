@@ -2,6 +2,7 @@ import { migrateAvatarPreferences } from "../src/lib/avatar-preferences";
 import { getMigrations } from "better-auth/db/migration";
 import { createAuth } from "../src/lib/auth";
 import { migratePublicationIndex } from "../src/lib/publications/index-db";
+import { migrateWatchJobs } from "../src/lib/watch/jobs";
 
 async function main() {
   const { auth, database } = createAuth();
@@ -10,7 +11,8 @@ async function main() {
     await migrations.runMigrations();
     migrateAvatarPreferences(database);
     migratePublicationIndex(database);
-    console.log("SQLite authentication and publication index schemas are up to date.");
+    migrateWatchJobs(database);
+    console.log("SQLite authentication, publication index and watch queue schemas are up to date.");
   } finally {
     database.close();
   }

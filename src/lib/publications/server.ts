@@ -8,13 +8,23 @@ import { openVault, vaultPathFromEnv } from "./vault";
 import { watchPublications } from "./runtime";
 
 // One store per server process: its per-publication locks must be shared by every request.
-const storeGlobal = globalThis as typeof globalThis & { xiPublications?: Promise<PublicationStore> };
+const storeGlobal = globalThis as typeof globalThis & {
+  xiPublications?: Promise<PublicationStore>; xiPublicationsFactory?: typeof createPublicationStore; xiPublicationsWatcher?: { close(): unknown };
+};
 
 export function getPublicationStore() {
+  // Next dev reloads modules but keeps globalThis: a store built by older code lacks newer methods
+  // (e.g. publishGenerated). Replace it, and stop the watcher it owned.
+  if (process.env.NODE_ENV !== "production" && storeGlobal.xiPublicationsFactory !== createPublicationStore) {
+    void storeGlobal.xiPublicationsWatcher?.close();
+    storeGlobal.xiPublications = undefined;
+    storeGlobal.xiPublicationsWatcher = undefined;
+    storeGlobal.xiPublicationsFactory = createPublicationStore;
+  }
   storeGlobal.xiPublications ??= openVault(vaultPathFromEnv())
     .then((vault) => {
       const store = createPublicationStore({ vault, db: getAppDatabase() });
-      watchPublications(vault, store);
+      storeGlobal.xiPublicationsWatcher = watchPublications(vault, store);
       return store;
     })
     .catch((error) => {

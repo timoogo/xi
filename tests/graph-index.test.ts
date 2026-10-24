@@ -130,7 +130,7 @@ test("SQL readability is exactly canRead over every combination", () => {
       const row: IndexRow = {
         id: uuid(++n), author_type: authorType, author_id: authorId, type: "post", status, visibility, path: `p/${n}`, original_path: null,
         trashed_at: trashed ? "2026-10-19" : null, created_at: "a", updated_at: "b", published_at: null, score: null, excerpt: "",
-        generator_id: null, index_mtime: 1,
+        generator_id: null, test_content: 0, index_mtime: 1,
       };
       index.upsert(row, []);
       cases.push({ row, expected: canRead(alice, { authorType, authorId, status, visibility }, trashed) });

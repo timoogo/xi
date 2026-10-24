@@ -28,6 +28,8 @@ export async function manualPublication(accounts: AccountStore, topics: TopicSto
   if (request.action === "generate") return { preview: content };
   if (request.visibility === "public" && !request.publicConfirmed) throw new TopicError("Confirmez explicitement la publication publique.");
   if (request.messages && request.messages.length !== request.count) throw new TopicError("Le nombre de messages ne correspond pas à l’aperçu.");
-  const publication = await publications.publishGenerated({ id: owner }, agentId, { id: request.seed, summary: testPublicationSummary(request.count), messages: request.messages ?? content.messages, visibility: request.visibility, publicConfirmed: request.publicConfirmed, topicIds });
+  // Fixtures have their own ceiling (watch policy) and never consume the real publication quota.
+  const { policy } = await accounts.watchPolicy(owner, agentId);
+  const publication = await publications.publishGenerated({ id: owner }, agentId, { id: request.seed, summary: testPublicationSummary(request.count), messages: request.messages ?? content.messages, visibility: request.visibility, publicConfirmed: request.publicConfirmed, topicIds }, { testDailyLimit: policy.testMaxPerDay });
   return { publication };
 }

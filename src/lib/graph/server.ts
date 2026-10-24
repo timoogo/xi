@@ -1,15 +1,22 @@
 import { getAppDatabase } from "../auth";
 import { getFeedAuthors, getPublicationStore, getViewer } from "../publications/server";
+import type { PublicationStore } from "../publications/store";
 import { openVault, vaultPathFromEnv } from "../publications/vault";
 import { createGraphRepository } from "./repository";
 import { createGraphService, GraphNotFoundError, type GraphService } from "./service";
 import type { Viewer } from "./types";
 
 // One service per server process, sharing the publication store (and its locks) with the rest of the app.
-const graphGlobal = globalThis as typeof globalThis & { xiGraph?: Promise<GraphService> };
+const graphGlobal = globalThis as typeof globalThis & { xiGraph?: Promise<GraphService>; xiGraphStore?: Promise<PublicationStore> };
 
 export function getGraphService() {
-  graphGlobal.xiGraph ??= Promise.all([getPublicationStore(), openVault(vaultPathFromEnv())])
+  // Built on the current publication store: rebuilt when that store is replaced (dev reloads).
+  const store = getPublicationStore();
+  if (graphGlobal.xiGraphStore !== store) {
+    graphGlobal.xiGraph = undefined;
+    graphGlobal.xiGraphStore = store;
+  }
+  graphGlobal.xiGraph ??= Promise.all([store, openVault(vaultPathFromEnv())])
     .then(([publications, vault]) => createGraphService({
       repository: createGraphRepository({ vault, db: getAppDatabase(), publications }), publications,
       authors: (ids, viewer) => viewer ? getFeedAuthors(viewer, ids) : new Map(),

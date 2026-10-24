@@ -161,6 +161,12 @@ export function parseSource(text: string) {
   };
 }
 
+/** A message's prose and its trailing `## Sources` section ("" when absent). */
+export function splitSourcesSection(body: string) {
+  const match = /^#{1,6}\s*sources\s*$/im.exec(body);
+  return match ? { prose: body.slice(0, match.index).trimEnd(), sources: body.slice(match.index) } : { prose: body.trimEnd(), sources: "" };
+}
+
 export function sourceLinkLine(folder: string, file: string, title: string, publisher: string) {
   const alias = title.replace(/[[\]|#^\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   return `- [[${folder}/_sources/${file.replace(/\.md$/, "")}|${alias}]] — ${publisher.replace(/[\r\n]+/g, " ")}`;

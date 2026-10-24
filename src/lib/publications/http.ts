@@ -14,7 +14,7 @@ export async function publicationResponse(
   try {
     return privateJson(await task(await getPublicationStore(), viewer));
   } catch (error) {
-    if (error instanceof PublicationError) return privateJson({ error: error.message }, error.code === "stale_cursor" ? 409 : error.code === "invalid" ? 400 : 404);
+    if (error instanceof PublicationError) return privateJson({ error: error.message }, error.code === "stale_cursor" ? 409 : error.code === "invalid" ? 400 : error.code === "rate_limited" ? 429 : 404);
     console.error("Publication request failed", error instanceof Error ? error.name : "unknown");
     return privateJson({ error: "Les publications sont momentanément indisponibles." }, 503);
   }

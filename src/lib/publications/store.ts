@@ -1,4 +1,5 @@
 import { labelTestMessage } from "./test-content";
+import { locked } from "../topics/lock";
 import { parseMessage } from "./message-metadata";
 import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
 import { createHash, randomUUID } from "node:crypto";
@@ -10,25 +11,28 @@ import { z } from "zod";
 import { bumpIndexGeneration, indexGeneration, readablePublicationSql, createIndex, type IndexRow, type MessageRow } from "./index-db";
 import {
   excerpt, hasContent, messageEmbedTarget, messageSlug, parseIndex, parseSource, rewriteFolderLinks, serializeIndex,
-  serializeSource, setMeta, slugify, sourceLinkLine, splitIndexBody, splitFrontmatter,
+  serializeSource, setMeta, slugify, sourceLinkLine, splitIndexBody, splitFrontmatter, splitSourcesSection, type SourceInput,
 } from "./markdown";
 import { canEdit, canManageTrash, canRead } from "./permissions";
 import {
   VISIBILITIES, type PublicationMeta, type PublicationSnapshot, type TrashItem, type Viewer, type ConversationEntry, type ConversationPage,
 } from "./types";
 import {
-  assertInVault, exists, FOLDER_NAME, fromVaultRelative, inside, listDir, NUMBERED_FILE, PUBLICATION_ID, readMarkdownTree,
+  assertInVault, assertWithin, exists, FOLDER_NAME, fromVaultRelative, inside, listDir, NUMBERED_FILE, PUBLICATION_ID, readMarkdownTree,
   toVaultRelative, USER_ID, writeAtomic, type Vault,
 } from "./vault";
 
 export class PublicationError extends Error {
-  constructor(readonly code: "not_found" | "invalid" | "stale_cursor", message: string) {
+  constructor(readonly code: "not_found" | "invalid" | "stale_cursor" | "rate_limited", message: string) {
     super(message);
   }
 }
 
 // Unreadable and nonexistent publications are indistinguishable to callers.
 const notFound = () => new PublicationError("not_found", "Publication introuvable.");
+/** Marks drafts written by the watch engine; fixtures use `manual-fixture-v1` and `test_content`. */
+export const WATCH_DRAFT = "watch-draft-v1";
+const SOURCES_HEADING = /^#{1,6}\s*sources\s*$/im;
 const invalid = (message: string) => new PublicationError("invalid", message);
 
 const saveSchema = z.object({
@@ -163,7 +167,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       visibility: meta.visibility, path: rel(folder.dir), original_path: trash?.originalPath ?? null,
       trashed_at: trash?.trashedAt ?? null, created_at: meta.createdAt, updated_at: meta.updatedAt,
       published_at: meta.publishedAt, score: meta.score, excerpt: excerpt(folder.summary || folder.messages[0]?.body || ""),
-      revision:folder.revision, generator_id: folder.generatorId, reply_to: folder.messages[0]?.replyTo ?? null, index_mtime: folder.indexMtime,
+      revision:folder.revision, generator_id: folder.generatorId, test_content: folder.doc.get("test_content") === true ? 1 : 0, reply_to: folder.messages[0]?.replyTo ?? null, index_mtime: folder.indexMtime,
     };
   }
 
@@ -371,10 +375,78 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     });
   }
 
-  /** The only generated-publication writer: owner checked from Markdown, public visibility requires explicit confirmation.
-   * Stage the entire folder before exposing it; the request UUID makes retries idempotent.
+  /** Indexed publications of an agent; fixtures (`test`) never count toward real publication quotas. Call ensureIndexed first. */
+  function agentPublications(agentId: string) {
+    return index.byAuthor(agentId).filter(row => row.author_type === "ai" && row.status === "published" && !row.trashed_at && row.published_at)
+      .map(row => ({ id: row.id, publishedAt: new Date(row.published_at!), test: row.test_content === 1, excerpt: row.excerpt }));
+  }
+
+  async function ownsAgent(owner: string, agentId: string) {
+    return (await readGenerators(vault, { id: owner })).some(agent => agent.id === agentId && agent.ownerId === owner);
+  }
+
+  /**
+   * Agent folders are written by the web server (fixtures, reviews) and the watch worker (drafts):
+   * the in-process locks order local callers, the SQLite lock (outside the watched `posts/`)
+   * serializes processes, and the disk rescan then sees folders another process created
+   * (idempotency by id, sequence numbers).
    */
-  async function publishGenerated(viewer: Viewer, agentId: string, raw: unknown): Promise<PublicationSnapshot> {
+  async function agentLock<T>(id: string, agentId: string, task: () => Promise<T>) {
+    const lockDir = inside(vault.root, ".xi-locks");
+    await mkdir(lockDir, { recursive: true, mode: 0o700 });
+    if (await assertWithin(vault.root, lockDir) !== lockDir) throw invalid("Dossier de verrou invalide.");
+    return withLock(`generated-publication:${id}`, () => withLock(`generated:${agentId}`, () => locked(lockDir, async () => {
+      await reconcileUser(agentId);
+      return task();
+    })));
+  }
+
+  /**
+   * The only writer of new agent folders: everything is staged in a hidden folder, then renamed
+   * into place. Source notes use the human format; each message ends with links to its sources.
+   */
+  async function createAgentFolder(agentId: string, input: {
+    id: string; status: PublicationMeta["status"]; visibility: "private" | "public"; doc: Document; summary: string;
+    messages: { body: string; sources: number[] }[]; sources: (SourceInput & { accessedAt: string })[];
+  }) {
+    const live = inside(generatorsDir, agentId);
+    await mkdir(live, { recursive: true, mode: 0o700 });
+    if (await assertInVault(vault, live) !== live) throw invalid("Dossier de publication invalide.");
+    const date = now(), at = date.toISOString();
+    const type = input.messages.length > 1 ? "thread" : "post";
+    const used = (await listDir(live)).map(entry => FOLDER_NAME.exec(entry.name)).filter(match => match?.[2] === stamp(date)).map(match => Number(match![3]));
+    const sequence = String(Math.max(0, ...used) + 1).padStart(3, "0");
+    const target = inside(live, `${type}_${stamp(date)}_${sequence}`);
+    const stage = inside(live, `.${input.id}-${randomUUID()}`);
+    await mkdir(stage, { mode: 0o700 });
+    try {
+      const meta: PublicationMeta = { id: input.id, type, authorType: "ai", authorId: agentId, status: input.status, visibility: input.visibility, createdAt: at, updatedAt: at, publishedAt: input.status === "published" ? at : null, score: null };
+      setMeta(input.doc, meta);
+      const sourceFiles = input.sources.map((source, i) => `${i + 1}_${slugify(source.title, "source")}.md`);
+      if (sourceFiles.length) await mkdir(inside(stage, "_sources"), { mode: 0o700 });
+      for (const [i, source] of input.sources.entries()) await writeAtomic(inside(stage, "_sources", sourceFiles[i]), serializeSource(source, source.accessedAt));
+      const order: string[] = [];
+      for (const [i, message] of input.messages.entries()) {
+        const file = `${i + 1}_${messageSlug(message.body)}.md`;
+        order.push(file);
+        const links = message.sources.map(n => sourceLinkLine(rel(target), sourceFiles[n], input.sources[n].title, input.sources[n].publisher));
+        await writeAtomic(inside(stage, file), links.length ? `${message.body.trimEnd()}\n\n## Sources\n${links.join("\n")}\n` : message.body);
+      }
+      // Parent relations for conversations are derived from ordered messages,
+      // leaving reply_to available for explicit secondary branches.
+      input.doc.set("thread_continuation", true);
+      await writeAtomic(inside(stage, "index.md"), serializeIndex(input.doc, input.summary, order.map(file => messageEmbedTarget(rel(target), file))));
+      await rename(stage, target);
+      return snapshot(await reindex(target));
+    } finally { await rm(stage, { recursive: true, force: true }); }
+  }
+
+  /**
+   * Fictitious test publication confirmed by the owner. Public visibility requires explicit
+   * confirmation; the request UUID makes retries idempotent; `testDailyLimit` caps fixtures over a
+   * rolling 24 h and is not part of the content fingerprint.
+   */
+  async function publishGenerated(viewer: Viewer, agentId: string, raw: unknown, options: { testDailyLimit?: number } = {}): Promise<PublicationSnapshot> {
     const data = z.object({
       id: z.string().regex(PUBLICATION_ID), summary: z.string().min(1).max(20_000),
       messages: z.array(z.string().min(1).max(100_000)).min(1).max(10),
@@ -383,45 +455,139 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       publicConfirmed: z.boolean().default(false),
     }).strict().parse(raw);
     if (data.visibility === "public" && !data.publicConfirmed) throw invalid("Confirmation publique requise.");
-    if (!(await readGenerators(vault, viewer)).some(agent => agent.id === agentId && agent.ownerId === viewer.id)) throw notFound();
+    if (!await ownsAgent(viewer.id, agentId)) throw notFound();
     await ensureIndexed();
-    return withLock(`generated-publication:${data.id}`, () => withLock(`generated:${agentId}`, async () => {
-      await reconcileUser(agentId);
+    return agentLock(data.id, agentId, async () => {
       const fingerprint = createHash("sha256").update(JSON.stringify(data)).digest("hex");
-      const existing = index.get(data.id);
-      if (existing) {
+      if (index.get(data.id)) {
         const folder = await loadLive(data.id);
         if (folder.meta.authorType !== "ai" || folder.meta.authorId !== agentId || folder.doc.get("generation_fingerprint") !== fingerprint) throw invalid("Cet aperçu a déjà été utilisé pour un autre contenu.");
         return snapshot(folder);
       }
-      const live = inside(generatorsDir, agentId);
-      await mkdir(live, { recursive: true, mode: 0o700 });
-      if (await assertInVault(vault, live) !== live) throw invalid("Dossier de publication invalide.");
-      const date = now(), at = date.toISOString();
-      const type = data.messages.length > 1 ? "thread" : "post";
-      const used = (await listDir(live)).map(entry => FOLDER_NAME.exec(entry.name)).filter(match => match?.[2] === stamp(date)).map(match => Number(match![3]));
-      const sequence = String(Math.max(0, ...used) + 1).padStart(3, "0");
-      const target = inside(live, `${type}_${stamp(date)}_${sequence}`);
-      const stage = inside(live, `.${data.id}-${randomUUID()}`);
-      await mkdir(stage, { mode: 0o700 });
-      try {
-        const meta: PublicationMeta = { id: data.id, type, authorType: "ai", authorId: agentId, status: "published", visibility: data.visibility, createdAt: at, updatedAt: at, publishedAt: at, score: null };
-        const doc = new Document({ generator: agentId, topics: data.topicIds, primary_topic: data.topicIds[0], test_content: true, generated_by: "manual-fixture-v1", confirmed_by: viewer.id, generation_fingerprint: fingerprint });
-        setMeta(doc, meta);
-        const order: string[] = [];
-        for (const [i, body] of data.messages.entries()) {
-          const file = `${i + 1}_${messageSlug(body)}.md`;
-          order.push(file);
-          // Parent relations for conversations are derived from ordered messages,
-          // leaving reply_to available for explicit secondary branches.
-          await writeAtomic(inside(stage, file), labelTestMessage(body, i, data.messages.length));
+      if (options.testDailyLimit !== undefined) {
+        const since = now().getTime() - 86_400_000;
+        if (agentPublications(agentId).filter(p => p.test && p.publishedAt.getTime() > since).length >= options.testDailyLimit) throw new PublicationError("rate_limited", "Limite quotidienne de publications de test atteinte pour ce ΞAgent.");
+      }
+      const doc = new Document({ generator: agentId, topics: data.topicIds, primary_topic: data.topicIds[0], test_content: true, generated_by: "manual-fixture-v1", confirmed_by: viewer.id, generation_fingerprint: fingerprint });
+      return createAgentFolder(agentId, {
+        id: data.id, status: "published", visibility: data.visibility, doc, summary: data.summary, sources: [],
+        messages: data.messages.map((body, i) => ({ body: labelTestMessage(body, i, data.messages.length), sources: [] })),
+      });
+    });
+  }
+
+  const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  const draftSchema = z.object({
+    id: z.string().regex(PUBLICATION_ID), summary: z.string().trim().min(1).max(2_000), topicIds: z.array(z.uuid()).min(1).max(31),
+    messages: z.array(z.object({ body: z.string().trim().min(1).max(10_000), sources: z.array(z.number().int().min(0)).min(1).max(20) }).strict()).min(1).max(10),
+    sources: z.array(z.object({
+      url: z.string().max(2_000).refine(value => /^https?:\/\//i.test(value), "URL http(s) attendue."), title: z.string().trim().min(1).max(300), publisher: z.string().trim().min(1).max(200),
+      publishedAt: day.optional(), accessedAt: day, facts: z.array(z.string().trim().min(1).max(1_000)).min(1).max(30), reservations: z.array(z.string().trim().min(1).max(1_000)).max(10),
+    }).strict()).min(1).max(20),
+    watch: z.record(z.string(), z.unknown()),
+  }).strict();
+
+  /**
+   * Private draft written by the watch worker from a verified candidate: status `draft`,
+   * visibility `private`, never labelled as a fixture (`generated_by: watch-draft-v1`, no
+   * `test_content`). Every message has at least one source note. Idempotent by id.
+   */
+  async function saveWatchDraft(owner: string, agentId: string, raw: unknown): Promise<PublicationSnapshot> {
+    const data = draftSchema.parse(raw);
+    if (data.messages.some(message => message.sources.some(n => n >= data.sources.length))) throw invalid("Source de message inconnue.");
+    if (data.messages.some(message => SOURCES_HEADING.test(message.body))) throw invalid("Les sources sont ajoutées par Ξ, pas par le texte.");
+    if (!await ownsAgent(owner, agentId)) throw notFound();
+    await ensureIndexed();
+    return agentLock(data.id, agentId, async () => {
+      if (index.get(data.id)) {
+        const folder = await loadLive(data.id);
+        if (folder.meta.authorType !== "ai" || folder.meta.authorId !== agentId || folder.doc.get("generated_by") !== WATCH_DRAFT) throw invalid("Identifiant de brouillon déjà utilisé.");
+        return snapshot(folder);
+      }
+      const doc = new Document({ generator: agentId, topics: data.topicIds, primary_topic: data.topicIds[0], generated_by: WATCH_DRAFT, review: "pending", watch: data.watch });
+      return createAgentFolder(agentId, { id: data.id, status: "draft", visibility: "private", doc, summary: data.summary, messages: data.messages, sources: data.sources });
+    });
+  }
+
+  /**
+   * Owner review of a watch draft. `update` replaces the prose of each message and keeps its
+   * sources section (the caller checks the prose against those sources); `reject` keeps the
+   * folder as a rejected draft; `approve` publishes it **privately** (manual end-to-end test).
+   */
+  async function reviewWatchDraft(viewer: Viewer, agentId: string, id: string, raw: unknown) {
+    const data = z.object({ action: z.enum(["update", "approve", "reject"]), revision: z.string().min(1).max(200), messages: z.array(z.string().max(10_000)).max(10).optional() }).strict().parse(raw);
+    if (!PUBLICATION_ID.test(id) || !await ownsAgent(viewer.id, agentId)) throw notFound();
+    await ensureIndexed();
+    // Same locks as the worker's automatic publication: a review and a publication never interleave.
+    return agentLock(id, agentId, async () => {
+      const folder = await loadLive(id);
+      if (folder.meta.authorType !== "ai" || folder.meta.authorId !== agentId || folder.doc.get("generated_by") !== WATCH_DRAFT) throw notFound();
+      if (folder.meta.status !== "draft" || folder.doc.get("review") !== "pending") throw invalid("Ce brouillon n’est plus modifiable.");
+      if (folder.revision !== data.revision) return { ok: false as const, conflict: snapshot(folder) };
+      const at = now().toISOString();
+      const files = folder.messages.map(message => message.file);
+      if (data.action === "update") {
+        if (!data.messages || data.messages.length !== folder.messages.length) throw invalid("Chaque message du brouillon doit être conservé.");
+        for (const [i, message] of folder.messages.entries()) {
+          const prose = data.messages[i].trim();
+          if (!prose || SOURCES_HEADING.test(prose)) throw invalid("Message vide ou section de sources modifiée.");
+          await writeAtomic(inside(folder.dir, message.file), `${prose}\n\n${splitSourcesSection(message.body).sources}`);
         }
-        doc.set("thread_continuation", true);
-        await writeAtomic(inside(stage, "index.md"), serializeIndex(doc, data.summary, order.map(file => messageEmbedTarget(rel(target), file))));
-        await rename(stage, target);
-        return snapshot(await reindex(target));
-      } finally { await rm(stage, { recursive: true, force: true }); }
-    }));
+        folder.doc.set("review_edited", { by: viewer.id, at });
+        await writeIndex(folder, { ...folder.meta, updatedAt: at }, folder.summary, files);
+      } else {
+        folder.doc.set("review", data.action === "approve" ? "approved" : "rejected");
+        folder.doc.set("reviewed", { by: viewer.id, at });
+        await writeIndex(folder, data.action === "approve" ? { ...folder.meta, status: "published", visibility: "private", publishedAt: at, updatedAt: at } : { ...folder.meta, updatedAt: at }, folder.summary, files);
+      }
+      return { ok: true as const, snapshot: snapshot(await reindex(folder.dir)) };
+    });
+  }
+
+  /**
+   * Automatic publication of a watch draft, decided at the exact moment of writing: under the
+   * cross-process lock the folder is re-read, it must still be a pending draft at the revision that
+   * was validated, then `guard` re-checks configuration and ceilings (null = allowed) and `record`
+   * stores the decision before the lock is released. Already published: reported, never repeated.
+   */
+  async function publishWatchDraft(owner: string, agentId: string, id: string, options: {
+    visibility: "private" | "public"; revision: string; details: Record<string, unknown>;
+    guard: () => Promise<string | null>; record: (snapshot: PublicationSnapshot) => void;
+  }): Promise<{ outcome: "published" | "already"; snapshot: PublicationSnapshot } | { outcome: "missing" | "unavailable" | "modified" | "blocked"; reason: string }> {
+    if (!PUBLICATION_ID.test(id) || !await ownsAgent(owner, agentId)) return { outcome: "missing", reason: "Brouillon introuvable ou ΞAgent d’un autre compte." };
+    await ensureIndexed();
+    return agentLock(id, agentId, async () => {
+      const folder = await loadLive(id).catch(() => null);
+      if (!folder || folder.meta.authorType !== "ai" || folder.meta.authorId !== agentId || folder.doc.get("generated_by") !== WATCH_DRAFT) return { outcome: "missing" as const, reason: "Brouillon introuvable." };
+      if (folder.meta.status === "published") return { outcome: "already" as const, snapshot: snapshot(folder) };
+      const review = folder.doc.get("review");
+      if (review !== "pending") return { outcome: "unavailable" as const, reason: review === "rejected" ? "Brouillon rejeté par le propriétaire." : "Brouillon retiré." };
+      if (folder.revision !== options.revision) return { outcome: "modified" as const, reason: "Brouillon modifié depuis sa validation : approbation manuelle requise." };
+      const blocked = await options.guard();
+      if (blocked) return { outcome: "blocked" as const, reason: blocked };
+      const at = now().toISOString();
+      folder.doc.set("review", "auto-published");
+      folder.doc.set("auto_publication", { at, visibility: options.visibility, ...options.details });
+      await writeIndex(folder, { ...folder.meta, status: "published", visibility: options.visibility, publishedAt: at, updatedAt: at }, folder.summary, folder.messages.map(message => message.file));
+      const published = snapshot(await reindex(folder.dir));
+      options.record(published);
+      return { outcome: "published" as const, snapshot: published };
+    });
+  }
+
+  /** A pending draft that must never be published (obsolete, superseded, invalid sources). */
+  async function retireWatchDraft(owner: string, agentId: string, id: string, reason: string) {
+    if (!PUBLICATION_ID.test(id) || !await ownsAgent(owner, agentId)) return false;
+    await ensureIndexed();
+    return agentLock(id, agentId, async () => {
+      const folder = await loadLive(id).catch(() => null);
+      if (!folder || folder.meta.authorId !== agentId || folder.doc.get("generated_by") !== WATCH_DRAFT || folder.meta.status !== "draft" || folder.doc.get("review") !== "pending") return false;
+      folder.doc.set("review", "retired");
+      folder.doc.set("retired", { at: now().toISOString(), reason });
+      await writeIndex(folder, { ...folder.meta, updatedAt: now().toISOString() }, folder.summary, folder.messages.map(message => message.file));
+      await reindex(folder.dir);
+      return true;
+    });
   }
 
   async function get(viewer: Viewer, id: string) {
@@ -834,7 +1000,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     }));
   }
 
-  return { refreshAccess: authorized, publishGenerated, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { refreshAccess: authorized, publishGenerated, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

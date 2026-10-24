@@ -5,6 +5,11 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { chromium, type Browser } from "playwright-core";
 import { createTestServer } from "./helpers/next-server";
+import { openVault } from "../src/lib/publications/vault";
+import { createTopicStore } from "../src/lib/topics/store";
+import { createSourceStore } from "../src/lib/watch/sources";
+import { createPublicationStore } from "../src/lib/publications/store";
+import { migrateWatchCandidates } from "../src/lib/watch/evaluate";
 
 test("ΞAgents browser: creation, preview, confirmation, private agent feed and conversations", { timeout: 120_000 }, async t => {
   const app = await createTestServer();
@@ -87,7 +92,7 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   // Markdown editing, final preview with the enforced test label, explicit public confirmation.
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
   await page.getByRole("combobox", { name: /^Format/ }).selectOption("post");
-  await page.getByRole("combobox", { name: "Visibilité" }).selectOption("public");
+  await page.getByRole("combobox", { name: "Visibilité", exact: true }).selectOption("public");
   await page.getByRole("button", { name: "Générer", exact: true }).click();
   await preview.waitFor();
   const publicConfirm = page.getByLabel("Je confirme la publication publique", { exact: false });
@@ -113,14 +118,91 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.equal(await published.innerHTML(), previewHtml);
   assert.equal((await bobPage.goto(`${app.origin}/dashboard/publications/${row.id}`))!.status(), 404);
   await bobPage.close();
+  // Watch panel: settings, pause, a refused proposal, approval and deletion of a proposed source.
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
+  const watch = page.getByRole("region", { name: "Veille autonome" });
+  await watch.getByText("Désactivée", { exact: true }).waitFor();
+  await watch.getByLabel("Veille activée").check();
+  await watch.getByLabel("Plafond de publications réelles (24 h)").fill("2");
+  await watch.getByRole("button", { name: "Enregistrer les paramètres" }).click();
+  await watch.getByRole("status").filter({ hasText: "Paramètres de veille enregistrés." }).waitFor();
+  await watch.getByText("Active", { exact: true }).waitFor();
+  await watch.getByRole("button", { name: "Mettre la veille en pause" }).click();
+  await watch.getByRole("status").filter({ hasText: "Veille mise en pause." }).waitFor();
+  await watch.getByText("En pause", { exact: true }).waitFor();
+  assert.deepEqual((await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json()).policy, { enabled: true, paused: true, maxPerDay: 2, minIntervalMinutes: 240, testMaxPerDay: 10, alertThreshold: 0.85, nightThreshold: 0.45, autoPublish: false, visibility: "private", maxImmediatePerDay: 1 });
+  // Autonomous public mode: its own confirmation, saving is impossible without it.
+  await watch.getByLabel("Mode autonome", { exact: false }).check();
+  await watch.getByLabel("Visibilité des publications automatiques").selectOption("public");
+  const save = watch.getByRole("button", { name: "Enregistrer les paramètres" });
+  assert.equal(await save.isDisabled(), true);
+  await watch.getByLabel("Je confirme que ce ΞAgent pourra publier automatiquement des contenus publics", { exact: false }).check();
+  await save.click();
+  await watch.getByRole("status").filter({ hasText: "Paramètres de veille enregistrés." }).waitFor();
+  await watch.getByText("activé (public)", { exact: false }).waitFor();
+  const autonomous = (await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json());
+  assert.deepEqual([autonomous.policy.autoPublish, autonomous.policy.visibility, !!autonomous.publicConfirmedAt], [true, "public", true]);
+  await watch.getByText("non autorisée (XI_WATCH_AUTOPUBLISH)", { exact: false }).waitFor();
+  await watch.getByLabel("Adresse d’un site ou d’un flux RSS/Atom").fill("http://127.0.0.1/rss");
+  await watch.getByRole("button", { name: "Proposer une source" }).click();
+  await watch.getByRole("alert").filter({ hasText: "Source inaccessible" }).waitFor();
+  const vault = await openVault(app.vaultPath);
+  const ownerId = (await (await alice.request.get(`${app.origin}/api/auth/get-session`)).json()).user.id;
+  await createSourceStore({ vault, topics: createTopicStore({ vault, db }) }).propose(ownerId, { url: "https://feeds.example/rss", kind: "feed", site: null, publisher: "Le Quotidien", topicIds: [topic.run.topicId], reliability: { level: "inconnue", reasons: ["Flux servi en HTTPS."], estimated: true } }, `agent:${agentId}`);
+  await page.reload();
+  await watch.getByText("En attente d’approbation (1)").waitFor();
+  const card = watch.getByRole("listitem", { name: "Source Le Quotidien" });
+  await card.getByText("proposée par le ΞAgent", { exact: false }).first().waitFor();
+  await card.getByRole("button", { name: "Approuver" }).click();
+  await card.getByLabel("Orientation éditoriale connue").fill("Non déclarée");
+  await card.getByRole("button", { name: "Confirmer l’approbation" }).click();
+  await watch.getByRole("status").filter({ hasText: "Source approuvée." }).waitFor();
+  await watch.getByText("Actives (1)").waitFor();
+  await card.getByText("Historique des décisions (2)").click();
+  await card.getByText("Approuvée par vous", { exact: false }).waitFor();
+  await card.getByRole("button", { name: "Supprimer" }).click();
+  await card.getByRole("button", { name: "Confirmer la suppression" }).click();
+  await watch.getByRole("status").filter({ hasText: "Source supprimée" }).waitFor();
+  await watch.getByText("Aucune source active.").waitFor();
+  assert.equal((await bob.request.get(`${app.origin}/dashboard/xiagents/${agentId}`)).status(), 404);
+  // A watch draft (written as the worker would): edit within its sources, then private approval.
+  const draftId = crypto.randomUUID();
+  await createPublicationStore({ vault, db }).saveWatchDraft(ownerId, agentId, {
+    id: draftId, summary: "Le Parlement adopte la réforme.", topicIds: [topic.run.topicId],
+    messages: [{ body: "Le Parlement a adopté jeudi la réforme des retraites.", sources: [0] }],
+    sources: [{ url: "https://quotidien.example/a/1", title: "Le Parlement adopte la réforme", publisher: "Le Quotidien", accessedAt: "2026-01-15", facts: ["Le Parlement a adopté jeudi la réforme des retraites"], reservations: [] }],
+    watch: { story: "fictive" },
+  });
+  migrateWatchCandidates(db);
+  db.prepare("INSERT INTO watch_candidate (agent_id, story_id, owner, story_version, status, stage, data, prompt_version, created_at, updated_at) VALUES (?, ?, ?, 1, 'drafted', 'done', ?, 'veille-3.1', 0, 0)").run(agentId, crypto.randomUUID(), ownerId, JSON.stringify({ title: "Réforme des retraites", draft: { id: draftId } }));
+  await page.reload();
+  const draftCard = watch.getByRole("listitem", { name: "Brouillon Réforme des retraites" });
+  await draftCard.getByText("Brouillon réel non publié · privé", { exact: false }).waitFor();
+  await draftCard.getByRole("button", { name: "Modifier" }).click();
+  await draftCard.getByLabel("Texte du message 1", { exact: false }).fill("Jeudi, le Parlement a adopté la réforme des retraites par 300 voix.");
+  await draftCard.getByRole("button", { name: "Enregistrer" }).click();
+  await watch.getByRole("alert").filter({ hasText: "Chiffre absent des sources citées : 300" }).waitFor();
+  await draftCard.getByLabel("Texte du message 1", { exact: false }).fill("Jeudi, le Parlement a **adopté** la réforme des retraites.");
+  await draftCard.getByRole("heading", { name: "Sources" }).first().waitFor();
+  await draftCard.getByRole("button", { name: "Enregistrer" }).click();
+  await watch.getByRole("status").filter({ hasText: "Brouillon modifié." }).waitFor();
+  await draftCard.getByText("Jeudi, le Parlement a", { exact: false }).first().waitFor();
+  await draftCard.getByRole("button", { name: "Approuver (publication privée)" }).click();
+  await draftCard.getByText("Aucune publication publique", { exact: false }).waitFor();
+  await draftCard.getByRole("button", { name: "Confirmer la publication privée" }).click();
+  await watch.getByRole("status").filter({ hasText: "Brouillon approuvé et publié en privé." }).waitFor();
+  await draftCard.getByText("Approuvé · publié en privé", { exact: false }).waitFor();
+  const approvedDraft = (await (await alice.request.get(`${app.origin}/api/publications/${draftId}`)).json()).publication;
+  assert.deepEqual([approvedDraft.status, approvedDraft.visibility], ["published", "private"]);
+  assert.match(approvedDraft.messages[0].body, /^Jeudi, le Parlement a \*\*adopté\*\*[\s\S]*## Sources/);
+  assert.equal((await bob.request.get(`${app.origin}/api/publications/${draftId}`)).status(), 404);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: "/tmp/xiagents-mobile.png", fullPage: true });
   await page.goto("about:blank");
   await app.stop(); await app.start();
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`); await page.getByRole("heading", { name: "Historique des publications" }).waitFor();
-  assert.equal(await page.getByRole("article", { name: "Publication de Politiks", exact: true }).count(), 3);
+  assert.equal(await page.getByRole("article", { name: "Publication de Politiks", exact: true }).count(), 4, "three fixtures and the privately approved draft");
   assert.equal((await (await bob.request.get(`${app.origin}/api/publications/${publicRow.id}`)).json()).publication.visibility, "public");
   assert.equal((await bob.request.get(`${app.origin}/api/publications/${row.id}`)).status(), 404);
   assert.deepEqual(errors, []);

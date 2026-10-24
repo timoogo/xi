@@ -9,7 +9,7 @@ import { assertWithin, inside, listDir, writeAtomic, type Vault } from "../publi
 import { locked } from "../topics/lock";
 import { TopicError } from "../topics/types";
 import type { TopicStore } from "../topics/store";
-import { ACCOUNT_STEPS, BUILTIN_PRESETS, accountDraftSchema, editorialSchema, presetSchema, settingsSchema, type Account, type AccountDraft, type AccountRun, type Preset } from "./types";
+import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type WatchAgent, type WatchSettings } from "./types";
 
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
 function decode(text: string) { const match = /^---\n([\s\S]*?)\n---\n/.exec(text); if (!match) throw new TopicError("Markdown invalide."); return parse(match[1]); }
@@ -181,7 +181,51 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       await event(run, 5, "completed", { confirmedBy: owner }); return execute(run);
     });
   }
-  return { list, getOwned, update, propose, confirm, savePreset,
+  function watchOf(entry: Entry): WatchSettings {
+    const raw = (entry.parsed.doc.toJS() as Record<string, unknown>).watch;
+    if (raw === undefined) return { policy: DEFAULT_WATCH_POLICY, revision: null, valid: true, publicConfirmedAt: null };
+    const parsed = storedWatchPolicySchema.safeParse(raw);
+    if (!parsed.success) return { policy: DEFAULT_WATCH_POLICY, revision: null, valid: false, publicConfirmedAt: null };
+    // A public visibility without its recorded confirmation is never honoured.
+    const policy = watchPolicySchema.strip().parse(parsed.data);
+    return { policy, revision: parsed.data.revision, valid: true, publicConfirmedAt: policy.visibility === "public" ? parsed.data.publicConfirmedAt : null };
+  }
+  async function owned(owner: string, id: string) {
+    if (!z.uuid().safeParse(id).success) throw new TopicError("ΞAgent introuvable.", 404);
+    const entry = (await all()).find(e => e.account.id === id && e.account.owner === owner);
+    if (!entry) throw new TopicError("ΞAgent introuvable.", 404);
+    return entry;
+  }
+  async function setWatchPolicy(owner: string, id: string, input: unknown): Promise<WatchSettings> {
+    const data = z.object({ revision: z.uuid().nullable(), policy: watchPolicySchema, confirmPublic: z.literal(true).optional() }).strict().parse(input);
+    if (data.policy.nightThreshold >= data.policy.alertThreshold) throw new TopicError("Le seuil d’alerte doit dépasser le seuil de la fenêtre nocturne.");
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      const current = watchOf(entry);
+      if (current.revision !== data.revision) throw new TopicError("La veille a été modifiée depuis votre lecture. Rechargez.", 409);
+      // Switching to public needs its own explicit confirmation, recorded here (never supplied by the client).
+      const at = new Date().toISOString();
+      const kept = current.publicConfirmedAt ? { at: current.publicConfirmedAt, by: (entry.parsed.doc.toJS() as { watch?: { publicConfirmedBy?: string } }).watch?.publicConfirmedBy ?? owner } : null;
+      let confirmation: { at: string; by: string } | null = null;
+      if (data.policy.visibility === "public") {
+        confirmation = kept ?? (data.confirmPublic ? { at, by: owner } : null);
+        if (!confirmation) throw new TopicError("Confirmez explicitement la publication publique automatique.");
+      }
+      const revision = randomUUID();
+      entry.parsed.doc.set("watch", { ...data.policy, revision, updatedAt: at, updatedBy: owner, publicConfirmedAt: confirmation?.at ?? null, publicConfirmedBy: confirmation?.by ?? null });
+      await writeAtomic(entry.path, serializeGenerator(entry.parsed.generator, entry.parsed.description, entry.parsed.doc));
+      return { policy: data.policy, revision, valid: true, publicConfirmedAt: confirmation?.at ?? null };
+    });
+  }
+  /** Worker only: every configured agent, whatever its visibility. Never exposed through an API. */
+  async function watchAgents(): Promise<WatchAgent[]> {
+    return exclusive(async () => (await all()).flatMap(entry => entry.account.editorial ? [{
+      id: entry.account.id, handle: entry.account.handle, owner: entry.account.owner, active: entry.account.editorial.active,
+      primaryTopicId: entry.account.editorial.primaryTopicId, secondaryTopicIds: entry.account.editorial.secondaryTopicIds, modelRef: entry.account.editorial.modelRef, watch: watchOf(entry),
+    }] : []));
+  }
+  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents,
+    watchPolicy: (owner: string, id: string) => exclusive(async () => watchOf(await owned(owner, id))),
     listPresets: (owner: string) => exclusive(async () => (await presets()).filter(p => !p.owner || p.owner === owner)),
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },
     resume: (owner: string, id: string) => exclusive(async () => { const run = await loadRun(owner, id); return run.state === "completed" || run.state === "waiting" ? run : execute(run); }),
