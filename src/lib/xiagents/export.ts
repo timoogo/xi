@@ -12,9 +12,9 @@ import { defaultSchedule, scheduleSchema } from "./schedule";
  */
 export async function exportAgentDraft({ owner, agentId, accounts, topics, sources }: { owner: string; agentId: string; accounts: AccountStore; topics: TopicStore; sources: SourceStore }): Promise<AgentDraft> {
   const account = await accounts.getOwned(owner, agentId);
-  const [catalog, profile, schedule, watch, avatar, presets, owned] = await Promise.all([
+  const [catalog, profile, schedule, watch, avatar, presets, owned, llm] = await Promise.all([
     topics.list(), accounts.profile(owner, agentId), accounts.schedule(owner, agentId), accounts.watchPolicy(owner, agentId),
-    accounts.avatar(owner, agentId), accounts.listPresets(owner), sources.list(owner),
+    accounts.avatar(owner, agentId), accounts.listPresets(owner), sources.list(owner), accounts.llm(owner, agentId),
   ]);
   const editorial = account.editorial;
   // Missing topics stay in place as unresolved references: draftToYaml then refuses a misleading export.
@@ -37,7 +37,9 @@ export async function exportAgentDraft({ owner, agentId, accounts, topics, sourc
     topics: topicIds.map((id): TopicPick => catalog.some(topic => topic.id === id) ? { type: "existing", id } : { type: "unresolved", tag: null, id }),
     perimeter: profile?.perimeter ?? "", charter: profile?.charter ?? "",
     presetKey: editorial ? `${editorial.presetId}:${editorial.presetVersion}` : preset ? `${preset.id}:${preset.version}` : "",
-    settings: editorial?.settings ?? preset?.settings ?? null, modelRef: editorial?.modelRef ?? "",
+    settings: editorial?.settings ?? preset?.settings ?? null,
+    // Instance kept by id here; draftToYaml exports its portable key, never the id or URL.
+    llm: { instanceId: llm.config.instanceId, unresolvedKey: null, model: llm.config.model ?? (llm.legacy ? editorial?.modelRef ?? "" : ""), options: llm.config.options },
     autoPublish: watch.policy.autoPublish,
     sources: sourcesByDomain,
     schedule: schedule.explicit && schedule.valid ? scheduleSchema.strip().parse(schedule) : defaultSchedule(schedule.timeZone),

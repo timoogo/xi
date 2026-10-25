@@ -80,6 +80,9 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   const db = new Database(app.databasePath); t.after(() => db.close());
   const count = () => (db.prepare("SELECT count(*) AS n FROM publication WHERE author_id=?").get(agentId) as { n: number }).n;
   assert.equal(count(), 0);
+  // Fixtures are a secondary test tool, folded under the real generator.
+  await page.getByText("Outils de test et de développement", { exact: true }).click();
+  await page.getByRole("heading", { name: "Générer des fixtures" }).waitFor();
   await page.getByRole("button", { name: "Générer", exact: true }).click();
   const preview = page.getByLabel("Aperçu avant publication");
   await preview.waitFor();
@@ -128,6 +131,7 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.ok(await page.evaluate(() => window.scrollY > 0), "a direct thread position scrolls to the selected message");
   // Markdown editing, final preview with the enforced test label, explicit public confirmation.
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
+  await page.getByText("Outils de test et de développement", { exact: true }).click();
   await page.getByRole("combobox", { name: /^Format/ }).selectOption("post");
   await page.getByRole("combobox", { name: "Visibilité", exact: true }).selectOption("public");
   await page.getByRole("button", { name: "Générer", exact: true }).click();

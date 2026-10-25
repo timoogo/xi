@@ -3,12 +3,15 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { BloubEditor } from "@/components/bloub/bloub-editor";
+import { toChoice, type InstanceChoice } from "@/components/llm/format";
+import { LLMDraftPicker, llmDraftSummary } from "@/components/llm/llm-draft-picker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CHARTER, type Preset, type Settings } from "@/lib/accounts/types";
 import { bloubFromSeed } from "@/lib/bloub/presets";
+import type { InstancesResponse } from "@/lib/llm/types";
 import type { Topic } from "@/lib/topics/types";
 import { describeRanges, WEEKDAYS } from "@/lib/xiagents/calendar";
 import {
@@ -40,10 +43,11 @@ async function request<T>(url: string, method = "GET", data?: unknown, signal?: 
 }
 const randomSeed = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 const selectClass = "w-full rounded-md border bg-background px-3 py-2 text-sm";
+type LLMChoices = { instances: InstanceChoice[] | null; defaultInstanceId: string | null };
 const STEPS = { agent: ["Décrire", "Vérifier", "Calendriers", "Personnaliser", "Déployer"], topic: ["Décrire", "Vérifier", "Déployer"] } as const;
-const FIELD_LABELS: Record<DraftField, string> = { name: "nom", handle: "handle", about: "description", topics: "topics", perimeter: "périmètre", charter: "charte", presetKey: "preset", settings: "style", modelRef: "modèle", autoPublish: "publication autonome", sources: "sources", schedule: "calendriers", bloub: "Bloub" };
+const FIELD_LABELS: Record<DraftField, string> = { name: "nom", handle: "handle", about: "description", topics: "topics", perimeter: "périmètre", charter: "charte", presetKey: "preset", settings: "style", llm: "intelligence artificielle", autoPublish: "publication autonome", sources: "sources", schedule: "calendriers", bloub: "Bloub" };
 const SECTION_FIELDS: Record<Exclude<DraftSection, "schedule">, DraftField[]> = {
-  identity: ["name", "handle", "about"], topics: ["topics"], editorial: ["perimeter", "charter"], sources: ["sources"], advanced: ["presetKey", "settings", "modelRef", "autoPublish"],
+  identity: ["name", "handle", "about"], topics: ["topics"], editorial: ["perimeter", "charter"], sources: ["sources"], advanced: ["presetKey", "settings", "llm", "autoPublish"],
 };
 const SOURCE_ORIGINS: Record<SourceRow["origin"], string> = { ai: "suggérée par l’IA", yaml: "importée (YAML)", user: "ajoutée par vous" };
 /** Excluded sources, with their provenance: listed wherever sources are summarised. */
@@ -98,11 +102,20 @@ function Wizard({ topics, presets, duplicateId, onClose }: { topics: Topic[]; pr
   const [handle, setHandle] = useState<HandleCheck>(null);
   const [deploymentId] = useState(() => crypto.randomUUID());
   const heading = useRef<HTMLHeadingElement>(null);
+  // The owner's LLM instances: model pickers, and portable instance keys of imported YAML.
+  const [llm, setLlm] = useState<LLMChoices>({ instances: null, defaultInstanceId: null });
+  const instancesLoad = useRef<Promise<InstanceChoice[]> | null>(null);
+  useEffect(() => {
+    instancesLoad.current = request<InstancesResponse>("/api/llm/instances")
+      .then(result => { const instances = result.instances.map(toChoice); setLlm({ instances, defaultInstanceId: result.settings.defaultInstanceId }); return instances; })
+      // Unavailable list: imported instance keys stay unresolved and ask for an explicit choice.
+      .catch(() => { setLlm({ instances: [], defaultInstanceId: null }); return []; });
+  }, []);
   const steps = STEPS[draft.target];
   const edit = (patch: DraftPatch) => setDraft(current => editDraft(current, patch));
   useEffect(() => { heading.current?.focus(); }, [step]);
 
-  const issues = useMemo(() => draftIssues(draft, topics, presets), [draft, topics, presets]);
+  const issues = useMemo(() => draftIssues(draft, topics, presets, llm.instances ?? undefined), [draft, topics, presets, llm.instances]);
   const handleTaken = draft.target === "agent" && handle?.handle === draft.handle && !handle.available;
 
   // Live availability of the handle while reviewing (the server checks it again at deployment).
@@ -129,9 +142,10 @@ function Wizard({ topics, presets, duplicateId, onClose }: { topics: Topic[]; pr
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Analyse impossible."); }
     finally { setBusy(false); }
   }
-  function importYaml(text: string) {
+  async function importYaml(text: string) {
     setError("");
-    const result = parseAgentYaml(text, { catalog: topics, presets });
+    const instances = await (instancesLoad.current ?? Promise.resolve([]));
+    const result = parseAgentYaml(text, { catalog: topics, presets, instances: instances.map(({ id, key, name }) => ({ id, key, name })) });
     setYamlIssues(result.issues);
     if (!result.ok) { setError("Le YAML n’a pas pu être importé : corrigez les erreurs signalées."); return; }
     // Fields absent from the file are completed by the local rules, then the file's values win.
@@ -160,7 +174,7 @@ function Wizard({ topics, presets, duplicateId, onClose }: { topics: Topic[]; pr
     if (!duplicateId || duplicated.current) return;
     duplicated.current = true;
     fetch(`/api/xiagents/${encodeURIComponent(duplicateId)}/export`, { cache: "no-store" })
-      .then(async response => { if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error); importYaml(await response.text()); })
+      .then(async response => { if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error); await importYaml(await response.text()); })
       .catch(reason => setError(reason instanceof Error && reason.message ? reason.message : "Configuration du ΞAgent à dupliquer indisponible."));
   });
 
@@ -193,7 +207,7 @@ function Wizard({ topics, presets, duplicateId, onClose }: { topics: Topic[]; pr
     finally { setBusy(false); }
   }
   const exportYaml = () => {
-    try { download(`${draft.handle || (draft.target === "topic" ? "topic" : "xiagent")}.xiagent.yaml`, draftToYaml(draft, topics)); setError(""); }
+    try { download(`${draft.handle || (draft.target === "topic" ? "topic" : "xiagent")}.xiagent.yaml`, draftToYaml(draft, topics, llm.instances ?? [])); setError(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Export impossible."); }
   };
 
@@ -210,16 +224,16 @@ function Wizard({ topics, presets, duplicateId, onClose }: { topics: Topic[]; pr
     <h3 ref={heading} tabIndex={-1} className="text-lg font-semibold outline-none">{steps[step]}</h3>
 
     {step === 0 && <DescribeStep draft={draft} setDraft={setDraft} mode={mode} setMode={setMode} busy={busy} yamlIssues={yamlIssues}
-      onSuggest={() => void suggest()} onImport={importYaml} onManual={manual} onError={setError} />}
+      onSuggest={() => void suggest()} onImport={text => void importYaml(text)} onManual={manual} onError={setError} />}
     {step === 1 && <ReviewStep draft={draft} setDraft={setDraft} edit={edit} topics={topics} presets={presets} issues={issues} attempted={attempted}
-      notes={notes} matches={matches} handle={handleTaken ? handle : null} />}
+      notes={notes} matches={matches} handle={handleTaken ? handle : null} llm={llm} />}
     {draft.target === "agent" && step === 2 && <ScheduleForm value={draft.schedule} onChange={schedule => edit({ schedule })} />}
     {draft.target === "agent" && step === 3 && <section className="space-y-3">
       <p className="text-sm text-muted-foreground">Bloub attribué par défaut à ce ΞAgent (facultatif). Vous pouvez le garder tel quel ou le personnaliser ; il reste modifiable depuis la page du ΞAgent.</p>
       <BloubEditor value={draft.bloub} onChange={bloub => edit({ bloub })} name={draft.name || "ce ΞAgent"} />
       <Button type="button" variant="outline" size="sm" onClick={() => edit({ bloub: bloubFromSeed(randomSeed()) })}>Tirer un autre Bloub</Button>
     </section>}
-    {last && <Summary draft={draft} topics={topics} />}
+    {last && <Summary draft={draft} topics={topics} instances={llm.instances} />}
 
     <p role="alert" className="text-sm text-destructive">{error}</p>
     <div className="flex flex-wrap justify-between gap-2 border-t pt-3">
@@ -347,16 +361,16 @@ function TopicEditor({ pick, picks, topics, onChange, onRemove, label }: { pick:
   </div>;
 }
 
-function ReviewStep({ draft, setDraft, edit, topics, presets, issues, attempted, notes, matches, handle }: {
+function ReviewStep({ draft, setDraft, edit, topics, presets, issues, attempted, notes, matches, handle, llm }: {
   draft: AgentDraft; setDraft: (update: (draft: AgentDraft) => AgentDraft) => void; edit: (patch: DraftPatch) => void; topics: Topic[]; presets: Preset[];
-  issues: DraftIssue[]; attempted: boolean; notes: { origin: Origin; lines: string[] } | null; matches: Match[]; handle: HandleCheck;
+  issues: DraftIssue[]; attempted: boolean; notes: { origin: Origin; lines: string[] } | null; matches: Match[]; handle: HandleCheck; llm: LLMChoices;
 }) {
   const [url, setUrl] = useState("");
   const manual = Object.values(draft.provenance).every(origin => origin === "default" || origin === "manual") && !notes;
   const [opened, setOpened] = useState<Record<string, boolean>>(() => manual ? { identity: true, topics: true, editorial: true, sources: true } : {} as Record<string, boolean>);
   const sectionIssues = (section: DraftSection) => issues.filter(issue => issue.section === section);
   // Sections with errors open once the owner tries to go on; otherwise the review stays compact.
-  const isOpen = (section: Exclude<DraftSection, "schedule">) => opened[section] ?? ((attempted && sectionIssues(section).length > 0) || (section === "identity" && !!handle) || (section === "topics" && draft.topics.some(pick => isMissing(pick, topics))) || (section === "sources" && draft.sources.some(source => source.status === "excluded" && source.origin === "yaml")));
+  const isOpen = (section: Exclude<DraftSection, "schedule">) => opened[section] ?? ((attempted && sectionIssues(section).length > 0) || (section === "identity" && !!handle) || (section === "topics" && draft.topics.some(pick => isMissing(pick, topics))) || (section === "sources" && draft.sources.some(source => source.status === "excluded" && source.origin === "yaml")) || (section === "advanced" && !!draft.llm.unresolvedKey));
   const toggle = (section: string) => (value: boolean) => setOpened(current => current[section] === value ? current : { ...current, [section]: value });
   const originOf = (section: Exclude<DraftSection, "schedule">): Origin | null => {
     const origins = SECTION_FIELDS[section].map(field => draft.provenance[field]).filter((origin): origin is Origin => !!origin);
@@ -454,7 +468,7 @@ function ReviewStep({ draft, setDraft, edit, topics, presets, issues, attempted,
         <Button type="submit" variant="outline" size="sm">Ajouter</Button>
       </form>
     </Section>
-    <Section title="Paramètres avancés" summary={`${preset?.name ?? "Preset ?"} · ${draft.settings?.depth ?? "?"} · ${draft.modelRef || "modèle du serveur"} · publication autonome ${draft.autoPublish ? "oui" : "non"}`} origin={originOf("advanced")} issues={sectionIssues("advanced")} open={isOpen("advanced")} onToggle={toggle("advanced")}>
+    <Section title="Paramètres avancés" summary={`${preset?.name ?? "Preset ?"} · ${draft.settings?.depth ?? "?"} · ${llmDraftSummary(draft.llm, llm.instances)} · publication autonome ${draft.autoPublish ? "oui" : "non"}`} origin={originOf("advanced")} issues={sectionIssues("advanced")} open={isOpen("advanced")} onToggle={toggle("advanced")}>
       <label className="grid gap-1 text-sm">Preset
         <select className={selectClass} value={draft.presetKey} onChange={event => { const next = presets.find(item => presetKey(item) === event.target.value); edit({ presetKey: event.target.value, settings: next?.settings ?? draft.settings }); }}>
           {!preset && <option value={draft.presetKey}>Preset inconnu ({draft.presetKey || "aucun"})</option>}
@@ -468,7 +482,7 @@ function ReviewStep({ draft, setDraft, edit, topics, presets, issues, attempted,
         <label className="grid gap-1 text-xs">Profondeur<select className={selectClass} value={draft.settings.depth} onChange={event => edit({ settings: { ...draft.settings!, depth: event.target.value as Settings["depth"] } })}><option value="court">Court</option><option value="standard">Standard</option><option value="approfondi">Approfondi</option></select></label>
       </div>}
       {preset && draft.settings && JSON.stringify(preset.settings) !== JSON.stringify(draft.settings) && <p className="text-xs text-muted-foreground">Paramètres personnalisés pour ce ΞAgent (le preset n’est pas modifié).</p>}
-      <label className="grid gap-1 text-sm">Modèle local (facultatif, sinon celui du serveur)<Input maxLength={200} value={draft.modelRef} onChange={event => edit({ modelRef: event.target.value })} /></label>
+      <LLMDraftPicker value={draft.llm} onChange={value => edit({ llm: value })} instances={llm.instances} defaultInstanceId={llm.defaultInstanceId} error={fieldError("llm")} />
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={draft.autoPublish} onChange={event => edit({ autoPublish: event.target.checked })} />
         <span>Publication autonome des brouillons validés (privée)<span className="block text-xs text-muted-foreground">Uniquement dans le calendrier de publication, si l’opérateur l’autorise. Sinon, les brouillons attendent votre relecture.</span></span></label>
       <p className="text-xs text-muted-foreground">Fuseau, tolérance, rattrapage et événements majeurs se règlent à l’étape Calendriers.</p>
@@ -488,7 +502,7 @@ function Field({ label, hint, error, children }: { label: string; hint?: string;
   </div>;
 }
 
-function Summary({ draft, topics }: { draft: AgentDraft; topics: Topic[] }) {
+function Summary({ draft, topics, instances }: { draft: AgentDraft; topics: Topic[]; instances: InstanceChoice[] | null }) {
   const name = (pick: TopicPick) => topicLabel(pick, topics);
   const days = (kind: "watch" | "publish") => draft.schedule[kind].week.map((ranges, index) => `${WEEKDAYS[index].slice(0, 3)} ${describeRanges(ranges)}`).join(" · ");
   const origins = [...new Set(Object.values(draft.provenance).filter(origin => origin !== "default"))];
@@ -498,6 +512,7 @@ function Summary({ draft, topics }: { draft: AgentDraft; topics: Topic[] }) {
       <p>Topics : {draft.topics.map(name).join(" ; ")}</p>
       <p>Sources : {draft.sources.filter(source => source.status === "approved").length} approuvée(s), {draft.sources.filter(source => source.status === "excluded").length} exclue(s), {draft.sources.filter(source => source.status === "undecided").length} non décidée(s) (ignorées).</p>
       {exclusions(draft.sources).length > 0 && <p className="text-xs">Exclusions : {exclusions(draft.sources).join(", ")}.</p>}
+      <p>Intelligence artificielle : {llmDraftSummary(draft.llm, instances)}</p>
       <p>Fuseau : {draft.schedule.timeZone}</p>
       <p className="text-xs">Veille : {days("watch")}</p>
       <p className="text-xs">Publication : {days("publish")}</p>

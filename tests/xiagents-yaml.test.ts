@@ -18,6 +18,7 @@ import { applySuggestion, draftIssues, newDraft, newTopicKey, type AgentDraft, t
 import { exportAgentDraft } from "../src/lib/xiagents/export";
 import { defaultSchedule } from "../src/lib/xiagents/schedule";
 import { AGENT_YAML_VERSION, MAX_YAML_BYTES, draftToYaml, parseAgentYaml } from "../src/lib/xiagents/yaml";
+import { INHERIT_LLM } from "../src/lib/llm/types";
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const topic = (tag: string, name: string, extra: Partial<Topic> = {}): Topic => ({
@@ -52,7 +53,11 @@ editorial:
 style:
   preset: pedagogue@1
   depth: approfondi
+llm:
+  mode: override
+  provider: ollama
   model: qwen3:8b
+  options: { temperature: 0.2 }
 sources:
   - url: https://arxiv.example/astro-ph
     type: prépublications
@@ -101,7 +106,7 @@ test("yaml: full import resolves topics, preset, sources, calendars and appearan
   assert.deepEqual(secondary, { type: "existing", id: science.id });
   assert.equal(patch.presetKey, "pedagogue:1");
   assert.equal(patch.settings!.depth, "approfondi"); assert.equal(patch.settings!.tone, BUILTIN_PRESETS[1].settings.tone);
-  assert.equal(patch.modelRef, "qwen3:8b");
+  assert.deepEqual(patch.llm, { instanceId: null, unresolvedKey: null, model: "qwen3:8b", options: { temperature: 0.2 } });
   assert.match(patch.charter!, /\nDistinguer/);
   assert.deepEqual(patch.sources!.map(s => [s.domain, s.status, s.origin]), [["arxiv.example", "undecided", "yaml"], ["blog.example", "excluded", "yaml"], ["nasa.example", "undecided", "yaml"]]);
   assert.ok(result.issues.some(issue => issue.level === "warning" && issue.path === "sources" && /réapprouver/.test(issue.message)));
@@ -201,7 +206,7 @@ function sampleDraft(): AgentDraft {
   draft = applySuggestion(draft, {
     name: "Veille : exoplanètes", handle: "exo.planetes", about: "Ligne 1\nLigne 2 « citée »", topics,
     perimeter: "Périmètre: avec deux-points", charter: "#pas un commentaire", presetKey: "historien:1",
-    settings: { ...BUILTIN_PRESETS[3].settings, tone: "yes" }, modelRef: "qwen3:8b", autoPublish: true,
+    settings: { ...BUILTIN_PRESETS[3].settings, tone: "yes" }, llm: { instanceId: null, unresolvedKey: null, model: "qwen3:8b", options: { temperature: 0.2, timeoutMs: 120_000 } }, autoPublish: true,
     sources: [
       { url: "https://arxiv.example/astro", domain: "arxiv.example", type: "revue", rationale: "Primaire", origin: "ai", status: "excluded" },
       { url: "https://nasa.example/feed.xml", domain: "nasa.example", type: "", rationale: "", origin: "user", status: "excluded" },
@@ -210,7 +215,7 @@ function sampleDraft(): AgentDraft {
   }, "rules");
   return draft;
 }
-const EXPORTED: DraftField[] = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "modelRef", "autoPublish", "sources", "schedule", "bloub"];
+const EXPORTED: DraftField[] = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "sources", "schedule", "bloub"];
 
 test("yaml: draft → yaml → import → applySuggestion gives an equal draft", () => {
   const draft = sampleDraft();
@@ -272,7 +277,7 @@ test("export: a deployed ΞAgent exports to a portable YAML, owner-only", async 
     newTopics: [{ key: "new-1", draft: { tag: "science.longevite", name: "Longévité", description: "", scope: "Sénescence", parentId: existing.id, relatedIds: [] } }],
     agent: {
       handle: "longevite", name: "Veille longévité", description: "Avancées.", primary: { type: "new", key: "new-1" }, secondary: [{ type: "existing", id: existing.id }],
-      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, modelRef: "qwen3:8b",
+      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, modelRef: "qwen3:8b", llm: INHERIT_LLM, // a deployment recorded before `llm`
       profile: { perimeter: "Recherche publiée.", charter: "Citer l’étude primaire." },
       sources: [
         { url: "https://journal.example/", status: "approved", origin: "ai", type: "revue", rationale: "Référence" },
@@ -295,7 +300,7 @@ test("export: a deployed ΞAgent exports to a portable YAML, owner-only", async 
   const catalog = await topics.list();
   assert.equal(draft.handle, "longevite"); assert.equal(draft.about, "Avancées.");
   assert.deepEqual(draft.topics, [{ type: "existing", id: done.ids.topics["new-1"] }, { type: "existing", id: existing.id }]);
-  assert.equal(draft.charter, "Citer l’étude primaire."); assert.equal(draft.presetKey, `${preset.id}:${preset.version}`); assert.equal(draft.modelRef, "qwen3:8b");
+  assert.equal(draft.charter, "Citer l’étude primaire."); assert.equal(draft.presetKey, `${preset.id}:${preset.version}`); assert.deepEqual(draft.llm, { instanceId: null, unresolvedKey: null, model: "qwen3:8b", options: {} }, "legacy modelRef becomes a model override");
   assert.deepEqual(draft.schedule, schedule);
   assert.equal(draft.autoPublish, true); assert.equal(draft.bloub.color, "bleu");
   assert.deepEqual(draft.sources.map(source => [source.domain, source.status]).sort(), [["blog.example", "excluded"], ["journal.example", "approved"]]);
@@ -313,4 +318,53 @@ test("export: a deployed ΞAgent exports to a portable YAML, owner-only", async 
 
   await assert.rejects(exportAgentDraft({ owner: "bob", agentId, accounts, topics, sources }), (error: Error & { status?: number }) => error.status === 404 && /introuvable/.test(error.message));
   await assert.rejects(exportAgentDraft({ owner: "alice", agentId: "pas-un-uuid", accounts, topics, sources }), (error: Error & { status?: number }) => error.status === 404);
+});
+
+// ---------------------------------------------------------------- llm section
+
+test("yaml llm: inherit, override, portable instance key, unresolved reference, legacy style.model, no secret", () => {
+  const head = "xiagent: 1\nidentity: { name: Veille, handle: veille }\n";
+  const pi = { id: randomUUID(), key: "raspberry-pi", name: "Ollama — Raspberry Pi" };
+  const mac = { id: randomUUID(), key: "mac-mini", name: "Ollama — Mac mini" };
+  const instances = [pi, mac];
+  const parse = (llm: string, list = instances) => { const result = parseAgentYaml(head + llm, { ...context, instances: list }); assert.ok(result.ok, JSON.stringify(result.issues)); return result; };
+  // Inherit.
+  const inherit = parse("llm: { mode: inherit }\n");
+  assert.ok(inherit.ok && inherit.issues.length === 0);
+  assert.deepEqual(inherit.ok && inherit.patch.llm, { instanceId: null, unresolvedKey: null, model: "", options: {} });
+  // Override: instance by portable key, model and options (timeout in seconds).
+  const override = parse("llm:\n  mode: override\n  provider: ollama\n  instance: mac-mini\n  model: qwen3:8b\n  options: { temperature: 0.2, maxTokens: 1024, contextSize: 8192, timeoutSeconds: 120 }\n");
+  assert.deepEqual(override.ok && override.patch.llm, { instanceId: mac.id, unresolvedKey: null, model: "qwen3:8b", options: { temperature: 0.2, maxTokens: 1024, contextSize: 8192, timeoutMs: 120_000 } });
+  // Unknown provider and invalid options are errors.
+  const bad = parseAgentYaml(head + "llm: { mode: override, provider: openai, options: { temperature: 7 } }\n", { ...context, instances });
+  assert.ok(bad.ok && bad.issues.some(issue => issue.level === "error" && issue.path === "llm.provider"));
+  // Unknown instance on this installation: kept as unresolved, blocks the deployment until mapped.
+  const missing = parse("llm: { mode: override, instance: raspberry-pi, model: qwen3:1.7b }\n", [mac]);
+  assert.ok(missing.ok && missing.issues.some(issue => issue.level === "warning" && issue.path === "llm.instance"));
+  const base = newDraft({ presets: BUILTIN_PRESETS, timeZone: "Europe/Paris" });
+  const draft = applySuggestion(base, missing.ok ? missing.patch : {}, "yaml");
+  assert.deepEqual(draft.llm, { instanceId: null, unresolvedKey: "raspberry-pi", model: "qwen3:1.7b", options: {} });
+  assert.ok(draftIssues(draft, catalog, BUILTIN_PRESETS).some(issue => issue.field === "llm" && /raspberry-pi/.test(issue.message)));
+  const mapped = { ...draft, llm: { ...draft.llm, instanceId: mac.id, unresolvedKey: null } };
+  assert.ok(!draftIssues(mapped, catalog, BUILTIN_PRESETS, [mac]).some(issue => issue.field === "llm"));
+  assert.ok(draftIssues(mapped, catalog, BUILTIN_PRESETS, [pi]).some(issue => issue.field === "llm"), "a vanished instance is reported");
+  // Legacy style.model: a model override, with a deprecation warning.
+  const legacy = parse("style: { model: qwen3:8b }\n");
+  assert.deepEqual(legacy.ok && legacy.patch.llm, { instanceId: null, unresolvedKey: null, model: "qwen3:8b", options: {} });
+  assert.ok(legacy.ok && legacy.issues.some(issue => issue.path === "style.model" && /déprécié/.test(issue.message)));
+
+  // Round trip import → edit → export → import: only the portable key, never an id, URL or secret.
+  const imported = applySuggestion(base, override.ok ? override.patch : {}, "yaml");
+  const edited = { ...imported, name: "Veille", handle: "veille", llm: { ...imported.llm, model: "qwen3:14b" } };
+  const yaml = draftToYaml(edited, catalog, instances);
+  assert.match(yaml, /instance: mac-mini/); assert.match(yaml, /timeoutSeconds: 120/);
+  assert.doesNotMatch(yaml, UUID); assert.doesNotMatch(yaml, /https?:\/\/|11434|baseUrl|secret|password|api[_-]?key/i);
+  assert.doesNotMatch(yaml, /^style:\n(?: {2}[^\n]*\n)*? {2}model:/m, "style.model is no longer written");
+  const back = parseAgentYaml(yaml, { ...context, instances });
+  assert.ok(back.ok);
+  assert.deepEqual(back.ok && back.patch.llm, edited.llm);
+  assert.equal(draftToYaml(applySuggestion(base, back.ok ? back.patch : {}, "yaml"), catalog, instances), yaml, "stable round trip");
+  assert.match(draftToYaml(base, catalog), /llm:\n  mode: inherit/);
+  // The agent's instance vanished: the export refuses rather than silently inheriting.
+  assert.throws(() => draftToYaml(edited, catalog, [pi]), /n’existe plus/);
 });

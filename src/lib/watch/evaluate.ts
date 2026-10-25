@@ -7,7 +7,8 @@ import type { PublicationStore } from "../publications/store";
 import type { TopicStore } from "../topics/store";
 import { TopicError } from "../topics/types";
 import { runningAgents } from "./collect";
-import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError, type Inference } from "./inference";
+import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "./inference";
+import { bindSafely, describeLLM, type BindLLM } from "./llm-binding";
 import { PRIORITY, type JobQueue } from "./jobs";
 import { publicationGate } from "./schedule";
 import { isOfficialUrl, type SourceStore } from "./sources";
@@ -310,8 +311,8 @@ function pick(items: ItemRow[]) {
 }
 const render = (sources: EvidenceSource[]) => sources.map(source => `[${source.label}] ${source.publisher}\n${source.text}`).join("\n\n");
 
-export function evaluateHandler({ db, accounts, topics, publications, sources, inference, defaultModel, now = Date.now }: {
-  db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; sources: SourceStore; inference: Inference | null; defaultModel: string | null; now?: () => number;
+export function evaluateHandler({ db, accounts, topics, publications, sources, llm, now = Date.now }: {
+  db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; sources: SourceStore; llm: BindLLM; now?: () => number;
 }): Handler {
   const store = candidates(db, now);
   return async job => {
@@ -322,19 +323,29 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, i
     const story = db.prepare<[string, string], { id: string; title: string; item_count: number; first_seen_at: number }>("SELECT id, title, item_count, first_seen_at FROM watch_story WHERE id = ? AND owner = ?").get(storyId, agent.owner);
     if (!story) return { status: "done", result: { outcome: "skipped", reason: "story-missing" } };
     if (story.item_count !== version) return { status: "done", result: { outcome: "skipped", reason: "outdated" } };
-    const model = agent.modelRef ?? defaultModel;
-    if (!inference || !model) return { status: "wait", until: new Date(now() + HOUR), reason: "Inférence locale non configurée." };
     let row = store.get(agentId, storyId);
     if (row && row.story_version === version && row.status !== "evaluating") return { status: "done", result: { outcome: "already-evaluated", status: row.status } };
+    // The agent's own resolution (agent → global → error); a problem waits visibly, never falls back.
+    const binding = bindSafely(llm, agent);
+    if (!binding.ok) {
+      if (row && row.story_version === version) store.update(agentId, storyId, { reason: `En attente de configuration du modèle : ${binding.message}` });
+      return { status: "wait", until: new Date(now() + HOUR), reason: `Configuration du modèle (${binding.code}) : ${binding.message}` };
+    }
+    const { inference, resolved } = binding;
+    const model = resolved.model;
+    const used = { model, instance: resolved.instance.name, instanceSource: resolved.instanceSource };
     if (!row || row.story_version !== version) { store.start(agent, storyId, version, model); row = store.get(agentId, storyId)!; }
+    // A resumed evaluation records the model that continues it.
+    else if (row.model !== model) store.update(agentId, storyId, { model });
     const stages = data(row);
     stages.title = story.title;
     const save = (stage: string, fields: Partial<Omit<CandidateRow, "data">> = {}) => store.update(agentId, storyId, { ...fields, stage, data: stages });
     const finish = (status: "rejected" | "held" | "accepted" | "merged", reason: string, fields: Partial<Omit<CandidateRow, "data">> = {}) => {
       store.update(agentId, storyId, { ...fields, status, stage: "done", reason, data: stages });
-      return { status: "done" as const, result: { outcome: status } };
+      return { status: "done" as const, result: { outcome: status, llm: used } };
     };
     const ask = <T>(prompt: string, schema: z.ZodType<T>) => askJson(inference, { model, system: SYSTEM, prompt }, schema);
+    const describe = describeLLM(resolved);
 
     try {
       const urls = new Map((await sources.list(agent.owner, { includeDeleted: true })).sources.map(source => [source.id, source.url]));
@@ -452,12 +463,14 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, i
     } catch (error) {
       if (error instanceof InferenceUnavailableError || error instanceof InferenceConfigError) {
         store.update(agentId, storyId, { reason: `En attente de l’inférence locale : ${error.message}`, data: stages });
-        return { status: "wait", until: new Date(error instanceof InferenceUnavailableError && error.retryAt ? error.retryAt : now() + (error instanceof InferenceConfigError ? HOUR : 15 * 60_000)), reason: error.message };
+        return { status: "wait", until: new Date(error instanceof InferenceUnavailableError && error.retryAt ? error.retryAt : now() + (error instanceof InferenceConfigError ? HOUR : 15 * 60_000)), reason: `${error.message} (${describe})` };
       }
       if (error instanceof InferenceOutputError) {
-        // Last attempt: the candidate is held, visibly, until its story evolves.
-        if (job.attempts >= job.maxAttempts) return finish("held", `${error.message} Évaluation suspendue jusqu’à une évolution de l’actualité.`);
-        store.update(agentId, storyId, { reason: `${error.message} Nouvel essai planifié.`, data: stages });
+        // Last attempt: the candidate is held, visibly, until its story evolves; the run itself
+        // fails (rethrown below): a failed mandatory inference is never a successful execution.
+        if (job.attempts >= job.maxAttempts) store.update(agentId, storyId, { status: "held", stage: "done", reason: `${error.message} Évaluation suspendue jusqu’à une évolution de l’actualité.`, data: stages });
+        else store.update(agentId, storyId, { reason: `${error.message} Nouvel essai planifié.`, data: stages });
+        error.message = `${error.message} (${describe})`;
       }
       throw error;
     }

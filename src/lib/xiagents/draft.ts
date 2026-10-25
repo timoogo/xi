@@ -1,6 +1,7 @@
 import { accountDraftSchema, profileSchema, type Preset, type Settings } from "../accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../bloub/config";
 import type { BloubConfig } from "../bloub/types";
+import { inferenceOptionsSchema, INHERIT_LLM_DRAFT, modelNameSchema, type AgentLLMDraft } from "../llm/types";
 import { draftSchema, type Draft, type Topic } from "../topics/types";
 import { defaultSchedule, scheduleSchema, type Schedule } from "./schedule";
 
@@ -15,7 +16,7 @@ import { defaultSchedule, scheduleSchema, type Schedule } from "./schedule";
  * owner edited (`editDraft` marks it `manual`), so a late AI enrichment cannot undo manual choices.
  */
 export type Origin = "manual" | "rules" | "ai" | "yaml" | "default";
-export const DRAFT_FIELDS = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "modelRef", "autoPublish", "sources", "schedule", "bloub"] as const;
+export const DRAFT_FIELDS = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "sources", "schedule", "bloub"] as const;
 export type DraftField = (typeof DRAFT_FIELDS)[number];
 
 /**
@@ -37,7 +38,9 @@ export type AgentDraft = {
   topics: TopicPick[];
   perimeter: string; charter: string;
   /** `<presetId>:<version>`. */
-  presetKey: string; settings: Settings | null; modelRef: string; autoPublish: boolean;
+  presetKey: string; settings: Settings | null; autoPublish: boolean;
+  /** Model selection (docs/llm.md): inherit by default; an unresolved YAML instance key blocks the deployment. */
+  llm: AgentLLMDraft;
   sources: SourceRow[]; schedule: Schedule; bloub: BloubConfig;
   provenance: Partial<Record<DraftField, Origin>>;
   /** Model of the last applied AI proposal (deployment log). */
@@ -59,7 +62,7 @@ export function newDraft({ presets, timeZone, bloub = DEFAULT_BLOUB_CONFIG, targ
   const preset = presets[0];
   return {
     target, description: "", name: "", handle: "", about: "", topics: [], perimeter: "", charter: "",
-    presetKey: preset ? presetKey(preset) : "", settings: preset?.settings ?? null, modelRef: "", autoPublish: false,
+    presetKey: preset ? presetKey(preset) : "", settings: preset?.settings ?? null, llm: INHERIT_LLM_DRAFT, autoPublish: false,
     sources: [], schedule: defaultSchedule(timeZone), bloub,
     provenance: { presetKey: "default", settings: "default", schedule: "default", bloub: "default" }, model: null,
   };
@@ -111,7 +114,8 @@ export type DraftIssue = { section: DraftSection; field?: DraftField; message: s
 const fails = (result: { success: boolean }) => !result.success;
 
 /** Every problem that would block the deployment, located by section (shown next to the fields). */
-export function draftIssues(draft: AgentDraft, catalog: Topic[], presets?: Preset[]): DraftIssue[] {
+/** `instances`: the owner's LLM instances, when known (a chosen one must still exist). */
+export function draftIssues(draft: AgentDraft, catalog: Topic[], presets?: Preset[], instances?: readonly { id: string }[]): DraftIssue[] {
   const issues: DraftIssue[] = [];
   const add = (section: DraftSection, message: string, field?: DraftField) => issues.push({ section, message, field });
   const news = draft.topics.filter((pick): pick is Extract<TopicPick, { type: "new" }> => pick.type === "new");
@@ -142,7 +146,10 @@ export function draftIssues(draft: AgentDraft, catalog: Topic[], presets?: Prese
     if (presets && !presets.some(preset => presetKey(preset) === draft.presetKey)) add("advanced", "Preset inconnu : choisissez-en un dans la liste.", "presetKey");
     if (fails(shape.settings.safeParse(draft.settings))) add("advanced", "Ton, structure et public sont requis.", "settings");
   }
-  if (draft.modelRef.length > 200) add("advanced", "Référence de modèle trop longue.", "modelRef");
+  if (draft.llm.unresolvedKey) add("advanced", `Instance « ${draft.llm.unresolvedKey} » introuvable : choisissez une instance ou la configuration globale.`, "llm");
+  else if (draft.llm.instanceId && instances && !instances.some(instance => instance.id === draft.llm.instanceId)) add("advanced", "Instance d’intelligence artificielle introuvable : choisissez-en une autre ou la configuration globale.", "llm");
+  if (draft.llm.model.trim() && fails(modelNameSchema.safeParse(draft.llm.model))) add("advanced", "Nom de modèle trop long (200 caractères au plus).", "llm");
+  if (fails(inferenceOptionsSchema.safeParse(draft.llm.options))) add("advanced", "Paramètres d’inférence invalides (température 0–2, limite 16–32 768 jetons, contexte 512–262 144, délai 5–600 s).", "llm");
   if (draft.sources.length > 50) add("sources", "50 sources au plus.", "sources");
   if (fails(scheduleSchema.safeParse(draft.schedule))) add("schedule", "Calendriers invalides.", "schedule");
   return issues;
@@ -158,13 +165,15 @@ export function draftToSpec(draft: AgentDraft) {
   const origins = Object.values(draft.provenance);
   const proposal = { generatedBy: origins.includes("ai") ? "ai" as const : origins.includes("yaml") ? "yaml" as const : origins.includes("rules") ? "rules" as const : "manual" as const, model: origins.includes("ai") ? draft.model : null };
   if (draft.target === "topic") return { target: "topic" as const, newTopics: newTopics.slice(0, 1), agent: null, proposal };
+  if (draft.llm.unresolvedKey) throw new Error("Instance d’intelligence artificielle non résolue : déploiement impossible.");
   const [presetId, version] = draft.presetKey.split(":");
   return {
     target: "agent" as const, newTopics, proposal,
     agent: {
       handle: draft.handle, name: draft.name.trim(), description: draft.about.trim(),
       primary: ref(draft.topics[0]), secondary: draft.topics.slice(1).map(ref),
-      presetId, presetVersion: Number(version), settings: draft.settings, modelRef: draft.modelRef.trim() || null,
+      presetId, presetVersion: Number(version), settings: draft.settings,
+      llm: { instanceId: draft.llm.instanceId, model: draft.llm.model.trim() || null, options: draft.llm.options },
       profile: { perimeter: draft.perimeter.trim(), charter: draft.charter.trim() },
       sources: draft.sources.filter(source => source.status !== "undecided").map(source => ({ url: source.url, status: source.status, origin: source.origin === "ai" ? "ai" as const : "user" as const, type: source.type.slice(0, 80), rationale: source.rationale.slice(0, 500) })),
       schedule: draft.schedule, bloub: draft.bloub, autoPublish: draft.autoPublish,

@@ -1,5 +1,6 @@
 import { BlockList, isIP } from "node:net";
 import { z } from "zod";
+import type { LLMErrorCode } from "../llm/types";
 import { createSafeFetch, FetchError } from "./net";
 
 /**
@@ -8,12 +9,19 @@ import { createSafeFetch, FetchError } from "./net";
  * tasks wait. The endpoint must resolve to loopback, a private network, Tailscale's CGNAT range, or
  * an IP address listed explicitly in XI_INFERENCE_ALLOW. Link-local (cloud metadata) is refused.
  */
+/** Each error carries an `LLMErrorCode` (recorded in run histories); the class drives retries. */
 export class InferenceUnavailableError extends Error {
   name = "InferenceUnavailableError";
-  constructor(message: string, readonly retryAt: number | null = null) { super(message); }
+  constructor(message: string, readonly retryAt: number | null = null, readonly code: LLMErrorCode = "unreachable") { super(message); }
 }
-export class InferenceConfigError extends Error { name = "InferenceConfigError"; }
-export class InferenceOutputError extends Error { name = "InferenceOutputError"; }
+export class InferenceConfigError extends Error {
+  name = "InferenceConfigError";
+  constructor(message: string, readonly code: LLMErrorCode = "bad-url") { super(message); }
+}
+export class InferenceOutputError extends Error {
+  name = "InferenceOutputError";
+  constructor(message: string, readonly code: LLMErrorCode = "invalid-response") { super(message); }
+}
 
 export type ChatRequest = { model: string; system: string; prompt: string };
 /** Seam for tests: a deterministic fake implements the same contract. */
@@ -36,7 +44,7 @@ export function inferenceConfigFromEnv(env: Record<string, string | undefined> =
   const url = env.XI_INFERENCE_URL?.trim();
   if (!url) return null;
   const allow = (env.XI_INFERENCE_ALLOW ?? "").split(",").map(value => value.trim()).filter(Boolean);
-  if (allow.some(value => !isIP(value))) throw new InferenceConfigError("XI_INFERENCE_ALLOW n’accepte que des adresses IP explicites.");
+  if (allow.some(value => !isIP(value))) throw new InferenceConfigError("XI_INFERENCE_ALLOW n’accepte que des adresses IP explicites.", "blocked");
   const timeout = Number(env.XI_INFERENCE_TIMEOUT_MS ?? 180_000);
   return { url, api: env.XI_INFERENCE_API === "openai" ? "openai" : "ollama", defaultModel: env.XI_INFERENCE_MODEL?.trim() || null, allow, timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, 600_000) : 180_000 };
 }
@@ -51,7 +59,7 @@ export function createLocalInference(config: InferenceConfig, { resolve }: { res
   const literal = base.hostname.replace(/^\[|\]$/g, "");
   const allowed = new Set(config.allow);
   const accept = (address: string) => isLocalAddress(address) || allowed.has(address);
-  if (isIP(literal) && !accept(literal)) throw new InferenceConfigError("Serveur d’inférence refusé : adresse non locale et non autorisée explicitement.");
+  if (isIP(literal) && !accept(literal)) throw new InferenceConfigError("Serveur d’inférence refusé : adresse non locale et non autorisée explicitement.", "blocked");
   const endpoint = new URL(config.api === "ollama" ? "api/chat" : "v1/chat/completions", base).href;
   const fetch = createSafeFetch({ allowAddress: accept, allowAnyPort: true, ...(resolve ? { resolve } : {}) });
 
@@ -66,10 +74,11 @@ export function createLocalInference(config: InferenceConfig, { resolve }: { res
       try {
         response = await fetch(endpoint, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json", Accept: "application/json" }, timeoutMs: config.timeoutMs, maxBytes: 1_000_000, maxRedirects: 0 });
       } catch (error) {
-        if (error instanceof FetchError && (error.code === "blocked-address" || error.code === "blocked-url" || error.code === "redirect")) throw new InferenceConfigError("Serveur d’inférence refusé : il doit rester local.");
-        throw new InferenceUnavailableError(error instanceof FetchError && error.code === "timeout" ? "Délai d’inférence dépassé." : "Serveur d’inférence injoignable.");
+        if (error instanceof FetchError && (error.code === "blocked-address" || error.code === "blocked-url" || error.code === "redirect")) throw new InferenceConfigError("Serveur d’inférence refusé : il doit rester local.", "blocked");
+        const timeout = error instanceof FetchError && error.code === "timeout";
+        throw new InferenceUnavailableError(timeout ? "Délai d’inférence dépassé." : "Serveur d’inférence injoignable.", null, timeout ? "timeout" : "unreachable");
       }
-      if (response.status !== 200) throw new InferenceUnavailableError(`Serveur d’inférence : HTTP ${response.status}${response.status === 404 ? " (modèle absent ?)" : ""}.`);
+      if (response.status !== 200) throw new InferenceUnavailableError(`Serveur d’inférence : HTTP ${response.status}${response.status === 404 ? " (modèle absent ?)" : ""}.`, null, "http");
       let json: unknown;
       try { json = JSON.parse(response.body.toString("utf8")); } catch { throw new InferenceOutputError("Réponse du serveur d’inférence illisible."); }
       const parsed = config.api === "ollama" ? ollamaReply.safeParse(json) : openAiReply.safeParse(json);

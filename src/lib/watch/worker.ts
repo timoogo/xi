@@ -8,7 +8,7 @@ export { PRIORITY };
 import { collectHandler, discoverHandler, planCollection, planDiscovery } from "./collect";
 import { draftHandler, planDrafting } from "./drafting";
 import { evaluateHandler, planEvaluation, purgeCandidates } from "./evaluate";
-import type { Inference } from "./inference";
+import type { BindLLM } from "./llm-binding";
 import type { PoliteFetch } from "./net";
 import type { TopicStore } from "../topics/store";
 import type { WatchAgent } from "../accounts/types";
@@ -130,20 +130,21 @@ function measured(publications: PublicationStore, handler: Handler): Handler {
 }
 
 /**
- * Every handler of the engine. `fetch` is the polite, SSRF-protected fetcher; `inference` the local
- * model server (null when not configured: nothing is evaluated, nothing falls back elsewhere).
+ * Every handler of the engine. `fetch` is the polite, SSRF-protected fetcher; `llm` binds each
+ * agent to its resolved model (agent → owner's global configuration → explicit problem, never a
+ * fallback to another instance or model; see llm-binding.ts and docs/llm.md).
  */
-export function engineHandlers({ db, accounts, topics, publications, sources, fetch, inference, defaultModel, settings, now }: {
+export function engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now }: {
   db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; sources: SourceStore; fetch: PoliteFetch;
-  inference: Inference | null; defaultModel: string | null; settings: PublishSettings; now: () => Date;
+  llm: BindLLM; settings: PublishSettings; now: () => Date;
 }): Record<string, Handler> {
   const clock = () => now().getTime();
   return {
     ...windowHandlers({ db, accounts, sources, publications, settings, now: clock }),
     "collect-source": collectHandler({ db, sources, fetch, now: clock }),
     "discover-sources": discoverHandler({ db, sources, agents: () => accounts.watchAgents(), fetch, now: clock }),
-    "evaluate-story": evaluateHandler({ db, accounts, topics, publications, sources, inference, defaultModel, now: clock }),
-    "draft-candidate": draftHandler({ db, accounts, topics, publications, inference, defaultModel, now: clock }),
+    "evaluate-story": evaluateHandler({ db, accounts, topics, publications, sources, llm, now: clock }),
+    "draft-candidate": draftHandler({ db, accounts, topics, publications, llm, now: clock }),
   };
 }
 
@@ -161,7 +162,7 @@ export function engineHandlers({ db, accounts, topics, publications, sources, fe
  */
 export async function tick({ db, accounts, sources, handlers, canEvaluate = () => false, now = () => new Date(), deadline, concurrency = 1, inferenceConcurrency = 1, retentionDays = globalRetentionDays() }: {
   db: Database.Database; accounts: AccountStore; sources?: SourceStore; handlers: Record<string, Handler>;
-  /** Whether a model is configured for the agent (local server and model reference). */
+  /** Whether inference tasks are planned for the agent: a bound model, or a configuration problem to report (llm-binding.ts `shouldPlanInference`). */
   canEvaluate?: (agent: WatchAgent) => boolean; now?: () => Date; deadline?: number;
   /** Jobs run at once by this pass, and inference jobs at once across processes. */
   concurrency?: number; inferenceConcurrency?: number; retentionDays?: number;

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { AccountStore } from "../accounts/store";
+import type { Resolution } from "../llm/types";
 import { splitSourcesSection } from "../publications/markdown";
 import type { PublicationStore } from "../publications/store";
 import { migrateWatchCollection, sourceState } from "./collect";
@@ -10,11 +11,16 @@ import { migrateWatchWorker } from "./worker";
 import { planAgentJobs } from "./schedule";
 import type { Source, SourceStore } from "./sources";
 
-/** Everything the agent page shows about its watch. Owner only: a foreign agent is 404. Plain JSON. */
+/** The operator's environment server (XI_INFERENCE_URL), kept for compatibility. */
 export type InferenceStatus = { configured: boolean; model: string | null; error: string | null };
 
-export async function watchDiagnostics({ db, accounts, sources, publications, owner, agentId, autoPublish, allowPublic = false, inference = { configured: false, model: null, error: null }, now = new Date() }: {
-  db: Database.Database; accounts: AccountStore; sources: SourceStore; publications?: PublicationStore; owner: string; agentId: string; autoPublish: boolean; allowPublic?: boolean; inference?: InferenceStatus; now?: Date;
+/**
+ * Everything the agent page shows about its watch. Owner only: a foreign agent is 404. Plain JSON.
+ * `llm`: the agent's resolved model (instance, model, origin) or its configuration problem, as
+ * computed by the caller (llm/server.ts `resolve`); null when not provided.
+ */
+export async function watchDiagnostics({ db, accounts, sources, publications, owner, agentId, autoPublish, allowPublic = false, inference = { configured: false, model: null, error: null }, llm = null, now = new Date() }: {
+  db: Database.Database; accounts: AccountStore; sources: SourceStore; publications?: PublicationStore; owner: string; agentId: string; autoPublish: boolean; allowPublic?: boolean; inference?: InferenceStatus; llm?: Resolution | null; now?: Date;
 }) {
   const account = await accounts.getOwned(owner, agentId);
   const watch = await accounts.watchPolicy(owner, agentId);
@@ -106,7 +112,7 @@ export async function watchDiagnostics({ db, accounts, sources, publications, ow
 
   const nextWindow = running ? planAgentJobs({ id: agentId, active: true, watch }, now)[0]?.runAfter.toISOString() ?? null : null;
   return {
-    watch, running, autoPublish, allowPublic, inference, nextWindow, invalidSources: invalid, candidates, drafts, decisions, worker, failedJobs,
+    watch, running, autoPublish, allowPublic, inference, llm, nextWindow, invalidSources: invalid, candidates, drafts, decisions, worker, failedJobs,
     sources: relevant.map(withState),
     fetchLog,
     stories: stories.map(story => ({

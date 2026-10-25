@@ -26,7 +26,7 @@ export function WatchDrafts({ agentId, drafts, busy, act }: { agentId: string; d
   </section>;
 }
 
-function DraftCard({ agentId, draft, busy, act }: { agentId: string; draft: Draft; busy: boolean; act: Act }) {
+export function DraftCard({ agentId, draft, busy, act }: { agentId: string; draft: Draft; busy: boolean; act: Act }) {
   const [editing, setEditing] = useState<string[] | null>(null);
   const [confirm, setConfirm] = useState<"approve" | "reject" | null>(null);
   const pending = draft.review === "pending";

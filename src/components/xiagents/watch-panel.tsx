@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { WatchDiagnostics } from "@/lib/watch/diagnostics";
+import type { Resolution } from "@/lib/llm/types";
+import { resolutionText } from "@/components/llm/format";
 import { WatchDrafts } from "./watch-drafts";
 
 type Topic = { id: string; tag: string; name: string };
@@ -45,6 +47,8 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
   const pending = data.sources.filter(source => source.status === "proposed");
   const active = data.sources.filter(source => source.status === "approved");
   const others = data.sources.filter(source => source.status === "disabled" || source.status === "rejected");
+  // Resolved instance and model of this agent, when the diagnostics provide it (`llm`).
+  const llm = (data as WatchDiagnostics & { llm?: Resolution }).llm;
   const status = !data.watch.valid ? "Configuration illisible : veille désactivée" : !data.watch.policy.enabled ? "Désactivée" : data.watch.policy.paused ? "En pause" : data.running ? "Active" : "Inactive (ΞAgent désactivé)";
 
   return <section aria-labelledby="watch-title" className="space-y-6 border-b p-4">
@@ -52,7 +56,8 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
     <p className="text-sm">État : <strong>{status}</strong> · Publication automatique : <strong>{data.autoPublish ? "autorisée" : "désactivée"}</strong>{data.nextWindow && <> · Prochaine fenêtre : {date(data.nextWindow)}</>}</p>
     <p className="text-sm">Mode autonome : <strong>{data.watch.policy.autoPublish ? `activé (${data.watch.policy.visibility === "public" ? "public" : "privé"})` : "désactivé"}</strong> · Opérateur : publication automatique {data.autoPublish ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH)"}, publique {data.allowPublic ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH_PUBLIC)"}{data.watch.publicConfirmedAt && <> · publication publique confirmée le {date(data.watch.publicConfirmedAt)}</>}</p>
     <p className="text-sm">Worker : {data.worker.lastTickAt ? <>dernier passage {date(data.worker.lastTickAt)}{data.worker.stale && <strong className="text-destructive"> — aucun passage depuis plus de 30 min</strong>}</> : <strong className="text-destructive">aucun passage enregistré</strong>}{data.worker.lastError && <span className="text-destructive"> · dernière erreur {date(data.worker.lastErrorAt)} : {data.worker.lastError}</span>}{data.failedJobs > 0 && <span className="text-destructive"> · {data.failedJobs} tâche(s) en échec</span>}</p>
-    <p className="text-sm">Inférence locale : <strong>{data.inference.error ? "configuration refusée" : data.inference.configured ? "configurée" : "non configurée"}</strong>{data.inference.configured && <> · modèle par défaut {data.inference.model ?? "aucun (référence du ΞAgent requise)"}</>}{data.inference.error && <span className="text-destructive"> — {data.inference.error}</span>}. Aucun service d’IA distant n’est utilisé.</p>
+    {llm ? <p className="text-sm">Inférence locale : {llm.ok ? <strong>{resolutionText(llm)}</strong> : <strong className="text-destructive"><span aria-hidden="true">⚠ </span>{resolutionText(llm)}</strong>}. Aucun service d’IA distant n’est utilisé.</p>
+      : <p className="text-sm">Inférence locale : <strong>{data.inference.error ? "configuration refusée" : data.inference.configured ? "configurée" : "non configurée"}</strong>{data.inference.configured && <> · modèle par défaut {data.inference.model ?? "aucun (référence du ΞAgent requise)"}</>}{data.inference.error && <span className="text-destructive"> — {data.inference.error}</span>}. Aucun service d’IA distant n’est utilisé.</p>}
     <div aria-live="polite">{notice && <p role="status" className="text-sm">{notice}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}</div>
 
     <PolicyForm key={data.watch.revision ?? "initial"} agentId={agentId} watch={data.watch} busy={busy} act={act} />

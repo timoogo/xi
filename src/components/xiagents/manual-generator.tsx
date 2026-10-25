@@ -32,8 +32,8 @@ export function ManualGenerator({ agentId, revision }: { agentId: string; revisi
     finally { setBusy(false); }
   }
   return <section aria-labelledby="manual-generator" className="space-y-4 border-b p-4">
-    <h2 id="manual-generator" className="text-lg font-bold">Générer une publication</h2>
-    <p className="text-sm text-muted-foreground">Contenu fictif de test, généré localement. Choisissez la visibilité et modifiez les messages avant de publier sous l’identité du ΞAgent. Le marquage de test est conservé automatiquement.</p>
+    <h2 id="manual-generator" className="text-lg font-bold">Générer des fixtures</h2>
+    <p className="text-sm text-muted-foreground">Outil de test et de développement : contenu fictif généré localement, sans modèle ni source, marqué « Contenu de test fictif ». Choisissez la visibilité et modifiez les messages avant de publier sous l’identité du ΞAgent. Le marquage de test est conservé automatiquement.</p>
     <fieldset disabled={busy} className="flex flex-wrap items-end gap-3">
       <label className="grid gap-1">Format<select className="rounded-md border bg-background p-2" value={thread ? "thread" : "post"} onChange={event => { setThread(event.target.value === "thread"); invalidate(); }}><option value="post">Post simple</option><option value="thread">Thread</option></select></label>
       {thread && <label className="grid gap-1">Nombre de messages<select className="rounded-md border bg-background p-2" value={count} onChange={event => { setCount(Number(event.target.value)); invalidate(); }}>{Array.from({ length: 9 }, (_, i) => <option key={i + 2} value={i + 2}>{i + 2}</option>)}</select></label>}

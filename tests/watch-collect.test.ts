@@ -22,6 +22,7 @@ import { nightWindow } from "../src/lib/watch/schedule";
 import { createSourceStore, estimateReliability } from "../src/lib/watch/sources";
 import { canonicalUrl, lineages, signature } from "../src/lib/watch/stories";
 import { engineHandlers, tick, windowHandlers } from "../src/lib/watch/worker";
+import { bindTo } from "./helpers/llm";
 
 const MIN = 60_000;
 
@@ -286,7 +287,7 @@ test("collector: approved sources only, conditional requests, duplicates, storie
   let clock = Date.parse("2026-01-15T12:00:00Z");
   const build = () => {
     const fetch = createPoliteFetch({ db, fetch: testFetch(), now: () => clock, minIntervalMs: 0 });
-    return { fetch, handlers: engineHandlers({ db, accounts, topics: env.topics, publications, sources, fetch, inference: null, defaultModel: null, settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) }) };
+    return { fetch, handlers: engineHandlers({ db, accounts, topics: env.topics, publications, sources, fetch, llm: bindTo(null), settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) }) };
   };
   let engine = build();
   const run = () => tick({ db, accounts, sources, handlers: engine.handlers, now: () => new Date(clock) });

@@ -75,7 +75,7 @@ const tags = async (env: Env, draft: AgentDraft) => {
   const catalog = await env.catalog();
   return draft.topics.map(pick => pick.type === "new" ? pick.draft.tag : catalog.find(topic => topic.id === pick.id)?.tag);
 };
-const COMPARED = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "modelRef", "autoPublish", "schedule", "bloub"] as const;
+const COMPARED = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "schedule", "bloub"] as const;
 const configOf = (draft: AgentDraft) => Object.fromEntries(COMPARED.map(key => [key, draft[key]]));
 
 const FULL_YAML = `# exporté à la main
@@ -222,7 +222,7 @@ test("creation 5 & 14: full YAML import fills every field, then deploys", async 
   const journaliste = env.presets.find(preset => preset.id === "journaliste")!;
   assert.equal(draft.presetKey, "journaliste:1");
   assert.deepEqual(draft.settings, { ...journaliste.settings, depth: "approfondi" });
-  assert.equal(draft.modelRef, "modele-test"); assert.equal(draft.autoPublish, true);
+  assert.equal(draft.llm.model, "modele-test", "legacy style.model"); assert.equal(draft.autoPublish, true);
   assert.deepEqual(draft.bloub, { ...DEFAULT_BLOUB_CONFIG, color: "bleu" });
   assert.deepEqual(draft.schedule, EXPECTED_SCHEDULE);
   assert.deepEqual(draft.sources.map(source => [source.domain, source.status, source.origin]), [["journal.example", "undecided", "yaml"], ["blog.example", "excluded", "yaml"], ["feed.example", "undecided", "yaml"]]);
@@ -233,7 +233,8 @@ test("creation 5 & 14: full YAML import fills every field, then deploys", async 
   const done = await env.deploy("alice", draft);
   assert.ok(done.steps.find(step => step.key === "validate")!.logs.some(log => /YAML/.test(log.message)));
   const agent = (await env.accounts.watchAgents()).find(item => item.id === done.ids.agentId)!;
-  assert.equal(agent.modelRef, "modele-test");
+  assert.equal(agent.modelRef, null);
+  assert.deepEqual(agent.llm?.config, { instanceId: null, model: "modele-test", options: {} }, "the model lives in the llm key");
   assert.equal(agent.watch.policy.autoPublish, true);
   assert.equal(agent.profile!.charter, "Citer l’article primaire.");
   assert.equal((await env.accounts.avatar("alice", agent.id)).config.color, "bleu");
@@ -375,7 +376,7 @@ test("creation 10b & 12: deployed agent → exportAgentDraft → YAML → reimpo
   const catalog = await env.catalog();
   assert.deepEqual(await tags(env, exported), ["science.cosmologie", "science"]);
   assert.deepEqual(normalizedSchedule(exported.schedule), normalizedSchedule(EXPECTED_SCHEDULE));
-  for (const key of ["name", "handle", "about", "perimeter", "charter", "presetKey", "settings", "modelRef", "autoPublish", "bloub"] as const) assert.deepEqual(exported[key], draft[key], key);
+  for (const key of ["name", "handle", "about", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "bloub"] as const) assert.deepEqual(exported[key], draft[key], key);
   assert.deepEqual(exported.sources.map(source => [source.domain, source.status]).sort(), [["blog.example", "excluded"], ["feed.example", "approved"], ["journal.example", "approved"]]);
   const yaml = draftToYaml(exported, catalog);
   assert.doesNotMatch(yaml, UUID, "no topic, agent or source identifier leaks");

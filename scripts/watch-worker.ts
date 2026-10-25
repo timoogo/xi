@@ -1,10 +1,12 @@
 import Database from "better-sqlite3";
 import { resolve } from "node:path";
 import { createAccountStore } from "../src/lib/accounts/store";
+import type { WatchAgent } from "../src/lib/accounts/types";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault, vaultPathFromEnv } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
-import { createLocalInference, inferenceConfigFromEnv, type Inference } from "../src/lib/watch/inference";
+import { createLLMRuntime } from "../src/lib/llm/server";
+import { agentLLMSettings, bindSafely, shouldPlanInference } from "../src/lib/watch/llm-binding";
 import { createPoliteFetch, createSafeFetch } from "../src/lib/watch/net";
 import { createSourceStore } from "../src/lib/watch/sources";
 import { engineHandlers, recordWorker, tick } from "../src/lib/watch/worker";
@@ -36,20 +38,15 @@ async function main() {
     const sources = createSourceStore({ vault, topics });
     const fetch = createPoliteFetch({ db, fetch: createSafeFetch() });
     const now = () => new Date();
-    // Local inference only. A refused configuration (non-local address) disables evaluation,
-    // never collection, and never falls back to another provider.
-    let inference: Inference | null = null;
-    let defaultModel: string | null = null;
-    try {
-      const config = inferenceConfigFromEnv();
-      if (config) { inference = createLocalInference(config); defaultModel = config.defaultModel; }
-    } catch (error) {
-      console.error("Watch inference configuration refused", error instanceof Error ? error.message : "unknown");
-    }
+    // Local inference only, resolved per agent: its own choice, else its owner's global
+    // configuration (or the operator's XI_INFERENCE_URL server), else an explicit problem in the
+    // run history. Never a fallback to another instance, model or provider; collection is unaffected.
+    const runtime = createLLMRuntime({ db });
+    const llm = (agent: WatchAgent) => runtime.bind(agent.owner, agentLLMSettings(agent));
     // Both flags are off unless the operator sets them; each agent must also enable its autonomous mode.
     const settings = { autoPublish: process.env.XI_WATCH_AUTOPUBLISH === "true", allowPublic: process.env.XI_WATCH_AUTOPUBLISH_PUBLIC === "true" };
-    const handlers = engineHandlers({ db, accounts, topics, publications, sources, fetch, inference, defaultModel, settings, now });
-    const canEvaluate = (agent: { modelRef: string | null }) => !!inference && !!(agent.modelRef ?? defaultModel);
+    const handlers = engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now });
+    const canEvaluate = (agent: WatchAgent) => shouldPlanInference(bindSafely(llm, agent));
     // Leave room before the next timer run; leases cover a pass that overruns anyway.
     console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, canEvaluate, now, deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency: positive(process.env.XI_INFERENCE_CONCURRENCY, 1) })));
   } finally {

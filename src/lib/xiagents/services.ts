@@ -2,6 +2,7 @@ import { getAccountStore } from "../accounts/server";
 import { getAppDatabase } from "../auth";
 import { openVault, vaultPathFromEnv } from "../publications/vault";
 import { getTopicStore } from "../topics/server";
+import { getLLMRuntime } from "../llm/server";
 import { migrateWatchWorker } from "../watch/worker";
 import { autoPublishEnabled, getWatchServices, inferenceStatus } from "../watch/server";
 import { createDeployments, type Deployments } from "./deployments";
@@ -29,6 +30,7 @@ export function getDeployments() {
     .then(([vault, accounts, topics, { sources, fetch }]) => createDeployments({
       vault, db: getAppDatabase(), accounts, topics, sources, fetch,
       readiness: () => ({ inference: inferenceStatus(), autoPublish: autoPublishEnabled(), workerLastTickAt: workerLastTickAt() }),
+      llm: { owns: (owner, instanceId) => !!getLLMRuntime().store.get(owner, instanceId), resolve: (owner, settings) => getLLMRuntime().resolve(owner, settings) },
     }))
     .catch(error => { singleton.xiDeployments = undefined; throw error; });
   return singleton.xiDeployments;

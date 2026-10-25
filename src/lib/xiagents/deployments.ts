@@ -6,6 +6,8 @@ import { z } from "zod";
 import type { AccountStore } from "../accounts/store";
 import { DEFAULT_WATCH_POLICY, accountDraftSchema, profileSchema, settingsSchema } from "../accounts/types";
 import { bloubConfigSchema } from "../bloub/config";
+import { agentLLMConfigSchema, INHERIT_LLM, type AgentLLMConfig, type AgentLLMSettings, type Resolution } from "../llm/types";
+import { agentLLMSettings, describeLLM } from "../watch/llm-binding";
 import { assertWithin, inside, listDir, writeAtomic, type Vault } from "../publications/vault";
 import { locked } from "../topics/lock";
 import type { TopicStore } from "../topics/store";
@@ -45,7 +47,10 @@ export const agentSpecSchema = z.object({
   handle: accountDraftSchema.shape.handle, name: accountDraftSchema.shape.name, description: accountDraftSchema.shape.description,
   primary: topicRef, secondary: z.array(topicRef).max(30),
   presetId: z.string().min(1).max(100), presetVersion: z.number().int().positive(), settings: settingsSchema,
-  modelRef: z.string().trim().min(1).max(200).nullable(),
+  /** Deprecated (deployments recorded before `llm`): a model override, read through `agentLLM`. */
+  modelRef: z.string().trim().min(1).max(200).nullable().optional(),
+  /** Model selection: inherit, another model, or another of the owner's instances (docs/llm.md). */
+  llm: agentLLMConfigSchema.default(INHERIT_LLM),
   profile: profileSchema,
   sources: z.array(sourceSpecSchema).max(50),
   schedule: scheduleSchema,
@@ -73,6 +78,11 @@ export const deploymentSpecSchema = z.object({
   }
 });
 export type DeploymentSpec = z.infer<typeof deploymentSpecSchema>;
+/** The agent's model selection; a legacy `modelRef` without an explicit choice becomes a model override. */
+export function agentLLM(agent: Pick<z.infer<typeof agentSpecSchema>, "modelRef" | "llm">): AgentLLMConfig {
+  const llm = agent.llm ?? INHERIT_LLM;
+  return agent.modelRef && !llm.model && !llm.instanceId ? { ...llm, model: agent.modelRef } : llm;
+}
 
 export type StepStatus = "pending" | "running" | "completed" | "failed";
 export type StepLog = { at: string; level: "info" | "warn" | "error"; message: string };
@@ -118,10 +128,12 @@ export type DeploymentDeps = {
   vault: Vault; db: Database.Database; accounts: AccountStore; topics: TopicStore; sources: SourceStore; fetch: PoliteFetch;
   /** Environment facts checked by the readiness step (never invented). */
   readiness: () => { inference: { configured: boolean; model: string | null; error: string | null }; autoPublish: boolean; workerLastTickAt: number | null };
+  /** The owner's LLM configuration (llm/server.ts): ownership of a chosen instance, and the resolution checked at readiness. */
+  llm?: { owns: (owner: string, instanceId: string) => boolean; resolve: (owner: string, settings: AgentLLMSettings) => Resolution };
   now?: () => Date;
 };
 
-export function createDeployments({ vault, db, accounts, topics, sources, fetch, readiness, now = () => new Date() }: DeploymentDeps) {
+export function createDeployments({ vault, db, accounts, topics, sources, fetch, readiness, llm, now = () => new Date() }: DeploymentDeps) {
   const directory = inside(vault.root, ".xi-deployments");
   async function prepare() {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -161,6 +173,9 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       for (const ref of [agent.primary, ...agent.secondary]) if (ref.type === "existing" && !catalog.some(t => t.id === ref.id)) problems.push("Un topic sélectionné n’existe plus : rechargez le catalogue.");
       if (!await accounts.handleAvailable(agent.handle, ids?.agentId ?? null)) problems.push(`Le handle @${agent.handle} est déjà réservé.`);
       if (!(await accounts.listPresets(owner)).some(p => p.id === agent.presetId && p.version === agent.presetVersion)) problems.push("Version de preset introuvable.");
+      // Only the owner's own instances: another owner's id is as unknown as a deleted one.
+      const instanceId = agentLLM(agent).instanceId;
+      if (instanceId && llm && !llm.owns(owner, instanceId)) problems.push("L’instance d’intelligence artificielle choisie n’existe plus : choisissez-en une autre ou la configuration globale.");
     }
     return problems;
   }
@@ -264,8 +279,8 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       const agent = deployment.spec.agent!;
       const [primaryTopicId, ...secondaryTopicIds] = agentTopics();
       const { account, created } = await accounts.createAgent(deployment.owner, deployment.ids.agentId!, {
-        draft: { handle: agent.handle, name: agent.name, description: agent.description, primaryTopicId, secondaryTopicIds, presetId: agent.presetId, presetVersion: agent.presetVersion, settings: agent.settings, active: true, modelRef: agent.modelRef, validationMode: "human" },
-        profile: agent.profile, bloub: agent.bloub,
+        draft: { handle: agent.handle, name: agent.name, description: agent.description, primaryTopicId, secondaryTopicIds, presetId: agent.presetId, presetVersion: agent.presetVersion, settings: agent.settings, active: true, modelRef: null, validationMode: "human" },
+        profile: agent.profile, bloub: agent.bloub, llm: agentLLM(agent),
       });
       log("info", `${created ? "ΞAgent enregistré" : "ΞAgent déjà enregistré, éléments manquants complétés"} : @${account.handle} (${account.id}). Veille désactivée jusqu’à l’activation.`);
     },
@@ -332,10 +347,15 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       if (!agent.profile) throw new TopicError("Charte éditoriale absente après enregistrement.");
       if (!agent.watch.valid) throw new TopicError("Configuration de veille illisible.");
       const facts = readiness();
-      if (facts.inference.error) log("warn", `Inférence locale refusée : ${facts.inference.error}. Collecte possible, évaluation et rédaction suspendues.`);
-      else if (!facts.inference.configured) log("warn", "Inférence locale non configurée (XI_INFERENCE_URL) : collecte possible, évaluation et rédaction en attente.");
-      else if (!agent.modelRef && !facts.inference.model) log("warn", "Aucun modèle : renseignez la référence du ΞAgent ou XI_INFERENCE_MODEL.");
-      else log("info", `Inférence locale configurée (modèle ${agent.modelRef ?? facts.inference.model}).`);
+      if (llm) {
+        const resolution = llm.resolve(deployment.owner, agentLLMSettings(agent));
+        if (resolution.ok) log("info", `Modèle résolu : ${describeLLM(resolution.value)}. La connexion sera vérifiée à la première évaluation.`);
+        else log("warn", `${resolution.message} Collecte possible, évaluation et rédaction en attente (Paramètres → Intelligence artificielle).`);
+      }
+      else if (facts.inference.error) log("warn", `Inférence locale refusée : ${facts.inference.error}. Collecte possible, évaluation et rédaction suspendues.`);
+      else if (!facts.inference.configured) log("warn", "Inférence locale non configurée (aucune instance, ni XI_INFERENCE_URL) : collecte possible, évaluation et rédaction en attente.");
+      else if (!agentLLMSettings(agent).config.model && !facts.inference.model) log("warn", "Aucun modèle : choisissez un modèle pour le ΞAgent ou XI_INFERENCE_MODEL.");
+      else log("info", `Inférence locale configurée (modèle ${agentLLMSettings(agent).config.model ?? facts.inference.model}).`);
       if (facts.workerLastTickAt === null) log("warn", "Aucun passage du worker enregistré : installez le timer xi-watch (docs/watch.md).");
       else if (now().getTime() - facts.workerLastTickAt > 30 * 60_000) log("warn", `Dernier passage du worker : ${new Date(facts.workerLastTickAt).toISOString()} (plus de 30 min).`);
       else log("info", `Worker actif (dernier passage ${new Date(facts.workerLastTickAt).toISOString()}).`);

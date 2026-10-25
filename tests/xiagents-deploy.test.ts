@@ -15,6 +15,7 @@ import { createSourceStore } from "../src/lib/watch/sources";
 import { createDeployments, type DeploymentSpec } from "../src/lib/xiagents/deployments";
 import { defaultSchedule } from "../src/lib/xiagents/schedule";
 import { proposeAgent } from "../src/lib/xiagents/proposal";
+import { INHERIT_LLM } from "../src/lib/llm/types";
 
 const RSS = (title: string) => Buffer.from(`<?xml version="1.0"?><rss version="2.0"><channel><title>${title}</title><link>https://example.org/</link><item><title>Un article</title><link>https://example.org/a</link><pubDate>Mon, 19 Oct 2026 10:00:00 GMT</pubDate><description>Résumé</description></item></channel></rss>`);
 
@@ -47,7 +48,7 @@ function agentSpec(existingId: string, overrides: Partial<NonNullable<Deployment
     agent: {
       handle: "longevite", name: "Veille longévité", description: "Avancées sur la longévité humaine.",
       primary: { type: "new", key: "new-1" }, secondary: [{ type: "existing", id: existingId }],
-      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, modelRef: null,
+      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, llm: INHERIT_LLM,
       profile: { perimeter: "Recherche publiée et essais cliniques ; pas de produits commerciaux.", charter: "Toujours citer l’étude primaire." },
       sources: [
         { url: "https://journal.example/", status: "approved", origin: "ai", type: "revue scientifique", rationale: "Revue de référence" },

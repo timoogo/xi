@@ -20,6 +20,7 @@ import { createSourceStore } from "../src/lib/watch/sources";
 import { recordEntries } from "../src/lib/watch/stories";
 import { engineHandlers, tick } from "../src/lib/watch/worker";
 import { z } from "zod";
+import { bindTo } from "./helpers/llm";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -310,7 +311,7 @@ test("pipeline: relevance, verification, holds, duplicates, developments, contin
     return { claims: [], contradictions: [], impact: { score: 0.1, reasons: ["Aucun."] } };
   });
   const fetch = createPoliteFetch({ db, fetch: createSafeFetch(), now: () => clock });
-  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch, inference: model.inference, defaultModel: null, settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) });
+  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch, llm: bindTo(model.inference), settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) });
   const run = (canEvaluate = (agent: { modelRef: string | null }) => !!agent.modelRef) => tick({ db, accounts, sources, handlers: { "evaluate-story": handlers["evaluate-story"] }, canEvaluate, now: () => new Date(clock) });
   // Not configured: nothing is evaluated.
   assert.equal((await run(() => false)).planned, 0);
@@ -392,13 +393,13 @@ test("pipeline: unavailable server keeps the job and the completed stages; inval
     if (extractionDown) throw new InferenceUnavailableError("Mac mini en veille.");
     return { claims: [{ text: "Le gouvernement a présenté le budget 2027.", kind: "fact", attribution: null, evidence: [{ item: "I1", quote: "Le gouvernement a présenté mercredi le projet de budget pour 2027" }] }], contradictions: [], impact: { score: 0.6, reasons: ["Budget national."] } };
   });
-  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch: createPoliteFetch({ db, fetch: createSafeFetch() }), inference: model.inference, defaultModel: null, settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) });
+  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch: createPoliteFetch({ db, fetch: createSafeFetch() }), llm: bindTo(model.inference), settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) });
   const run = () => tick({ db, accounts, sources, handlers: { "evaluate-story": handlers["evaluate-story"] }, canEvaluate: () => true, now: () => new Date(clock) });
   const first = await run();
   assert.equal(first.waiting, 1);
   const queue = createJobQueue(db, () => clock);
   const job = db.prepare("SELECT key FROM watch_job WHERE kind = 'evaluate-story'").get() as { key: string };
-  assert.deepEqual([queue.get(job.key)!.state, queue.get(job.key)!.attempts, queue.get(job.key)!.lastError], ["pending", 0, "Mac mini en veille."]);
+  assert.deepEqual([queue.get(job.key)!.state, queue.get(job.key)!.attempts, queue.get(job.key)!.lastError], ["pending", 0, "Mac mini en veille. (modele-local sur Instance de test (configuration globale, modèle choisi pour le ΞAgent))"], "the reason names the model and instance used");
   const state = db.prepare("SELECT status, stage, reason, data FROM watch_candidate WHERE agent_id = ?").get(agentId) as { status: string; stage: string; reason: string; data: string };
   assert.deepEqual([state.status, state.stage, !!JSON.parse(state.data).relevance], ["evaluating", "extraction", true]);
   assert.match(state.reason, /En attente de l’inférence locale/);
@@ -419,4 +420,7 @@ test("pipeline: unavailable server keeps the job and the completed stages; inval
   const failed = db.prepare("SELECT c.status, c.reason FROM watch_candidate c JOIN watch_story s ON s.id = c.story_id WHERE s.title LIKE '%censure%'").get() as { status: string; reason: string };
   assert.deepEqual([failed.status, /non conforme/.test(failed.reason)], ["held", true]);
   assert.equal(model.calls.filter(call => call.story.includes("censure")).length, 6, "three attempts, two tries each");
+  // The failed mandatory inference is a failed execution in the history, never a success.
+  const runs = db.prepare("SELECT status, error FROM xiagent_run WHERE kind = 'evaluate-story' AND error LIKE '%non conforme%' ORDER BY started_at, attempt").all() as { status: string; error: string }[];
+  assert.deepEqual(runs.map(run => run.status), ["retrying", "retrying", "failed"]);
 });

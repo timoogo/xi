@@ -43,7 +43,12 @@ style:
   audience: Grand public
   structure: Notions, explication progressive, exemples
   depth: standard                # court | standard | approfondi
-  model: qwen3:8b                # référence du modèle local (facultatif)
+llm:                             # modèle utilisé (docs/llm.md) ; « mode: inherit » = configuration globale
+  mode: override
+  provider: ollama               # seul fournisseur pris en charge
+  instance: mac-mini             # clé portable de l’instance (absente = instance globale)
+  model: qwen3:8b                # absent = modèle par défaut de l’instance
+  options: { temperature: 0.2, maxTokens: 1024, contextSize: 8192, timeoutSeconds: 120 }
 sources:
   - url: https://arxiv.example/astro-ph
     type: prépublications
@@ -97,7 +102,12 @@ appearance:                      # identifiants du catalogue Bloub
 | `style.tone`, `style.audience` | texte | 1–300 caractères. |
 | `style.structure` | texte | 1–1 000 caractères. |
 | `style.depth` | `court` \| `standard` \| `approfondi` | |
-| `style.model` | texte | 200 caractères au plus. |
+| `style.model` | texte | **Déprécié** (avertissement) : importé comme `llm.model` ; `llm` prévaut s'il est présent. Plus jamais exporté. |
+| `llm.mode` | `inherit` \| `override` | `inherit` : configuration globale du propriétaire (autres clés ignorées) ; défaut : `override`. |
+| `llm.provider` | `ollama` | Seul fournisseur pris en charge ; autre valeur → erreur. |
+| `llm.instance` | clé d'instance | Minuscules, chiffres, tirets. Absente : instance globale. Inconnue ici → référence non résolue (voir ci-dessous). |
+| `llm.model` | texte | 1–200 caractères. Absent : modèle par défaut de l'instance. |
+| `llm.options` | `temperature` (0–2), `maxTokens` (16–32 768), `contextSize` (512–262 144), `timeoutSeconds` (5–600) | Valeurs absentes : héritées de l'instance. |
 | `sources` | liste (URL ou section `url`, `type`, `rationale`, `status`) | 50 au plus ; URL http(s) sans identifiants ; `type` ≤ 80, `rationale` ≤ 500 ; `status` : `approved`, `excluded` ou `undecided` (défaut). |
 | `schedule.timeZone` | fuseau IANA | Absent → `Europe/Paris` (avertissement). |
 | `schedule.watch`, `schedule.publish` | calendrier | `week` (jours `lundi` … `dimanche`, ou liste de 7 jours, lundi en premier) et `exceptions` (`"AAAA-MM-JJ": [plages]`, 400 au plus). |
@@ -118,7 +128,18 @@ brouillon garde sa valeur (défaut ou suggestion). À l'intérieur d'une section
 - `schedule` : les valeurs absentes viennent du calendrier par défaut (veille 07:00–23:00, publication
   03:00–06:00, tolérance 30 min, rattrapage 72 h) ; dans une semaine décrite par jours, **un jour absent
   est fermé** ;
-- `appearance` : les identifiants absents prennent la valeur par défaut.
+- `appearance` : les identifiants absents prennent la valeur par défaut ;
+- `llm` absent : le brouillon garde sa sélection (héritage par défaut).
+
+### Instance d'intelligence artificielle
+
+Une instance est référencée par sa **clé portable** (ex. `raspberry-pi`), définie par le propriétaire
+dans Paramètres → Intelligence artificielle ; ni son identifiant interne ni son URL ne sont exportés.
+À l'import, une clé qui ne correspond à aucune instance du propriétaire est conservée comme
+**référence non résolue** (avertissement) : elle n'est jamais ignorée ni remplacée par une autre
+instance, et bloque le déploiement tant que le propriétaire ne l'a pas associée à l'une de ses
+instances ou à la configuration globale. La section est additive : le format reste `xiagent: 1` et
+les fichiers sans `llm` restent valides (héritage).
 
 ### Topics
 
@@ -150,7 +171,7 @@ un domaine déjà présent est ignoré.
 
 ## Erreurs et avertissements
 
-`parseAgentYaml(text, { catalog, presets })` ne lève jamais d'exception et renvoie :
+`parseAgentYaml(text, { catalog, presets, instances })` (`instances` : `{ id, key, name }` du propriétaire) ne lève jamais d'exception et renvoie :
 
 - `{ ok: false, issues }` quand le fichier est refusé en entier : vide, plus de 64 ko, syntaxe
   invalide (ligne et colonne indiquées), clé en double, plusieurs documents, étiquette YAML
@@ -170,11 +191,12 @@ exécuté ni évalué.
 
 ## Export, portabilité et duplication
 
-`draftToYaml(draft, catalog)` produit un fichier à l'ordre de clés stable, avec l'en-tête ci-dessus.
+`draftToYaml(draft, catalog, instances)` produit un fichier à l'ordre de clés stable, avec l'en-tête ci-dessus.
 Il ne contient **aucun identifiant interne ni secret** : ni identifiant d'agent, de topic, de
 déploiement ou de révision, ni propriétaire, ni publications, ni historique d'exécution, ni réglages
 internes de la politique de veille (seul `autoPublish` est exporté). Les topics sont référencés par
-étiquette, les presets par `<id>@<version>`, les sources par URL. Les dates d'exception sont entre
+étiquette, les presets par `<id>@<version>`, les sources par URL, l'instance d'IA par sa clé (une
+instance supprimée depuis fait échouer l'export, explicitement, comme un topic disparu). Les dates d'exception sont entre
 guillemets pour rester lisibles par les outils YAML 1.1.
 
 L'export d'un agent existant (`exportAgentDraft`) reprend : nom, handle, description ; topics

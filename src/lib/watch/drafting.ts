@@ -9,7 +9,8 @@ import type { TopicStore } from "../topics/store";
 import { TopicError } from "../topics/types";
 import { runningAgents } from "./collect";
 import { folded, migrateWatchCandidates, normalizeQuote, numbersIn, PROMPT_VERSION } from "./evaluate";
-import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError, type Inference } from "./inference";
+import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "./inference";
+import { bindSafely, describeLLM, type BindLLM, type LLMBinding } from "./llm-binding";
 import { PRIORITY, type JobQueue } from "./jobs";
 import { isOfficialUrl } from "./sources";
 import type { Handler } from "./worker";
@@ -128,8 +129,127 @@ type Drafting = { attempts: Attempt[]; final?: DraftOutput };
 
 const describeClaim = (claim: DraftClaim) => `[${claim.label}] (${claim.kind === "attributed" ? `déclaration${claim.attribution ? ` de ${claim.attribution}` : ""}${claim.status === "primary" ? ", source primaire" : ""}` : claim.kind === "fact" ? "fait corroboré" : claim.kind === "hypothesis" ? "hypothèse, à présenter comme telle" : "interprétation, à présenter comme telle"}) ${claim.text}\n  Citations : ${claim.quotes.map(quote => `« ${quote.quote} » (${quote.publisher})`).join(" ; ")}`;
 
-export function draftHandler({ db, accounts, topics, publications, inference, defaultModel, now = Date.now }: {
-  db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; inference: Inference | null; defaultModel: string | null; now?: () => number;
+export type DraftFormat = "post" | "thread";
+type DraftData = Record<string, unknown> & { title?: string; drafting?: Drafting; draft?: { id: string }; weeklySelected?: boolean };
+export type DraftWriteResult =
+  | { outcome: "drafted"; id: string; revision: string; format: DraftFormat; messages: number }
+  | { outcome: "held"; reason: string };
+type WriteDeps = { db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; now: () => number };
+
+/**
+ * The real drafting circuit, shared by the worker (`draftHandler`) and the owner's explicit
+ * request (xiagents/publication-generator.ts): the verified claims of an accepted candidate →
+ * local model → code checks and consistency review → private draft with its source notes. It
+ * never publishes and never falls back to anything else: inference errors are thrown as is.
+ * `format`: imposed by the owner; absent, the model chooses (post by default, with a last
+ * shorter-post attempt). `held`: no compliant draft; the caller decides what the candidate becomes.
+ */
+export async function writeCandidateDraft({ db, accounts, topics, publications, now }: WriteDeps, { agent, storyId, candidate, binding, drafting, data, format, persist }: {
+  agent: WatchAgent; storyId: string; candidate: CandidateRow; binding: Extract<LLMBinding, { ok: true }>;
+  drafting: Drafting; data: DraftData; format?: DraftFormat; persist: () => void;
+}): Promise<DraftWriteResult> {
+  const agentId = agent.id;
+  const { inference, resolved } = binding;
+  const model = resolved.model;
+  const claims: DraftClaim[] = db.prepare<[string, string], ClaimRow>("SELECT text, kind, attribution, status, evidence FROM watch_claim WHERE agent_id = ? AND story_id = ? ORDER BY position").all(agentId, storyId)
+    .filter(claim => USABLE.has(claim.status))
+    .map((claim, i) => ({ label: `A${i + 1}`, text: claim.text, kind: claim.kind, attribution: claim.attribution, status: claim.status, quotes: (JSON.parse(claim.evidence) as { quotes: DraftClaim["quotes"] }).quotes }));
+  if (!claims.some(claim => ESTABLISHED.has(claim.status))) return { outcome: "held", reason: "Aucune affirmation établie à rédiger." };
+  // A thread needs distinct verified claims, one new per message: never padded.
+  if (format === "thread" && claims.length < 2) return { outcome: "held", reason: `Un thread demande au moins deux affirmations vérifiées distinctes ; cette information n’en a que ${claims.length}. Choisissez un post.` };
+
+  if (!drafting.final) {
+    const account = await accounts.getOwned(agent.owner, agentId);
+    const topic = (await topics.list()).find(item => item.id === candidate.topic_id);
+    const settings = account.editorial?.settings;
+    const established = claims.filter(claim => ESTABLISHED.has(claim.status));
+    for (let attempt = drafting.attempts.length; attempt < MAX_ATTEMPTS && !drafting.final; attempt++) {
+      // Free format, last attempt: a shorter post from established claims only. An imposed format is kept.
+      const forcePost = format === "post" || (!format && attempt === MAX_ATTEMPTS - 1);
+      const usable = !format && forcePost ? established : claims;
+      const feedback = drafting.attempts.at(-1)?.problems ?? [];
+      const output = await askJson(inference, { model, system: SYSTEM, prompt: [
+        `Tu rédiges pour le ΞAgent « ${account.name} » (@${account.handle}). Sujet : ${topic?.name ?? "sujet"} — ${topic?.scope ?? ""}`,
+        `Charte : ${CHARTER}`,
+        // The agent's own perimeter and charter, when its owner wrote them; they never relax the common charter.
+        agent.profile?.charter ? `Charte propre au ΞAgent (en plus de la charte commune) : ${agent.profile.charter}` : "",
+        agent.profile?.perimeter ? `Périmètre éditorial du ΞAgent : ${agent.profile.perimeter}` : "",
+        settings ? `Style : ton ${settings.tone} ; structure ${settings.structure} ; profondeur ${settings.depth} ; public ${settings.audience}.` : "",
+        `Affirmations vérifiées, seule matière autorisée :\n${usable.map(describeClaim).join("\n")}`,
+        "Règles : une seule actualité. N’ajoute aucun fait, chiffre, nom, date, citation ou URL absent de ces affirmations ; n’utilise pas tes connaissances. Les déclarations restent attribuées (« selon… », « a déclaré… ») ; hypothèses et interprétations restent présentées comme telles. Post (un message) par défaut ; thread de 2 à 10 messages seulement si au moins trois affirmations distinctes justifient un approfondissement : chaque message apporte au moins une affirmation nouvelle, jamais plus de messages que d’affirmations. Markdown simple, sans lien ni section « Sources » : Ξ les ajoute. Chaque message liste les affirmations qu’il utilise.",
+        format === "thread" ? `Format imposé par le propriétaire : thread de 2 à ${Math.min(10, usable.length)} messages, chacun apportant au moins une affirmation nouvelle.`
+          : forcePost ? `Format imposé${format ? " par le propriétaire" : ""} : post, un seul message, court.` : "",
+        data.weeklySelected ? "Contexte : bilan hebdomadaire de ce seul sujet, à partir des affirmations ci-dessus ; n’y ajoute aucun autre sujet." : "",
+        feedback.length ? `Corrige ces problèmes de la version précédente :\n${feedback.map(problem => `- ${problem}`).join("\n")}` : "",
+        "Format : {\"format\": \"post\" | \"thread\", \"summary\": \"résumé en une phrase\", \"messages\": [{\"text\": \"…\", \"claims\": [\"A1\"]}]}",
+      ].filter(Boolean).join("\n\n") }, draftOutputSchema);
+      let problems = checkDraft(output, usable);
+      const wanted = format ?? (forcePost ? "post" : null);
+      if (wanted === "post" && output.messages.length !== 1) problems = ["Un post était imposé.", ...problems];
+      if (wanted === "thread" && (output.format !== "thread" || output.messages.length < 2)) problems = ["Un thread était imposé.", ...problems];
+      if (!problems.length) {
+        const byLabel = new Map(usable.map(claim => [claim.label, claim]));
+        const review = await askJson(inference, { model, system: SYSTEM, prompt: `Vérifie chaque message : chaque phrase doit être soutenue par les citations des affirmations qu’il utilise, sans ajout ; les déclarations doivent rester attribuées, les hypothèses et interprétations signalées.\n\n${output.messages.map((message, i) => `Message ${i + 1} :\n${message.text}\nCitations : ${message.claims.flatMap(label => byLabel.get(label)?.quotes ?? []).map(quote => `« ${quote.quote} »`).join(" ; ")}`).join("\n\n")}\n\nFormat : {"messages": [{"index": 1, "supported": true, "problems": []}]}` }, consistencySchema);
+        problems = review.messages.filter(entry => !entry.supported).map(entry => `Message ${entry.index} non soutenu par ses citations${entry.problems.length ? ` : ${entry.problems.join(" ; ")}` : "."}`);
+      }
+      drafting.attempts.push({ format: output.format, messages: output.messages.length, problems });
+      if (!problems.length) drafting.final = output;
+      persist();
+    }
+    if (!drafting.final) return { outcome: "held", reason: `Rédaction non conforme aux sources après ${MAX_ATTEMPTS} essais : ${drafting.attempts.at(-1)!.problems.slice(0, 3).join(" ")}` };
+  }
+
+  // Source notes: one per article used, with the exact quotes it supports.
+  const final = drafting.final;
+  const byLabel = new Map(claims.map(claim => [claim.label, claim]));
+  const items = new Map<string, { title: string; url: string; publisher: string; published_at: string | null; fetched_at: number }>();
+  const order: string[] = [];
+  const facts = new Map<string, Set<string>>();
+  const messageSources = final.messages.map(message => {
+    const used: number[] = [];
+    for (const quote of message.claims.flatMap(label => byLabel.get(label)?.quotes ?? [])) {
+      if (!quote.itemId) continue;
+      if (!items.has(quote.itemId)) {
+        const item = db.prepare<[string], { title: string; url: string; publisher: string; published_at: string | null; fetched_at: number }>("SELECT title, url, publisher, published_at, fetched_at FROM watch_item WHERE id = ?").get(quote.itemId);
+        if (!item) continue;
+        items.set(quote.itemId, item);
+        order.push(quote.itemId);
+      }
+      facts.set(quote.itemId, (facts.get(quote.itemId) ?? new Set()).add(quote.quote));
+      const index = order.indexOf(quote.itemId);
+      if (!used.includes(index)) used.push(index);
+    }
+    return used;
+  });
+  if (messageSources.some(used => !used.length)) return { outcome: "held", reason: "Un message n’a plus de source disponible (actualité expirée)." };
+  const id = draftId(agentId, storyId, candidate.story_version);
+  const saved = await publications.saveWatchDraft(agent.owner, agentId, {
+    id, summary: final.summary, topicIds: [candidate.topic_id],
+    messages: final.messages.map((message, i) => ({ body: message.text, sources: messageSources[i] })),
+    sources: order.map(itemId => {
+      const item = items.get(itemId)!;
+      return {
+        url: item.url, title: item.title, publisher: item.publisher, ...(item.published_at ? { publishedAt: item.published_at.slice(0, 10) } : {}),
+        accessedAt: new Date(item.fetched_at).toISOString().slice(0, 10), facts: [...facts.get(itemId)!],
+        reservations: ["Seul le résumé publié dans le flux a été consulté.", ...(isOfficialUrl(item.url) ? ["Source officielle : primaire pour ses propres actes et déclarations, pas une confirmation indépendante du reste."] : [])],
+      };
+    }),
+    watch: {
+      story: storyId, story_version: candidate.story_version, model, llm_instance: resolved.instance.key, prompt_version: DRAFT_PROMPT_VERSION, evaluation_prompt_version: candidate.prompt_version || PROMPT_VERSION,
+      lane: candidate.lane, scores: { relevance: candidate.relevance, novelty: candidate.novelty, importance: candidate.importance },
+      related_publication: candidate.related_publication_id, attempts: drafting.attempts.length,
+      claims: final.messages.flatMap(message => message.claims).filter((label, i, all) => all.indexOf(label) === i).map(label => { const claim = byLabel.get(label)!; return { text: claim.text, kind: claim.kind, status: claim.status, attribution: claim.attribution }; }),
+    },
+  });
+  // The validated revision: automatic publication refuses a draft changed since.
+  const formatDone: DraftFormat = final.messages.length > 1 ? "thread" : "post";
+  db.prepare("UPDATE watch_candidate SET status = 'drafted', reason = ?, data = ?, updated_at = ? WHERE agent_id = ? AND story_id = ?")
+    .run(`Brouillon privé prêt pour relecture (${formatDone === "thread" ? `thread de ${final.messages.length} messages` : "post"}).`, JSON.stringify({ ...data, drafting, draft: { id, revision: saved.revision } }), now(), agentId, storyId);
+  return { outcome: "drafted", id, revision: saved.revision, format: formatDone, messages: final.messages.length };
+}
+
+export function draftHandler({ db, accounts, topics, publications, llm, now = Date.now }: {
+  db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; llm: BindLLM; now?: () => number;
 }): Handler {
   migrateWatchCandidates(db);
   const update = (agentId: string, storyId: string, fields: Record<string, unknown>) => {
@@ -140,125 +260,44 @@ export function draftHandler({ db, accounts, topics, publications, inference, de
     const { agentId, storyId, version } = job.payload as { agentId: string; storyId: string; version: number };
     const agent = runningAgents(await accounts.watchAgents()).find(item => item.id === agentId);
     if (!agent) return { status: "done", result: { outcome: "skipped", reason: "not-running" } };
-    const candidate = db.prepare<[string, string], CandidateRow>("SELECT story_id, story_version, status, lane, topic_id, relevance, novelty, importance, related_publication_id, data, prompt_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, storyId);
+    const candidate = readCandidate(db, agentId, storyId);
     if (!candidate || candidate.story_version !== version) return { status: "done", result: { outcome: "skipped", reason: "outdated" } };
     if (candidate.status === "drafted") return { status: "done", result: { outcome: "already-drafted" } };
     if (candidate.status !== "accepted" || !candidate.topic_id) return { status: "done", result: { outcome: "skipped", reason: "not-accepted" } };
-    const model = agent.modelRef ?? defaultModel;
-    if (!inference || !model) return { status: "wait", until: new Date(now() + HOUR), reason: "Inférence locale non configurée." };
-    const data = JSON.parse(candidate.data) as Record<string, unknown> & { title?: string; drafting?: Drafting; draft?: { id: string }; weeklySelected?: boolean };
+    // The agent's own resolution (agent → global → error); a problem waits visibly, never falls back.
+    const binding = bindSafely(llm, agent);
+    if (!binding.ok) return { status: "wait", until: new Date(now() + HOUR), reason: `Configuration du modèle (${binding.code}) : ${binding.message}` };
+    const used = { model: binding.resolved.model, instance: binding.resolved.instance.name, instanceSource: binding.resolved.instanceSource };
+    const describe = describeLLM(binding.resolved);
+    const data = JSON.parse(candidate.data) as DraftData;
     const drafting: Drafting = data.drafting ?? { attempts: [] };
     const persist = () => update(agentId, storyId, { data: JSON.stringify({ ...data, drafting }) });
-
-    const claims: DraftClaim[] = db.prepare<[string, string], ClaimRow>("SELECT text, kind, attribution, status, evidence FROM watch_claim WHERE agent_id = ? AND story_id = ? ORDER BY position").all(agentId, storyId)
-      .filter(claim => USABLE.has(claim.status))
-      .map((claim, i) => ({ label: `A${i + 1}`, text: claim.text, kind: claim.kind, attribution: claim.attribution, status: claim.status, quotes: (JSON.parse(claim.evidence) as { quotes: DraftClaim["quotes"] }).quotes }));
-    if (!claims.some(claim => ESTABLISHED.has(claim.status))) {
-      update(agentId, storyId, { status: "held", reason: "Aucune affirmation établie à rédiger." });
-      return { status: "done", result: { outcome: "held" } };
-    }
     try {
-      if (!drafting.final) {
-        const account = await accounts.getOwned(agent.owner, agentId);
-        const topic = (await topics.list()).find(item => item.id === candidate.topic_id);
-        const settings = account.editorial?.settings;
-        const established = claims.filter(claim => ESTABLISHED.has(claim.status));
-        for (let attempt = drafting.attempts.length; attempt < MAX_ATTEMPTS && !drafting.final; attempt++) {
-          // Last attempt: a shorter post from established claims only.
-          const forcePost = attempt === MAX_ATTEMPTS - 1;
-          const usable = forcePost ? established : claims;
-          const feedback = drafting.attempts.at(-1)?.problems ?? [];
-          const output = await askJson(inference, { model, system: SYSTEM, prompt: [
-            `Tu rédiges pour le ΞAgent « ${account.name} » (@${account.handle}). Sujet : ${topic?.name ?? "sujet"} — ${topic?.scope ?? ""}`,
-            `Charte : ${CHARTER}`,
-            // The agent's own perimeter and charter, when its owner wrote them; they never relax the common charter.
-            agent.profile?.charter ? `Charte propre au ΞAgent (en plus de la charte commune) : ${agent.profile.charter}` : "",
-            agent.profile?.perimeter ? `Périmètre éditorial du ΞAgent : ${agent.profile.perimeter}` : "",
-            settings ? `Style : ton ${settings.tone} ; structure ${settings.structure} ; profondeur ${settings.depth} ; public ${settings.audience}.` : "",
-            `Affirmations vérifiées, seule matière autorisée :\n${usable.map(describeClaim).join("\n")}`,
-            "Règles : une seule actualité. N’ajoute aucun fait, chiffre, nom, date, citation ou URL absent de ces affirmations ; n’utilise pas tes connaissances. Les déclarations restent attribuées (« selon… », « a déclaré… ») ; hypothèses et interprétations restent présentées comme telles. Post (un message) par défaut ; thread de 2 à 10 messages seulement si au moins trois affirmations distinctes justifient un approfondissement : chaque message apporte au moins une affirmation nouvelle, jamais plus de messages que d’affirmations. Markdown simple, sans lien ni section « Sources » : Ξ les ajoute. Chaque message liste les affirmations qu’il utilise.",
-            forcePost ? "Format imposé : post, un seul message, court." : "",
-            data.weeklySelected ? "Contexte : bilan hebdomadaire de ce seul sujet, à partir des affirmations ci-dessus ; n’y ajoute aucun autre sujet." : "",
-            feedback.length ? `Corrige ces problèmes de la version précédente :\n${feedback.map(problem => `- ${problem}`).join("\n")}` : "",
-            "Format : {\"format\": \"post\" | \"thread\", \"summary\": \"résumé en une phrase\", \"messages\": [{\"text\": \"…\", \"claims\": [\"A1\"]}]}",
-          ].filter(Boolean).join("\n\n") }, draftOutputSchema);
-          let problems = checkDraft(output, usable);
-          if (forcePost && output.messages.length !== 1) problems = ["Un post était imposé.", ...problems];
-          if (!problems.length) {
-            const byLabel = new Map(usable.map(claim => [claim.label, claim]));
-            const review = await askJson(inference, { model, system: SYSTEM, prompt: `Vérifie chaque message : chaque phrase doit être soutenue par les citations des affirmations qu’il utilise, sans ajout ; les déclarations doivent rester attribuées, les hypothèses et interprétations signalées.\n\n${output.messages.map((message, i) => `Message ${i + 1} :\n${message.text}\nCitations : ${message.claims.flatMap(label => byLabel.get(label)?.quotes ?? []).map(quote => `« ${quote.quote} »`).join(" ; ")}`).join("\n\n")}\n\nFormat : {"messages": [{"index": 1, "supported": true, "problems": []}]}` }, consistencySchema);
-            problems = review.messages.filter(entry => !entry.supported).map(entry => `Message ${entry.index} non soutenu par ses citations${entry.problems.length ? ` : ${entry.problems.join(" ; ")}` : "."}`);
-          }
-          drafting.attempts.push({ format: output.format, messages: output.messages.length, problems });
-          if (!problems.length) drafting.final = output;
-          persist();
-        }
-        if (!drafting.final) {
-          update(agentId, storyId, { status: "held", reason: `Rédaction non conforme aux sources après ${MAX_ATTEMPTS} essais : ${drafting.attempts.at(-1)!.problems.slice(0, 3).join(" ")}` });
-          return { status: "done", result: { outcome: "held" } };
-        }
+      const written = await writeCandidateDraft({ db, accounts, topics, publications, now }, { agent, storyId, candidate, binding, drafting, data, persist });
+      if (written.outcome === "held") {
+        update(agentId, storyId, { status: "held", reason: written.reason });
+        return { status: "done", result: { outcome: "held", llm: used } };
       }
-
-      // Source notes: one per article used, with the exact quotes it supports.
-      const final = drafting.final;
-      const byLabel = new Map(claims.map(claim => [claim.label, claim]));
-      const items = new Map<string, { title: string; url: string; publisher: string; published_at: string | null; fetched_at: number }>();
-      const order: string[] = [];
-      const facts = new Map<string, Set<string>>();
-      const messageSources = final.messages.map(message => {
-        const used: number[] = [];
-        for (const quote of message.claims.flatMap(label => byLabel.get(label)?.quotes ?? [])) {
-          if (!quote.itemId) continue;
-          if (!items.has(quote.itemId)) {
-            const item = db.prepare<[string], { title: string; url: string; publisher: string; published_at: string | null; fetched_at: number }>("SELECT title, url, publisher, published_at, fetched_at FROM watch_item WHERE id = ?").get(quote.itemId);
-            if (!item) continue;
-            items.set(quote.itemId, item);
-            order.push(quote.itemId);
-          }
-          facts.set(quote.itemId, (facts.get(quote.itemId) ?? new Set()).add(quote.quote));
-          const index = order.indexOf(quote.itemId);
-          if (!used.includes(index)) used.push(index);
-        }
-        return used;
-      });
-      if (messageSources.some(used => !used.length)) {
-        update(agentId, storyId, { status: "held", reason: "Un message n’a plus de source disponible (actualité expirée)." });
-        return { status: "done", result: { outcome: "held" } };
-      }
-      const id = draftId(agentId, storyId, version);
-      const saved = await publications.saveWatchDraft(agent.owner, agentId, {
-        id, summary: final.summary, topicIds: [candidate.topic_id],
-        messages: final.messages.map((message, i) => ({ body: message.text, sources: messageSources[i] })),
-        sources: order.map(itemId => {
-          const item = items.get(itemId)!;
-          return {
-            url: item.url, title: item.title, publisher: item.publisher, ...(item.published_at ? { publishedAt: item.published_at.slice(0, 10) } : {}),
-            accessedAt: new Date(item.fetched_at).toISOString().slice(0, 10), facts: [...facts.get(itemId)!],
-            reservations: ["Seul le résumé publié dans le flux a été consulté.", ...(isOfficialUrl(item.url) ? ["Source officielle : primaire pour ses propres actes et déclarations, pas une confirmation indépendante du reste."] : [])],
-          };
-        }),
-        watch: {
-          story: storyId, story_version: version, model, prompt_version: DRAFT_PROMPT_VERSION, evaluation_prompt_version: candidate.prompt_version || PROMPT_VERSION,
-          lane: candidate.lane, scores: { relevance: candidate.relevance, novelty: candidate.novelty, importance: candidate.importance },
-          related_publication: candidate.related_publication_id, attempts: drafting.attempts.length,
-          claims: final.messages.flatMap(message => message.claims).filter((label, i, all) => all.indexOf(label) === i).map(label => { const claim = byLabel.get(label)!; return { text: claim.text, kind: claim.kind, status: claim.status, attribution: claim.attribution }; }),
-        },
-      });
-      // The validated revision: automatic publication refuses a draft changed since.
-      update(agentId, storyId, { status: "drafted", reason: `Brouillon privé prêt pour relecture (${final.messages.length > 1 ? `thread de ${final.messages.length} messages` : "post"}).`, data: JSON.stringify({ ...data, drafting, draft: { id, revision: saved.revision } }) });
-      return { status: "done", result: { outcome: "drafted", id } };
+      return { status: "done", result: { outcome: "drafted", id: written.id, llm: used } };
     } catch (error) {
       if (error instanceof InferenceUnavailableError || error instanceof InferenceConfigError) {
         persist();
-        return { status: "wait", until: new Date(error instanceof InferenceUnavailableError && error.retryAt ? error.retryAt : now() + (error instanceof InferenceConfigError ? HOUR : 15 * 60_000)), reason: error.message };
+        return { status: "wait", until: new Date(error instanceof InferenceUnavailableError && error.retryAt ? error.retryAt : now() + (error instanceof InferenceConfigError ? HOUR : 15 * 60_000)), reason: `${error.message} (${describe})` };
       }
-      if (error instanceof InferenceOutputError && job.attempts >= job.maxAttempts) {
-        update(agentId, storyId, { status: "held", reason: `${error.message} Rédaction suspendue.` });
-        return { status: "done", result: { outcome: "held" } };
+      if (error instanceof InferenceOutputError) {
+        // Last attempt: the candidate is held, visibly; the run fails (rethrown): no draft, no publication.
+        if (job.attempts >= job.maxAttempts) update(agentId, storyId, { status: "held", reason: `${error.message} Rédaction suspendue.` });
+        error.message = `${error.message} (${describe})`;
       }
       throw error;
     }
   };
+}
+
+export type { CandidateRow as DraftCandidate };
+export function readCandidate(db: Database.Database, agentId: string, storyId: string) {
+  migrateWatchCandidates(db);
+  return db.prepare<[string, string], CandidateRow>("SELECT story_id, story_version, status, lane, topic_id, relevance, novelty, importance, related_publication_id, data, prompt_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, storyId);
 }
 
 /**

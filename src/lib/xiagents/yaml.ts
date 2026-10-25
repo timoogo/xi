@@ -4,6 +4,7 @@ import { DEFAULT_BLOUB_CONFIG, bloubConfigSchema } from "../bloub/config";
 import type { BloubConfig } from "../bloub/types";
 import { draftSchema, tagSchema, TopicError, type Draft, type Topic } from "../topics/types";
 import { DAY_MINUTES, formatTime, isoDateSchema, parseTime, timeRangeSchema, type Calendar, type TimeRange } from "./calendar";
+import { INHERIT_LLM_DRAFT, instanceKeySchema, LLM_PROVIDER_TYPES, modelNameSchema, type AgentLLMDraft, type InferenceOptions } from "../llm/types";
 import { newTopicKey, presetKey, type AgentDraft, type DraftPatch, type SourceRow, type Target, type TopicPick } from "./draft";
 import { defaultSchedule, scheduleSchema, type Schedule } from "./schedule";
 
@@ -190,8 +191,63 @@ function readStyle(r: Reader, value: unknown, presets: Preset[], patch: DraftPat
       patch.settings = { ...base!, ...given };
     }
   } else if (preset) patch.settings = preset.settings;
+  // Before the `llm` section: a model override on the global instance (read by readLLM).
   const model = r.string(own(section, "model"), "style.model", maxLength(200), "Référence de modèle trop longue (200 caractères au plus).");
-  if (model !== undefined) patch.modelRef = model.trim();
+  if (model !== undefined && model.trim()) {
+    r.warn("style.model", "style.model est déprécié : utilisez llm.model (importé comme modèle choisi pour ce ΞAgent).");
+    patch.llm = { ...INHERIT_LLM_DRAFT, model: model.trim() };
+  }
+}
+
+/** Instance reference portable between installations: the owner's key, never an id or URL. */
+export type YamlInstance = { id: string; key: string; name: string };
+
+/**
+ * `llm` section: `mode: inherit` (global configuration) or `mode: override` with an optional
+ * instance key, model and options. An instance key unknown here is kept as `unresolvedKey`
+ * (the owner maps it before deploying), never dropped nor replaced by another instance.
+ */
+function readLLM(r: Reader, value: unknown, instances: readonly YamlInstance[], patch: DraftPatch) {
+  const section = r.section(value, "llm", ["mode", "provider", "instance", "model", "options"]);
+  if (!section) return;
+  if (patch.llm) r.warn("style.model", "Ignoré : la section llm prévaut.");
+  const mode = own(section, "mode") ?? "override";
+  if (mode !== "inherit" && mode !== "override") { r.error("llm.mode", "Mode attendu : inherit ou override."); return; }
+  if (mode === "inherit") {
+    for (const key of ["provider", "instance", "model", "options"]) if (own(section, key) !== undefined) r.warn(at("llm", key), "Ignoré avec mode: inherit.");
+    patch.llm = INHERIT_LLM_DRAFT;
+    return;
+  }
+  const provider = r.string(own(section, "provider"), "llm.provider", { safeParse: (v: unknown) => ({ success: (LLM_PROVIDER_TYPES as readonly unknown[]).includes(v) }) }, `Fournisseur pris en charge : ${LLM_PROVIDER_TYPES.join(", ")}.`);
+  if (provider === undefined && own(section, "provider") !== undefined && own(section, "provider") !== null) return;
+  const llm: AgentLLMDraft = { ...INHERIT_LLM_DRAFT, options: {} };
+  const key = r.string(own(section, "instance"), "llm.instance", instanceKeySchema, "Clé d’instance invalide (minuscules, chiffres et tirets).");
+  if (key === undefined && own(section, "instance") !== undefined && own(section, "instance") !== null) return;
+  if (key !== undefined) {
+    const found = instances.find(instance => instance.key === key.trim());
+    if (found) llm.instanceId = found.id;
+    else { llm.unresolvedKey = key.trim(); r.warn("llm.instance", `Instance « ${key.trim()} » inconnue ici : choisissez une de vos instances ou la configuration globale avant de déployer.`); }
+  }
+  const model = r.string(own(section, "model"), "llm.model", modelNameSchema, "Nom de modèle invalide (200 caractères au plus).");
+  if (model === undefined && own(section, "model") !== undefined && own(section, "model") !== null) return;
+  if (model !== undefined) llm.model = model.trim();
+  const options = r.section(own(section, "options"), "llm.options", ["temperature", "maxTokens", "contextSize", "timeoutSeconds"]);
+  if (options) {
+    const given: InferenceOptions = {};
+    const temperature = own(options, "temperature");
+    if (temperature !== undefined && temperature !== null) {
+      if (typeof temperature !== "number" || temperature < 0 || temperature > 2) { r.error("llm.options.temperature", "Nombre attendu entre 0 et 2."); return; }
+      given.temperature = temperature;
+    }
+    const maxTokens = r.integer(own(options, "maxTokens"), "llm.options.maxTokens", 16, 32_768);
+    const contextSize = r.integer(own(options, "contextSize"), "llm.options.contextSize", 512, 262_144);
+    const timeout = r.integer(own(options, "timeoutSeconds"), "llm.options.timeoutSeconds", 5, 600);
+    if (maxTokens !== undefined) given.maxTokens = maxTokens;
+    if (contextSize !== undefined) given.contextSize = contextSize;
+    if (timeout !== undefined) given.timeoutMs = timeout * 1_000;
+    llm.options = given;
+  }
+  patch.llm = llm;
 }
 
 function readSources(r: Reader, value: unknown): SourceRow[] | undefined {
@@ -317,7 +373,7 @@ function readAppearance(r: Reader, value: unknown): BloubConfig | undefined {
 }
 
 /** Parses an untrusted YAML configuration into a draft patch; never throws. */
-export function parseAgentYaml(text: string, { catalog, presets }: { catalog: Topic[]; presets: Preset[] }): YamlImport {
+export function parseAgentYaml(text: string, { catalog, presets, instances = [] }: { catalog: Topic[]; presets: Preset[]; instances?: readonly YamlInstance[] }): YamlImport {
   const fatal = (path: string, message: string): YamlImport => ({ ok: false, issues: [{ level: "error", path, message }] });
   if (typeof text !== "string" || !text.trim()) return fatal("", "Fichier vide.");
   if (new TextEncoder().encode(text).length > MAX_YAML_BYTES) return fatal("", `Fichier trop volumineux (${MAX_YAML_BYTES / 1000} ko au plus).`);
@@ -344,7 +400,7 @@ export function parseAgentYaml(text: string, { catalog, presets }: { catalog: To
   if (version !== AGENT_YAML_VERSION) return fatal("xiagent", `Version incompatible : xiagent ${version} (seule la version ${AGENT_YAML_VERSION} est prise en charge).`);
 
   const r = new Reader();
-  r.section(data, "", ["xiagent", "kind", "identity", "topics", "editorial", "style", "sources", "schedule", "publication", "appearance"]);
+  r.section(data, "", ["xiagent", "kind", "identity", "topics", "editorial", "style", "sources", "schedule", "publication", "appearance", "llm"]);
   const kind = own(data, "kind") ?? "agent";
   if (kind !== "agent" && kind !== "topic") return fatal("kind", "Type attendu : agent ou topic.");
   const target: Target = kind;
@@ -352,7 +408,7 @@ export function parseAgentYaml(text: string, { catalog, presets }: { catalog: To
   const topics = readTopics(r, own(data, "topics"), catalog, target);
   if (topics) patch.topics = topics;
   if (target === "topic") {
-    for (const key of ["identity", "editorial", "style", "sources", "schedule", "publication", "appearance"]) if (own(data, key) !== undefined) r.warn(key, "Ignoré pour kind: topic.");
+    for (const key of ["identity", "editorial", "style", "sources", "schedule", "publication", "appearance", "llm"]) if (own(data, key) !== undefined) r.warn(key, "Ignoré pour kind: topic.");
     return { ok: true, target, patch, issues: r.issues };
   }
 
@@ -373,6 +429,7 @@ export function parseAgentYaml(text: string, { catalog, presets }: { catalog: To
     }
   }
   readStyle(r, own(data, "style"), presets, patch);
+  readLLM(r, own(data, "llm"), instances, patch);
   const sources = readSources(r, own(data, "sources"));
   if (sources) patch.sources = sources;
   const schedule = readSchedule(r, own(data, "schedule"));
@@ -386,13 +443,36 @@ export function parseAgentYaml(text: string, { catalog, presets }: { catalog: To
 
 // ---------------------------------------------------------------- export
 
+/** `llm` section: portable instance key only (no id, URL or secret); a vanished instance fails the export. */
+function llmToYaml(llm: AgentLLMDraft, instances: readonly YamlInstance[]): Obj {
+  const options = llm.options;
+  const hasOptions = Object.values(options).some(value => value !== undefined);
+  if (!llm.instanceId && !llm.unresolvedKey && !llm.model.trim() && !hasOptions) return { mode: "inherit" };
+  let key = llm.unresolvedKey;
+  if (llm.instanceId) {
+    key = instances.find(instance => instance.id === llm.instanceId)?.key ?? null;
+    if (!key) throw new TopicError("L’instance d’intelligence artificielle de ce ΞAgent n’existe plus : export impossible. Choisissez une instance ou la configuration globale d’abord.", 409);
+  }
+  return {
+    mode: "override", provider: "ollama",
+    ...(key ? { instance: key } : {}),
+    ...(llm.model.trim() ? { model: llm.model.trim() } : {}),
+    ...(hasOptions ? { options: {
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.contextSize !== undefined ? { contextSize: options.contextSize } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutSeconds: Math.round(options.timeoutMs / 1_000) } : {}),
+    } } : {}),
+  };
+}
+
 const calendarToYaml = (calendar: Calendar) => ({
   week: Object.fromEntries(DAYS.map((day, index) => [day, calendar.week[index].map(range => `${formatTime(range.start)}-${formatTime(range.end)}`)])),
   exceptions: Object.fromEntries(Object.keys(calendar.exceptions).sort().map(date => [date, calendar.exceptions[date].map(range => `${formatTime(range.start)}-${formatTime(range.end)}`)])),
 });
 
 /** Portable YAML of a draft: stable key order, topics by tag, no internal identifier. */
-export function draftToYaml(draft: AgentDraft, catalog: Topic[]): string {
+export function draftToYaml(draft: AgentDraft, catalog: Topic[], instances: readonly YamlInstance[] = []): string {
   const tagOf = (id: string | null) => id ? catalog.find(topic => topic.id === id)?.tag : undefined;
   // Every reference is exported in its place, or the export fails: a missing topic is never dropped (a secondary would become primary).
   const topic = (pick: TopicPick, index: number) => {
@@ -418,8 +498,8 @@ export function draftToYaml(draft: AgentDraft, catalog: Topic[]): string {
     data.style = {
       ...(presetId ? { preset: `${presetId}@${version}` } : {}),
       ...(draft.settings ? { tone: draft.settings.tone, audience: draft.settings.audience, structure: draft.settings.structure, depth: draft.settings.depth } : {}),
-      ...(draft.modelRef.trim() ? { model: draft.modelRef.trim() } : {}),
     };
+    data.llm = llmToYaml(draft.llm, instances);
     data.sources = draft.sources.map(source => ({ url: source.url, type: source.type, rationale: source.rationale, status: source.status }));
     const schedule = draft.schedule;
     data.schedule = {

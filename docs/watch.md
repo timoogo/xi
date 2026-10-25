@@ -243,12 +243,30 @@ voix ; tâches et prochaines exécutions.
 
 ## Inférence locale
 
-`XI_INFERENCE_URL` (ex. `http://mac-mini.lan:11434`), `XI_INFERENCE_API`
-(`ollama` par défaut, ou `openai` pour llama.cpp, LM Studio, MLX…),
-`XI_INFERENCE_MODEL` (modèle par défaut), `XI_INFERENCE_TIMEOUT_MS` (180 s par
-défaut, 10 min au plus), `XI_INFERENCE_ALLOW` (adresses IP explicites
-supplémentaires, jamais des noms). Le modèle d’un ΞAgent est sa « référence
-fournisseur / modèle » ; à défaut, `XI_INFERENCE_MODEL`.
+Chaque tâche d’évaluation et de rédaction utilise le modèle **résolu pour son
+ΞAgent** (détails : [llm.md](llm.md)) : choix explicite de l’agent (autre
+modèle ou autre instance Ollama), sinon configuration globale du propriétaire
+(Paramètres → Intelligence artificielle), sinon serveur de l’installation
+(`XI_INFERENCE_URL`), sinon problème explicite. Jamais de repli silencieux vers
+une autre instance, un autre modèle ou un autre fournisseur. Instance, modèle et
+options (température, limite de génération, contexte, délai) sont ceux de la
+résolution ; le modèle utilisé est enregistré sur le candidat, le brouillon
+(`model`, `llm_instance`) et le résultat de l’exécution.
+
+Problèmes et échecs dans l’historique d’exécution :
+- configuration (aucune instance, instance supprimée ou désactivée, aucun
+  modèle) : tâche en attente 1 h, motif et code affichés, aucune requête ;
+- serveur indisponible, délai, mémoire insuffisante : attente 15 min sans
+  consommer de tentative ;
+- réponse invalide ou contexte trop grand : tentatives bornées (backoff), puis
+  exécution **en échec** (jamais « terminée ») et candidat mis de côté ; aucun
+  brouillon, aucune publication.
+
+Serveur de l’installation (compatibilité) : `XI_INFERENCE_URL` (ex.
+`http://mac-mini.lan:11434`), `XI_INFERENCE_API` (`ollama` par défaut, ou
+`openai` pour llama.cpp, LM Studio, MLX…), `XI_INFERENCE_MODEL` (modèle par
+défaut), `XI_INFERENCE_TIMEOUT_MS` (180 s par défaut, 10 min au plus),
+`XI_INFERENCE_ALLOW` (adresses IP explicites supplémentaires, jamais des noms).
 
 - Le serveur doit résoudre vers une adresse locale (boucle locale, réseaux
   privés, plage Tailscale 100.64/10, IPv6 ULA) ou listée : toute adresse
@@ -413,8 +431,9 @@ précédentes sont satisfaisantes.
    absent), approuver 10 à 20 vrais flux pour un seul ΞAgent pilote, activer sa
    veille. Vérifier collectes, regroupements, voix indépendantes, propositions
    de sources ; aucune publication possible.
-2. **Évaluation et brouillons** : configurer `XI_INFERENCE_URL` vers le Mac
-   mini et la référence de modèle de l’agent. Relire candidats, faits,
+2. **Évaluation et brouillons** : ajouter l’instance Ollama dans Paramètres →
+   Intelligence artificielle (ou `XI_INFERENCE_URL`), choisir le modèle par
+   défaut, éventuellement un autre modèle ou une autre instance pour l’agent. Relire candidats, faits,
    citations et brouillons ; rejeter ou modifier ; approuver à la main quelques
    brouillons (publication privée) pour tester le parcours complet.
 3. **Publication privée automatique** : `XI_WATCH_AUTOPUBLISH=true`, mode

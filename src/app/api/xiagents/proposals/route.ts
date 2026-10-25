@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { accountResponse, body } from "@/lib/accounts/http";
 import { getTopicStore } from "@/lib/topics/server";
-import { createLocalInference, inferenceConfigFromEnv, InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "@/lib/watch/inference";
+import { getLLMRuntime } from "@/lib/llm/server";
+import { InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "@/lib/watch/inference";
 import { lexicalMatches, proposeAgent } from "@/lib/xiagents/proposal";
 import { findFreeHandle, HandleUnavailableError } from "@/lib/xiagents/handles";
 import { proposalToPatch, suggestDraft } from "@/lib/xiagents/suggest";
@@ -11,7 +12,8 @@ export const dynamic = "force-dynamic";
  * Proposal of a ΞAgent from a few words or a free description.
  * - `mode: "rules"`: deterministic suggestion (local concept catalog + existing topics), no model,
  *   always available; the handle is reserved free here.
- * - `mode: "ai"` (default): local model only. When it is not configured or fails, the answer says so
+ * - `mode: "ai"` (default): local model only, the owner's global configuration (default instance and
+ *   model, else the operator's XI_INFERENCE_URL server). When it is not configured or fails, the answer says so
  *   (`ok: false`) with the lexical matches of existing topics, and the client continues with the
  *   rule-based draft or manually: no proposal is ever invented. When ok, `patch` is the draft patch.
  */
@@ -34,13 +36,12 @@ export async function POST(request: Request) {
       return { ok: true, mode: "rules", suggestion };
     }
     const matches = lexicalMatches(description, catalog);
-    let config;
-    try { config = inferenceConfigFromEnv(); }
-    catch (error) { return { ok: false, unavailable: true, reason: error instanceof Error ? error.message : "Configuration refusée.", matches }; }
-    if (!config) return { ok: false, unavailable: true, reason: "Le moteur IA local n’est pas configuré (XI_INFERENCE_URL).", matches };
-    if (!config.defaultModel) return { ok: false, unavailable: true, reason: "Aucun modèle local par défaut (XI_INFERENCE_MODEL).", matches };
+    let binding;
+    try { binding = getLLMRuntime().bind(owner, null); }
+    catch (error) { if (error instanceof InferenceConfigError) return { ok: false, unavailable: true, reason: error.message, matches }; throw error; }
+    if (!binding.ok) return { ok: false, unavailable: true, reason: `${binding.message} Configurez une instance dans Paramètres → Intelligence artificielle.`, matches };
     try {
-      const proposal = await proposeAgent({ inference: createLocalInference(config), model: config.defaultModel, description, catalog, handleAvailable: handle => accounts.handleAvailable(handle) });
+      const proposal = await proposeAgent({ inference: binding.inference, model: binding.resolved.model, description, catalog, handleAvailable: handle => accounts.handleAvailable(handle) });
       return { ok: true, proposal, matches, patch: proposalToPatch(proposal, presets) };
     } catch (error) {
       if (error instanceof InferenceUnavailableError || error instanceof InferenceConfigError) return { ok: false, unavailable: true, reason: error.message, matches };

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GENERATOR_SLUG } from "../graph/types";
+import type { AgentLLMSettings } from "../llm/types";
 import type { Step, RunEvent } from "../topics/types";
 import type { Pause, ResolvedSchedule } from "../xiagents/schedule";
 
@@ -51,7 +52,9 @@ export type WatchSettings = { policy: WatchPolicy; revision: string | null; vali
 export const profileSchema = z.object({ perimeter: z.string().trim().max(4000), charter: z.string().trim().max(4000) }).strict();
 export type Profile = z.infer<typeof profileSchema>;
 /** `schedule`, `pause` and `profile` are absent from fixtures built before calendars: readers fall back to the legacy behaviour. */
-export type WatchAgent = { id: string; handle: string; owner: string; active: boolean; primaryTopicId: string; secondaryTopicIds: string[]; modelRef: string | null; watch: WatchSettings; schedule?: ResolvedSchedule; pause?: Pause | null; profile?: Profile | null; createdAt?: string | null };
+export type WatchAgent = { id: string; handle: string; owner: string; active: boolean; primaryTopicId: string; secondaryTopicIds: string[]; modelRef: string | null; watch: WatchSettings; schedule?: ResolvedSchedule; pause?: Pause | null; profile?: Profile | null; createdAt?: string | null;
+  /** LLM selection (top-level `llm` key); absent from older fixtures: readers fall back to `modelRef`. */
+  llm?: AgentLLMSettings };
 export const presetSchema =z.object({ id: z.string().min(1).max(100), version: z.number().int().positive(), name: z.string().trim().min(1).max(160), settings: settingsSchema, owner: z.string().nullable(), createdAt: z.iso.datetime() });
 export type Settings = z.infer<typeof settingsSchema>;
 export type AccountDraft = z.infer<typeof accountDraftSchema>;

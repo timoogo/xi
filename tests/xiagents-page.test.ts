@@ -34,7 +34,7 @@ test("ΞAgent management page: owner renders identity, topics and history; missi
   const page = await fetch(app.origin + path, { headers: { Cookie: owner } });
   const html = (await page.text()).replace(/<!--[\s\S]*?-->/g, "");
   assert.equal(page.status, 200, app.output());
-  for (const text of ["@politiks", "Politique", "Topics", "politiks", "Historique des publications", "Aucune publication", "Générer une publication"]) assert.ok(html.includes(text), text);
+  for (const text of ["@politiks", "Politique", "Topics", "politiks", "Historique des publications", "Aucune publication", "Générer une publication", "Outils de test et de développement", "Générer des fixtures"]) assert.ok(html.includes(text), text);
   assert.ok(!html.includes('"name":"TypeError"'));
   for (const [cookie, target] of [[owner, `/dashboard/xiagents/${randomUUID()}`], [other, path], [owner, "/dashboard/xiagents/invalid"]]) {
     const response = await fetch(app.origin + target, { headers: { Cookie: cookie } });
@@ -138,7 +138,7 @@ test("ΞAgent management page: owner renders identity, topics and history; missi
     assert.deepEqual([approved.status, approved.orientation, approved.history.at(-1).action], ["approved", "Non déclarée", "approved"]);
     assert.equal((await decide(owner, { action: "reject", revision: source.revision })).status, 409, "stale revision");
     const page = await (await read(owner, path)).text();
-    for (const text of ["Veille autonome", "Paramètres de veille et de fréquence", "Le Quotidien", "Actives (1)", "Publication automatique", "Candidats éditoriaux", "Inférence locale", "non configurée", "Aucun service d’IA distant", "Mode autonome", "non autorisée (XI_WATCH_AUTOPUBLISH)", "Plafond d’alertes immédiates", "Journal des décisions de publication", "aucun passage enregistré"]) assert.ok(page.includes(text), text);
+    for (const text of ["Veille autonome", "Paramètres de veille et de fréquence", "Le Quotidien", "Actives (1)", "Publication automatique", "Candidats éditoriaux", "Inférence locale", "Aucune instance IA", "Aucun service d’IA distant", "Mode autonome", "non autorisée (XI_WATCH_AUTOPUBLISH)", "Plafond d’alertes immédiates", "Journal des décisions de publication", "aucun passage enregistré"]) assert.ok(page.includes(text), text);
     assert.ok(!(await (await read(other, path)).text()).includes("Le Quotidien"));
 
     // A watch draft (written here as the worker would): private, reviewed by the owner only.

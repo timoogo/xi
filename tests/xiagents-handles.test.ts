@@ -18,6 +18,7 @@ import { createDeployments, type DeploymentSpec } from "../src/lib/xiagents/depl
 import { findFreeHandle, handleCandidates, HandleUnavailableError, MAX_HANDLE_ATTEMPTS } from "../src/lib/xiagents/handles";
 import { proposeAgent } from "../src/lib/xiagents/proposal";
 import { defaultSchedule } from "../src/lib/xiagents/schedule";
+import { INHERIT_LLM } from "../src/lib/llm/types";
 
 const counting = (taken: Set<string> | "all") => {
   const calls: string[] = [];
@@ -128,7 +129,7 @@ function spec(existingId: string, handle: string): DeploymentSpec {
     target: "agent", newTopics: [],
     agent: {
       handle, name: "Veille", description: "", primary: { type: "existing", id: existingId }, secondary: [],
-      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, modelRef: null,
+      presetId: preset.id, presetVersion: preset.version, settings: preset.settings, llm: INHERIT_LLM,
       profile: { perimeter: "", charter: "" }, sources: [],
       schedule: defaultSchedule("Europe/Paris"), bloub: DEFAULT_BLOUB_CONFIG, autoPublish: false,
     },

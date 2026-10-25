@@ -1,4 +1,5 @@
 import { getAccountStore } from "@/lib/accounts/server";
+import { getLLMRuntime } from "@/lib/llm/server";
 import { privateJson } from "@/lib/publications/http";
 import { getViewer } from "@/lib/publications/server";
 import { getTopicStore } from "@/lib/topics/server";
@@ -16,7 +17,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const [accounts, topics, { sources }] = await Promise.all([getAccountStore(), getTopicStore(), getWatchServices()]);
     const draft = await exportAgentDraft({ owner: viewer.id, agentId: (await params).id, accounts, topics, sources });
-    const yaml = draftToYaml(draft, await topics.list());
+    const instances = (await getLLMRuntime()).store.list(viewer.id).map(({ id, key, name }) => ({ id, key, name }));
+    const yaml = draftToYaml(draft, await topics.list(), instances);
     return new Response(yaml, {
       headers: {
         "Content-Type": "application/yaml; charset=utf-8",

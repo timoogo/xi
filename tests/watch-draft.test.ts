@@ -18,6 +18,7 @@ import { createJobQueue } from "../src/lib/watch/jobs";
 import { createSourceStore } from "../src/lib/watch/sources";
 import { recordEntries } from "../src/lib/watch/stories";
 import { tick } from "../src/lib/watch/worker";
+import { bindTo } from "./helpers/llm";
 
 const claim = (label: string, text: string, quotes: string[], kind = "fact", status = "corroborated", attribution: string | null = null): DraftClaim => ({ label, text, kind, status, attribution, quotes: quotes.map(quote => ({ quote, publisher: "Éditeur" })) });
 
@@ -110,7 +111,7 @@ async function world(t: test.TestContext) {
     return { story, version };
   }
   const job = (story: string, version: number) => ({ id: randomUUID(), kind: "draft-candidate", key: "k", payload: { agentId, storyId: story, version }, state: "running" as const, runAfter: 0, attempts: 1, maxAttempts: 3, leaseToken: "t", leaseUntil: 0, lastError: null, result: null, createdAt: 0, updatedAt: 0 });
-  const handler = (model: ReturnType<typeof fakeModel>, store = publications) => draftHandler({ db, accounts, topics, publications: store, inference: model.inference, defaultModel: null, now: () => clock });
+  const handler = (model: ReturnType<typeof fakeModel>, store = publications) => draftHandler({ db, accounts, topics, publications: store, llm: bindTo(model.inference), now: () => clock });
   const row = (story: string) => db.prepare("SELECT status, reason, data FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, story) as { status: string; reason: string; data: string };
   return { root, db, vault, topics, accounts, sources, publications, topicId, agentId, candidate, job, handler, row, clock };
 }
@@ -135,7 +136,7 @@ test("drafting: sourced private post, Markdown on disk, never a fixture, isolati
     return { format: "post", summary: "Le Parlement a adopté jeudi la réforme des retraites.", messages: [{ text: "Le Parlement a définitivement adopté **jeudi** la réforme des retraites. Selon le ministère du Travail, elle garantira l'équilibre du système d'ici 2030.", claims: ["A1", "A2"] }] };
   });
   const result = await w.handler(model)(w.job(story, version));
-  assert.deepEqual(result, { status: "done", result: { outcome: "drafted", id: draftId(w.agentId, story, version) } });
+  assert.deepEqual(result, { status: "done", result: { outcome: "drafted", id: draftId(w.agentId, story, version), llm: { model: "modele-local", instance: "Instance de test", instanceSource: "global" } } });
   const id = draftId(w.agentId, story, version);
   const draft = await w.publications.get({ id: "alice" }, id);
   assert.deepEqual([draft.status, draft.visibility, draft.type, draft.authorType, draft.authorId], ["draft", "private", "post", "ai", w.agentId]);
@@ -160,7 +161,7 @@ test("drafting: sourced private post, Markdown on disk, never a fixture, isolati
   assert.deepEqual(await w.handler(model)(w.job(story, version)), { status: "done", result: { outcome: "already-drafted" } });
   w.db.prepare("UPDATE watch_candidate SET status = 'accepted' WHERE story_id = ?").run(story);
   const restarted = createPublicationStore({ vault: w.vault, db: w.db });
-  assert.deepEqual(await w.handler(model, restarted)(w.job(story, version)), { status: "done", result: { outcome: "drafted", id } });
+  assert.deepEqual(await w.handler(model, restarted)(w.job(story, version)), { status: "done", result: { outcome: "drafted", id, llm: { model: "modele-local", instance: "Instance de test", instanceSource: "global" } } });
   assert.equal(model.prompts.length, calls, "the validated text is reused, the model is not asked again");
   assert.equal((await readdir(join(w.root, "posts", "_generators", w.agentId))).filter(name => !name.startsWith(".")).length, 1);
   // Diagnostics after a restart: owner only.

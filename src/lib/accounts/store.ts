@@ -12,6 +12,7 @@ import type { TopicStore } from "../topics/store";
 import { bloubConfigSchema } from "../bloub/config";
 import { readAgentBloub, type AgentBloubSettings } from "../xiagents/avatar";
 import { agentPins, migrateAgentPins, setAgentPin } from "../xiagents/pins";
+import { agentLLMConfigSchema, INHERIT_LLM, storedAgentLLMSchema, type AgentLLMSettings } from "../llm/types";
 import { pauseSchema, readSchedule, scheduleSchema, type Pause, type ResolvedSchedule } from "../xiagents/schedule";
 import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, profileSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type Profile, type WatchAgent, type WatchSettings } from "./types";
 
@@ -240,7 +241,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
     return exclusive(async () => (await all()).flatMap(entry => entry.account.editorial ? [{
       id: entry.account.id, handle: entry.account.handle, owner: entry.account.owner, active: entry.account.editorial.active,
       primaryTopicId: entry.account.editorial.primaryTopicId, secondaryTopicIds: entry.account.editorial.secondaryTopicIds, modelRef: entry.account.editorial.modelRef, watch: watchOf(entry),
-      schedule: scheduleOf(entry), pause: pauseOf(entry), profile: profileOf(entry), createdAt: entry.account.createdAt,
+      schedule: scheduleOf(entry), pause: pauseOf(entry), profile: profileOf(entry), createdAt: entry.account.createdAt, llm: llmOf(entry),
     }] : []));
   }
 
@@ -257,6 +258,23 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
     const parsed = profileSchema.strip().safeParse(raw(entry).profile);
     return parsed.success ? parsed.data : null;
   }
+  /**
+   * LLM selection: top-level `llm` key. Without it, a legacy `editorial.modelRef` acts as a model
+   * override on the global instance; an unreadable key is reported (`valid: false`), never guessed.
+   */
+  function llmOf(entry: Entry): AgentLLMSettings {
+    const stored = raw(entry).llm;
+    if (stored === undefined) {
+      const modelRef = entry.account.editorial?.modelRef ?? null;
+      return { config: { ...INHERIT_LLM, model: modelRef }, revision: null, valid: true, legacy: modelRef !== null };
+    }
+    const parsed = storedAgentLLMSchema.safeParse(stored);
+    if (!parsed.success) return { config: INHERIT_LLM, revision: null, valid: false, legacy: false };
+    const { instanceId, model, options, revision } = parsed.data;
+    return { config: { instanceId, model, options }, revision, valid: true, legacy: false };
+  }
+  const writeLLM = (entry: Entry, owner: string, config: AgentLLMSettings["config"]) =>
+    entry.parsed.doc.set("llm", { ...agentLLMConfigSchema.parse(config), revision: randomUUID(), updatedAt: new Date().toISOString(), updatedBy: owner });
   /** Writes the watch key with a new revision, keeping the public confirmation as recorded. */
   function setWatch(entry: Entry, owner: string, patch: Partial<WatchSettings["policy"]>) {
     const current = watchOf(entry);
@@ -273,7 +291,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
    */
   async function createAgent(owner: string, id: string, input: unknown) {
     z.uuid().parse(id);
-    const data = z.object({ draft: accountDraftSchema, profile: profileSchema, bloub: bloubConfigSchema }).strict().parse(input);
+    const data = z.object({ draft: accountDraftSchema, profile: profileSchema, bloub: bloubConfigSchema, llm: agentLLMConfigSchema.optional() }).strict().parse(input);
     return exclusive(async () => {
       let entry = (await all()).find(e => e.account.id === id);
       if (entry && (entry.account.owner !== owner || entry.account.handle !== data.draft.handle)) throw new TopicError("Identifiant déjà réservé.", 409);
@@ -283,6 +301,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       let changed = false;
       if (!profileOf(entry)) { entry.parsed.doc.set("profile", { ...data.profile, revision: randomUUID(), updatedAt: at, updatedBy: owner }); changed = true; }
       if (bloubOf(entry).revision === null) { entry.parsed.doc.set("bloub", { config: data.bloub, revision: randomUUID(), updatedAt: at, updatedBy: owner }); changed = true; }
+      if (data.llm && raw(entry).llm === undefined) { writeLLM(entry, owner, data.llm); changed = true; }
       if (changed) await persist(entry);
       index(await all());
       return { account: entry.account, created };
@@ -308,6 +327,37 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       entry.parsed.doc.set("profile", { ...profile, revision: randomUUID(), updatedAt: new Date().toISOString(), updatedBy: owner });
       await persist(entry);
       return profile;
+    });
+  }
+
+  /** Owner-only LLM selection, optimistic on `revision` (null while the key is absent or unreadable). */
+  async function setLLM(owner: string, id: string, input: unknown): Promise<AgentLLMSettings> {
+    const data = z.object({ revision: z.uuid().nullable(), config: agentLLMConfigSchema }).strict().parse(input);
+    return exclusive(async () => {
+      const entry = await owned(owner, id);
+      if (llmOf(entry).revision !== data.revision) throw new TopicError("La configuration IA a été modifiée depuis votre lecture. Rechargez.", 409);
+      writeLLM(entry, owner, data.config);
+      await persist(entry);
+      return llmOf(entry);
+    });
+  }
+  /**
+   * Agents of `owner` explicitly bound to instance `from` move to instance `to` (null: back to the
+   * global configuration). Their model choice belonged to the old instance and is dropped (the
+   * target's default model applies); their options are kept. Returns the ids changed.
+   */
+  async function reassignLLM(owner: string, from: string, to: string | null) {
+    return exclusive(async () => {
+      const changed: string[] = [];
+      for (const entry of await all()) {
+        if (entry.account.owner !== owner) continue;
+        const current = llmOf(entry);
+        if (!current.valid || current.config.instanceId !== from) continue;
+        writeLLM(entry, owner, { ...current.config, instanceId: to, model: null });
+        await persist(entry);
+        changed.push(entry.account.id);
+      }
+      return changed;
     });
   }
 
@@ -368,7 +418,8 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       return !(await listDir(directory)).some(e => e.name === wanted);
     });
   }
-  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents, setAvatar, createAgent, setSchedule, setProfile, pauseAgent, resumeAgent, resumeDue, handleAvailable,
+  return { list, getOwned, update, propose, confirm, savePreset, setWatchPolicy, watchAgents, setAvatar, createAgent, setSchedule, setProfile, setLLM, reassignLLM, pauseAgent, resumeAgent, resumeDue, handleAvailable,
+    llm: (owner: string, id: string) => exclusive(async () => llmOf(await owned(owner, id))),
     schedule: (owner: string, id: string) => exclusive(async () => scheduleOf(await owned(owner, id))),
     profile: (owner: string, id: string) => exclusive(async () => profileOf(await owned(owner, id))),
     pauseState: (owner: string, id: string) => exclusive(async () => pauseOf(await owned(owner, id))),

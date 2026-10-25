@@ -2,13 +2,34 @@
 
 `/dashboard/xiagents` liste uniquement les agents du compte connecté et conserve
 le parcours de création existant : topic, proposition locale, preset, validation
-humaine. `/dashboard/xiagents/<id>` présente l’identité, les topics, le générateur
-et l’historique. Une identité étrangère répond 404 sur cette page.
+humaine. `/dashboard/xiagents/<id>` présente l’identité, les topics, les deux
+générateurs (voir ci-dessous) et l’historique. Une identité étrangère répond 404 sur cette page.
 `/dashboard/accounts` redirige vers la nouvelle liste, en conservant `?run=`.
 Les modules `accounts`, les API de création et les fichiers `generators/` restent
 compatibles. Aucune page de paramètres avancés n’est ajoutée.
 
-## Trois responsabilités
+## Deux générateurs distincts
+
+| | Générer une publication (principal) | Générer des fixtures (test) |
+|---|---|---|
+| Interface | section principale de la page | « Outils de test et de développement », repliée |
+| Route | `POST /api/xiagents/<id>/generate` `{ format: post\|thread, storyId? }` | `POST /api/xiagents/<id>/publications` |
+| Code | `xiagents/publication-generator.ts` → `watch/drafting.ts` `writeCandidateDraft` | `xiagents/generator.ts` + `manual-publication.ts` |
+| Matière | informations collectées et vérifiées par la veille (candidats `accepted`) | scénario fictif local |
+| Modèle | celui du ΞAgent (agent → compte → erreur, `docs/llm.md`) | aucun |
+| Résultat | brouillon privé (sources, citations vérifiées), puis publication privée sur confirmation (`reviewDraft`) | aperçu modifiable, publication confirmée, `test_content: true` |
+| Échec du modèle | erreur réelle (503 indisponible, 409 configuration, 422 sortie non conforme), exécution `manual-generate` en échec dans l’historique | sans objet |
+
+Le circuit réel est le même que celui de la veille autonome (`draftHandler` et l’action
+à la demande partagent `writeCandidateDraft`) : seules les affirmations vérifiées sont
+rédigées, chaque chiffre, citation et attribution est contrôlé par le code puis relu par
+le modèle ; un thread exige au moins deux affirmations distinctes. Il ne publie jamais
+lui-même et n’est jamais remplacé par des fixtures. La requête est synchrone (sans
+progression simulée) ; son exécution est journalisée et pourra être rattachée au futur
+composant de pipeline. S’il n’y a aucune information vérifiée, il faut d’abord lancer
+une veille (collecte puis analyse).
+
+## Trois responsabilités (fixtures)
 
 - Identité et propriétaire : `accounts/store.ts`, source de vérité dans
   `generators/<handle>/index.md`. Les UUID et handles existants sont conservés.
@@ -131,14 +152,20 @@ même déploiement ; le serveur revalide tout (`deploymentSpecSchema`).
    - Topic introuvable (référence YAML non résolue ou topic disparu) : signalé dans
      la section Topics, ouverte d'office, avec remplacement, création ou retrait
      manuels ; jamais remplacé automatiquement, déploiement bloqué jusque-là.
-   - « Enrichir avec l’IA locale » (`mode: "ai"`, modèle local uniquement) est
-     facultatif. Il ne remplace jamais un champ modifié à la main
+   - « Enrichir avec l’IA locale » (`mode: "ai"`, modèle de la configuration
+     globale du propriétaire, docs/llm.md) est facultatif. Il ne remplace jamais un champ modifié à la main
      (`applySuggestion`) et liste les choix conservés ; s’il est indisponible,
      la modale le dit.
    - Sources suggérées ou importées : jamais approuvées automatiquement. Seules
      les sources approuvées sont collectées, les exclues deviennent des sources
      rejetées, les non décidées ne sont pas enregistrées.
    - « Exporter le YAML » est disponible à chaque étape à partir d’ici.
+   - Paramètres avancés → Intelligence artificielle : hériter de la configuration
+     globale (défaut), autre modèle, ou autre instance Ollama, avec paramètres
+     d’inférence facultatifs (docs/llm.md). Une instance importée inconnue ici
+     bloque le déploiement jusqu’à son association explicite ; le déploiement
+     vérifie que l’instance choisie appartient au propriétaire et journalise le
+     modèle résolu (ou le problème) à l’étape de disponibilité.
 3. **Calendriers** : veille et publication (voir docs/watch.md).
 4. **Personnaliser** : Bloub attribué par défaut, modifiable (forme,
    expression, couleur lisible avec les yeux blancs : encre par défaut).
