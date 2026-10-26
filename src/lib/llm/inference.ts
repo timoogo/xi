@@ -1,5 +1,6 @@
 import type { Inference } from "../watch/inference";
 import type { Fetcher } from "../watch/net";
+import { generationLimit } from "../watch/stages";
 import type { DestinationPolicy } from "./network";
 import { createOllamaClient } from "./ollama";
 import type { LLMProviderType, ResolvedInferenceOptions } from "./types";
@@ -13,7 +14,8 @@ export function bindInference({ type, baseUrl, policy, options, fetch }: { type:
   switch (type) {
     case "ollama": {
       const client = createOllamaClient({ baseUrl, policy, fetch });
-      return { complete: ({ model, system, prompt }) => client.chat({ model, system, prompt, options, json: true }) };
+      // Each editorial step gets at least the budget its JSON answer needs (stages.ts).
+      return { complete: ({ model, system, prompt, stage }) => client.chat({ model, system, prompt, options: { ...options, maxTokens: generationLimit(options.maxTokens, stage) }, json: true }) };
     }
   }
 }

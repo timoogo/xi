@@ -13,7 +13,7 @@ import { migrateWatchDecisions } from "../watch/publisher";
 export const RUN_KIND_LABELS: Record<string, string> = {
   "collect-source": "Collecte d’une source", "discover-sources": "Découverte de sources", "evaluate-story": "Analyse d’une information",
   "draft-candidate": "Rédaction d’un brouillon", "publication-window": "Fenêtre de publication", "weekly-review": "Revue hebdomadaire",
-  "publish-alert": "Publication immédiate", "catch-up": "Rattrapage", "manual-watch": "Veille manuelle", "manual-reanalyze": "Analyse relancée",
+  "publish-alert": "Publication immédiate", "catch-up": "Rattrapage", "manual-watch": "Veille manuelle", "manual-reanalyze": "Analyse relancée", "manual-reanalyze-held": "Analyses suspendues relancées",
   "manual-draft": "Préparation manuelle", pause: "Mise en pause", resume: "Reprise",
 };
 export const RUN_STATUS_LABELS: Record<RunRecord["status"], string> = {

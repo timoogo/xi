@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Compass, FileText, House, Info, LogOut, Monitor, Moon, MoreHorizontal, Network, ScrollText, Settings, Sun, UserRound, type LucideIcon } from "lucide-react";
+import { Bell, Compass, FileText, House, Info, LogOut, Monitor, Moon, MoreHorizontal, Network, ScrollText, Settings, ShieldCheck, Sun, UserRound, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -30,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Graphe", icon: Network, href: "/dashboard/graph" },
   { label: "Gestion des topics", icon: Compass, href: "/dashboard/topics" },
   { label: "ΞAgents", icon: UserRound, href: "/dashboard/xiagents" },
+  { label: "Sources", icon: ShieldCheck, href: "/dashboard/sources" },
 ];
 const SECONDARY_ITEMS: NavItem[] = [
   { label: "Paramètres du compte", icon: Settings, href: "/dashboard/settings" },
@@ -134,7 +135,7 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
   const [open, setOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const { pending, logOut } = useLogout(() => setOpen(false));
-  const tabs = NAV_ITEMS.filter((item) => item.href !== "/dashboard/profile" && item.href !== "/dashboard/topics" && item.href !== "/dashboard/xiagents");
+  const tabs = NAV_ITEMS.filter((item) => item.href !== "/dashboard/profile" && item.href !== "/dashboard/topics" && item.href !== "/dashboard/xiagents" && item.href !== "/dashboard/sources");
   // The editor has its own sticky actions: a floating button there would hide them.
   const editing = pathname.endsWith("/edit");
   return (
@@ -165,7 +166,7 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
               <p className="truncate text-sm text-muted-foreground">{user.handle}</p>
             </div>
             <nav aria-label="Menu du compte" className="flex flex-col py-2">
-              {[NAV_ITEMS[4], NAV_ITEMS[6], NAV_ITEMS[7], ...SECONDARY_ITEMS].map(({ label, icon: Icon, href }) => (
+              {[NAV_ITEMS[4], NAV_ITEMS[6], NAV_ITEMS[7], NAV_ITEMS[8], ...SECONDARY_ITEMS].map(({ label, icon: Icon, href }) => (
                 <Link key={href} href={href} onClick={() => setOpen(false)} aria-current={isActive(pathname, href) ? "page" : undefined}
                   className="flex items-center gap-4 px-4 py-3 text-lg font-semibold hover:bg-accent aria-[current=page]:font-bold">
                   <Icon aria-hidden="true" className="size-6" />{label}

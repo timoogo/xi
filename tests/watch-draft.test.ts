@@ -1,3 +1,5 @@
+import { DEFAULT_FORMAT } from "../src/lib/watch/format";
+import { TopicError } from "../src/lib/topics/types";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -17,7 +19,9 @@ import { InferenceUnavailableError, type ChatRequest } from "../src/lib/watch/in
 import { createJobQueue } from "../src/lib/watch/jobs";
 import { createSourceStore } from "../src/lib/watch/sources";
 import { recordEntries } from "../src/lib/watch/stories";
-import { tick } from "../src/lib/watch/worker";
+import { admit } from "../src/lib/watch/orchestrator";
+import { tick, windowHandlers } from "../src/lib/watch/worker";
+import { defaultSchedule } from "../src/lib/xiagents/schedule";
 import { bindTo } from "./helpers/llm";
 
 const claim = (label: string, text: string, quotes: string[], kind = "fact", status = "corroborated", attribution: string | null = null): DraftClaim => ({ label, text, kind, status, attribution, quotes: quotes.map(quote => ({ quote, publisher: "Éditeur" })) });
@@ -96,10 +100,10 @@ async function world(t: test.TestContext) {
   migrateWatchCandidates(db);
   const clock = Date.parse("2026-01-15T12:00:00Z");
   /** A collected story with its verified claims, as evaluation leaves it (fictitious news). */
-  function candidate(items: { publisher: string; title: string; summary: string }[], claims: { text: string; kind?: string; status?: string; attribution?: string | null; quotes: [number, string][] }[], lane = "night", status = "accepted") {
+  function candidate(items: { publisher: string; title: string; summary: string }[], claims: { text: string; kind?: string; status?: string; attribution?: string | null; quotes: [number, string][] }[], lane = "night", status = "accepted", sourceIds: string[] = []) {
     const ids: string[] = [];
     for (const [i, item] of items.entries()) {
-      recordEntries(db, { owner: "alice", source: { id: `src-${i}-${randomUUID()}`, publisher: item.publisher, ownerGroup: null, topicIds: [topicId] }, entries: [{ url: `https://${item.publisher.toLowerCase().replace(/\W+/g, "")}.example/${randomUUID()}`, guid: null, title: item.title, summary: item.summary, publishedAt: "2026-01-15T09:00:00.000Z", author: null, credits: [], links: [] }], now: clock });
+      recordEntries(db, { owner: "alice", source: { id: sourceIds[i] ?? `src-${i}-${randomUUID()}`, publisher: item.publisher, ownerGroup: null, topicIds: [topicId] }, entries: [{ url: `https://${item.publisher.toLowerCase().replace(/\W+/g, "")}.example/${randomUUID()}`, guid: null, title: item.title, summary: item.summary, publishedAt: "2026-01-15T09:00:00.000Z", author: null, credits: [], links: [] }], now: clock });
       ids.push((db.prepare("SELECT id FROM watch_item ORDER BY rowid DESC LIMIT 1").get() as { id: string }).id);
     }
     const story = (db.prepare("SELECT story_id FROM watch_item WHERE id = ?").get(ids[0]) as { story_id: string }).story_id;
@@ -148,7 +152,7 @@ test("drafting: sourced private post, Markdown on disk, never a fixture, isolati
   // Markdown on disk: a real draft, never labelled as a fixture.
   const path = (w.db.prepare("SELECT path FROM publication WHERE id = ?").get(id) as { path: string }).path;
   const index = await readFile(join(w.root, path, "index.md"), "utf8");
-  for (const field of ["status: draft", "visibility: private", "generated_by: watch-draft-v1", "review: pending", `story: ${story}`, "model: modele-local", "prompt_version: redaction-4.1", "importance: 0.7", "lane: night"]) assert.ok(index.includes(field), field);
+  for (const field of ["status: draft", "visibility: private", "generated_by: watch-draft-v1", "review: pending", `story: ${story}`, "model: modele-local", "prompt_version: redaction-5.0", "importance: 0.7", "lane: night"]) assert.ok(index.includes(field), field);
   assert.ok(!index.includes("test_content") && !(await readFile(join(w.root, path, draft.messages[0].file), "utf8")).includes("Contenu de test fictif"));
   assert.equal((await readdir(join(w.root, path, "_sources"))).length, 2);
   assert.equal(w.row(story).status, "drafted");
@@ -255,6 +259,65 @@ test("drafting jobs: only accepted night or alert candidates are planned, once",
   assert.equal(createJobQueue(w.db).counts().done, 1);
 });
 
+test("drafting jobs: a story already too old for its lane is neither planned nor drafted", async t => {
+  const w = await world(t);
+  const old = w.candidate(reform, reformClaims);
+  // Fixture: first published 40 h before the pass (night lane: 36 h at most).
+  w.db.prepare("UPDATE watch_story SET first_published_at = ? WHERE id = ?").run(new Date(w.clock - 40 * 3_600_000).toISOString(), old.story);
+  const model = fakeModel(() => ({ format: "post", summary: "Adoption.", messages: [{ text: "Le Parlement a définitivement adopté jeudi la réforme des retraites.", claims: ["A1"] }] }));
+  assert.equal((await tick({ db: w.db, accounts: w.accounts, handlers: { "draft-candidate": w.handler(model) }, canEvaluate: () => true, now: () => new Date(w.clock) })).planned, 0);
+  assert.equal(w.row(old.story).status, "accepted");
+  const report = await watchDiagnostics({ db: w.db, accounts: w.accounts, sources: w.sources, owner: "alice", agentId: w.agentId, autoPublish: true, now: new Date(w.clock) });
+  assert.match(report.candidates.find(c => c.storyId === old.story)!.blocker.reason, /trop ancienne/);
+  // A job queued before it became too old: no model call, the candidate is held with the reason.
+  const result = await w.handler(model)(w.job(old.story, old.version));
+  assert.deepEqual(result, { status: "done", result: { outcome: "held", reason: "obsolete" } });
+  assert.match(w.row(old.story).reason, /trop ancienne pour la voie nocturne \(plus de 36 h\)/);
+  assert.equal(model.prompts.length, 0);
+});
+
+test("night: a candidate accepted at 23:30, after the watch closes, is drafted overnight and published in the window", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  // Calendar: watch 07:00–23:00, publication 03:00–06:00 (Paris), no off-hours major events; autonomous, private.
+  await w.accounts.setSchedule("alice", w.agentId, { revision: (await w.accounts.schedule("alice", w.agentId)).revision, schedule: defaultSchedule("Europe/Paris") });
+  const current = await w.accounts.watchPolicy("alice", w.agentId);
+  await w.accounts.setWatchPolicy("alice", w.agentId, { revision: current.revision, policy: { ...current.policy, enabled: true, autoPublish: true } });
+  const clock = { now: Date.parse("2026-01-15T22:30:00Z") }; // 23:30 Paris
+  // Catalogue sources approved by the owner: the publisher re-checks trust at the last moment.
+  const approved = [];
+  for (const { publisher } of reform) {
+    const { source } = await w.sources.propose("alice", { url: `https://${publisher.toLowerCase().replace(/\W+/g, "")}.example/rss`, kind: "feed", site: null, publisher, topicIds: [w.topicId], reliability: { level: "inconnue", reasons: [], estimated: true } }, "alice");
+    approved.push((await w.sources.decide("alice", source.id, { action: "approve", revision: source.revision })).id);
+  }
+  const accepted = w.candidate(reform, reformClaims, "night", "accepted", approved);
+  const agent = () => w.accounts.watchAgents().then(agents => agents.find(item => item.id === w.agentId)!);
+  // The watch itself stays closed: evaluation and collection wait for 07:00.
+  assert.deepEqual([admit({ kind: "evaluate-story", payload: {} }, await agent(), new Map(), clock.now).allowed, admit({ kind: "draft-candidate", payload: {} }, await agent(), new Map(), clock.now).allowed], [false, true]);
+  // An explicit pause still holds drafting.
+  const paused = await agent();
+  assert.equal(admit({ kind: "draft-candidate", payload: {} }, { ...paused, watch: { ...paused.watch, policy: { ...paused.watch.policy, paused: true } } }, new Map(), clock.now).allowed, false);
+
+  const model = fakeModel(() => ({ format: "post", summary: "Adoption.", messages: [{ text: "Le Parlement a définitivement adopté jeudi la réforme des retraites.", claims: ["A1"] }] }));
+  const publications = createPublicationStore({ vault: w.vault, db: w.db, now: () => new Date(clock.now) });
+  const handlers = {
+    "draft-candidate": draftHandler({ db: w.db, accounts: w.accounts, topics: w.topics, publications, llm: bindTo(model.inference), now: () => clock.now }),
+    ...windowHandlers({ db: w.db, accounts: w.accounts, sources: w.sources, publications, settings: { autoPublish: true, allowPublic: false }, now: () => clock.now }),
+  };
+  const run = () => tick({ db: w.db, accounts: w.accounts, handlers, canEvaluate: () => true, now: () => new Date(clock.now) });
+  await run();
+  assert.equal(w.row(accepted.story).status, "drafted", "drafted overnight, outside the watch calendar");
+  assert.equal((w.db.prepare("SELECT count(*) AS n FROM watch_decision").get() as { n: number }).n, 0, "nothing published before the window");
+  // The publication window (03:00–06:00 Paris) is unchanged: published there, privately, by the agent.
+  clock.now = (w.db.prepare("SELECT run_after FROM watch_job WHERE kind = 'publication-window' AND state = 'pending'").get() as { run_after: number }).run_after;
+  assert.ok(clock.now >= Date.parse("2026-01-16T02:00:00Z") && clock.now < Date.parse("2026-01-16T05:00:00Z"), "the planned window, 03:00–06:00 Paris");
+  await run();
+  assert.equal(w.row(accepted.story).status, "published");
+  const [published] = publications.agentPublications(w.agentId);
+  assert.ok(published && !published.test);
+  const full = await publications.get({ id: "alice" }, published.id);
+  assert.deepEqual([full.status, full.visibility], ["published", "private"]);
+});
+
 test("owner review: edits stay within the sources, rejection, private approval, isolation, stale revisions", { timeout: 30_000 }, async t => {
   const w = await world(t);
   const model = fakeModel(() => ({ format: "post", summary: "Adoption de la réforme.", messages: [{ text: "Le Parlement a définitivement adopté jeudi la réforme des retraites.", claims: ["A1"] }] }));
@@ -262,12 +325,12 @@ test("owner review: edits stay within the sources, rejection, private approval, 
   await w.handler(model)(w.job(first.story, first.version));
   const id = draftId(w.agentId, first.story, first.version);
   const draft = await w.publications.get({ id: "alice" }, id);
-  const review = (owner: string, input: unknown, draft = id) => reviewDraft({ db: w.db, publications: w.publications, owner, agentId: w.agentId, draftId: draft, input });
+  const review = (owner: string, input: unknown, draft = id) => reviewDraft({ db: w.db, publications: w.publications, owner, agentId: w.agentId, draftId: draft, input, format: DEFAULT_FORMAT });
   await assert.rejects(review("alice", { action: "update", revision: draft.revision, messages: ["Le Parlement a adopté la réforme par 300 voix."] }), /Chiffre absent/);
   await assert.rejects(review("alice", { action: "update", revision: draft.revision, messages: ["Voir https://exemple.fr"] }), /URL/);
   await assert.rejects(review("alice", { action: "update", revision: draft.revision, messages: ["Texte\n\n## Sources\n- autre"] }), /Sources|section/);
   await assert.rejects(review("alice", { action: "update", revision: draft.revision, messages: ["Un", "Deux"] }), /conservé/);
-  await assert.rejects(review("bob", { action: "approve", revision: draft.revision }), (error: Error) => error instanceof PublicationError && error.code === "not_found");
+  await assert.rejects(review("bob", { action: "approve", revision: draft.revision }), (error: Error) => (error instanceof PublicationError && error.code === "not_found") || (error instanceof TopicError && error.status === 404));
   const edited = await review("alice", { action: "update", revision: draft.revision, messages: ["Jeudi, le Parlement a **définitivement** adopté la réforme des retraites."] });
   assert.match(edited.messages[0].body, /^Jeudi, le Parlement a \*\*définitivement\*\*[\s\S]*\n## Sources\n- \[\[/);
   assert.equal(edited.sources.length, draft.sources.length, "sources untouched");
@@ -291,4 +354,76 @@ test("owner review: edits stay within the sources, rejection, private approval, 
   await assert.rejects(review("alice", { action: "approve", revision: rejected.revision }, otherId), /plus modifiable/);
   const index = await readFile(join(w.root, (w.db.prepare("SELECT path FROM publication WHERE id = ?").get(otherId) as { path: string }).path, "index.md"), "utf8");
   assert.match(index, /review: rejected/); assert.match(index, /by: alice/);
+});
+
+test("format limits: a too-long answer is rewritten, never truncated; then an explicit failure", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  const long = "Le Parlement a définitivement adopté jeudi la réforme des retraites. ".repeat(5).trim();
+  const short = "Le Parlement a définitivement adopté jeudi la réforme des retraites.";
+  // First answer over 280 characters: the model is asked to rewrite it, with the measured length.
+  const first = w.candidate(reform, reformClaims);
+  const rewriting = fakeModel((prompt, n) => {
+    assert.match(prompt, /un post fait au plus 280 caractères \(idéalement 180 à 250\)/);
+    if (n === 2) assert.match(prompt, /Message 1 : \d+ caractères, au-delà de la limite de 280/);
+    return { format: "post", summary: "Adoption de la réforme.", messages: [{ text: n === 1 ? long : short, claims: ["A1"] }] };
+  });
+  assert.equal((await w.handler(rewriting)(w.job(first.story, first.version))).status, "done");
+  const draft = await w.publications.get({ id: "alice" }, draftId(w.agentId, first.story, first.version));
+  assert.match(draft.messages[0].body, new RegExp(`^${short}\\n\\n## Sources`), "the rewritten text, whole");
+
+  // Always too long: 1 + 2 corrections, then held with the reason; no draft is written.
+  const second = w.candidate([{ publisher: "Le Soir", title: "Le maire de Lyon présente son plan vélo", summary: "Le maire de Lyon a présenté mardi un plan vélo." }, { publisher: "La Gazette", title: "Lyon : plan vélo", summary: "Un plan vélo a été présenté mardi par le maire de Lyon." }],
+    [{ text: "Le maire de Lyon a présenté un plan vélo mardi.", quotes: [[0, "Le maire de Lyon a présenté mardi un plan vélo"], [1, "Un plan vélo a été présenté mardi par le maire de Lyon"]] }]);
+  const stubborn = fakeModel(() => ({ format: "post", summary: "Plan vélo.", messages: [{ text: "Le maire de Lyon a présenté mardi un plan vélo. ".repeat(8), claims: ["A1"] }] }));
+  await w.handler(stubborn)(w.job(second.story, second.version));
+  assert.equal(stubborn.prompts.filter(p => !p.startsWith("Vérifie")).length, 3);
+  assert.equal(w.row(second.story).status, "held");
+  assert.match(w.row(second.story).reason, /non conforme après 3 essai\(s\) \(2 correction\(s\) autorisée\(s\)\) : Message 1 : \d+ caractères/);
+  await assert.rejects(w.publications.get({ id: "alice" }, draftId(w.agentId, second.story, second.version)), /introuvable/);
+  const diagnostics = await watchDiagnostics({ db: w.db, accounts: w.accounts, sources: w.sources, publications: w.publications, owner: "alice", agentId: w.agentId, autoPublish: false });
+  assert.deepEqual(diagnostics.draftFailures.map(failure => [failure.storyId, failure.attempts.length]), [[second.story, 3]]);
+  assert.deepEqual(diagnostics.format.resolved, { ok: true, format: DEFAULT_FORMAT });
+});
+
+test("format limits: agent overrides (threads off, no correction), model's decline, owner review", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  const current = await w.accounts.watchPolicy("alice", w.agentId);
+  await w.accounts.setWatchPolicy("alice", w.agentId, { revision: current.revision, policy: { ...current.policy, format: { threads: false, correctionAttempts: 0, maxPostChars: 260 } } });
+  const thread = { format: "thread", summary: "Réforme.", messages: [
+    { text: "Le Parlement a définitivement adopté jeudi la réforme des retraites.", claims: ["A1"] },
+    { text: "Selon le ministère du Travail, elle garantira l'équilibre du système d'ici 2030.", claims: ["A2"] },
+  ] };
+  const a = w.candidate(reform, reformClaims);
+  const model = fakeModel(prompt => {
+    assert.match(prompt, /Format imposé : post, un seul message/, "threads off: posts only, never a thread");
+    assert.match(prompt, /au plus 260 caractères/);
+    return thread;
+  });
+  await w.handler(model)(w.job(a.story, a.version));
+  assert.equal(model.prompts.length, 1, "no correction allowed");
+  assert.equal(w.row(a.story).status, "held");
+  assert.match(w.row(a.story).reason, /1 essai\(s\) \(0 correction/);
+  assert.match(w.row(a.story).reason, /threads sont désactivés|Un post était imposé/);
+
+  // The model may decline: no publication, and the verdict is kept (not asked again).
+  const b = w.candidate([{ publisher: "Le Soir", title: "Le maire de Lyon présente son plan vélo", summary: "Le maire de Lyon a présenté mardi un plan vélo." }, { publisher: "La Gazette", title: "Lyon : plan vélo", summary: "Un plan vélo a été présenté mardi par le maire de Lyon." }],
+    [{ text: "Le maire de Lyon a présenté un plan vélo mardi.", quotes: [[0, "Le maire de Lyon a présenté mardi un plan vélo"], [1, "Un plan vélo a été présenté mardi par le maire de Lyon"]] }]);
+  const declining = fakeModel(() => ({ format: "none", reason: "Information redondante." }));
+  await w.handler(declining)(w.job(b.story, b.version));
+  assert.equal(w.row(b.story).status, "held");
+  assert.match(w.row(b.story).reason, /Aucune publication : .*Information redondante/);
+  w.db.prepare("UPDATE watch_candidate SET status = 'accepted' WHERE story_id = ?").run(b.story);
+  await w.handler(declining)(w.job(b.story, b.version));
+  assert.equal(declining.prompts.length, 1);
+
+  // Owner review: an edit or an approval beyond the limits is refused, never truncated.
+  const c = w.candidate([{ publisher: "Le Monde", title: "Le Sénat vote le budget", summary: "Le Sénat a voté mardi le budget de la Sécurité sociale." }, { publisher: "Le Figaro", title: "Budget voté", summary: "Les sénateurs ont voté mardi le budget de la Sécurité sociale." }],
+    [{ text: "Le Sénat a voté le budget de la Sécurité sociale mardi.", quotes: [[0, "Le Sénat a voté mardi le budget de la Sécurité sociale"], [1, "Les sénateurs ont voté mardi le budget de la Sécurité sociale"]] }]);
+  await w.handler(fakeModel(() => ({ format: "post", summary: "Budget voté.", messages: [{ text: "Le Sénat a voté mardi le budget de la Sécurité sociale.", claims: ["A1"] }] })))(w.job(c.story, c.version));
+  const id = draftId(w.agentId, c.story, c.version);
+  const draft = await w.publications.get({ id: "alice" }, id);
+  const limits = { ...DEFAULT_FORMAT, maxPostChars: 260 };
+  await assert.rejects(reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: id, format: limits, input: { action: "update", revision: draft.revision, messages: ["Le Sénat a voté mardi le budget de la Sécurité sociale. ".repeat(6)] } }), (error: TopicError) => error.status === 422 && /Modification refusée : Message 1 : \d+ caractères/.test(error.message));
+  await assert.rejects(reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: id, format: { ...limits, maxPostChars: 50, targetPostMin: 50, targetPostMax: 50 }, input: { action: "approve", revision: draft.revision } }), /Approbation refusée/);
+  assert.equal((await w.publications.get({ id: "alice" }, id)).status, "draft");
 });

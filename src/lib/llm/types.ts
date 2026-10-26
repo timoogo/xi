@@ -162,6 +162,8 @@ export type AgentLLMView = { settings: AgentLLMSettings; resolution: Resolution 
 export const LLM_ERROR_CODES = [
   "unreachable", "bad-url", "blocked", "timeout", "model-missing", "invalid-response",
   "context-too-large", "out-of-memory", "interrupted", "disabled", "not-configured", "http",
+  // Model output problems, distinguished for diagnosis: cut by the generation limit, not JSON, JSON off the schema.
+  "truncated", "invalid-json", "schema",
 ] as const;
 export type LLMErrorCode = (typeof LLM_ERROR_CODES)[number];
 export const LLM_ERROR_LABELS: Record<LLMErrorCode, string> = {
@@ -177,6 +179,9 @@ export const LLM_ERROR_LABELS: Record<LLMErrorCode, string> = {
   disabled: "Instance désactivée",
   "not-configured": "Aucune configuration",
   http: "Erreur du serveur",
+  truncated: "Réponse tronquée",
+  "invalid-json": "JSON invalide",
+  schema: "Réponse hors format",
 };
 
 // ---------------------------------------------------------------- explicit test

@@ -156,6 +156,9 @@ export function admit(job: Pick<Job, "kind" | "payload">, agent: WatchAgent | un
     return schedule.majorEvents.enabled ? { allowed: true, deadline: null, trigger }
       : { allowed: false, code: "major-disabled", reason: "Exception pour événement majeur désactivée : attente de la plage de veille.", until: nextWatchOpening(agent, now) ?? now + DAY };
   }
+  // Drafting an accepted candidate prepares the next publication window: not bound to the watch
+  // calendar. Pause (above), freshness (drafting), the inference limit and publication rules still apply.
+  if (job.kind === "draft-candidate") return { allowed: true, deadline: null, trigger };
   const end = watchWindowEnd(agent, now);
   if (end !== null && watchOpen(agent, now)) return { allowed: true, deadline: end + schedule.graceMinutes * MINUTE, trigger };
   return { allowed: false, code: "closed", reason: "Hors de la plage de veille : tâche en attente de la prochaine ouverture.", until: nextWatchOpening(agent, now) ?? now + DAY };

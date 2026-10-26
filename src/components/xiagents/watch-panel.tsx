@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -6,13 +7,14 @@ import { Input } from "@/components/ui/input";
 import type { WatchDiagnostics } from "@/lib/watch/diagnostics";
 import type { Resolution } from "@/lib/llm/types";
 import { resolutionText } from "@/components/llm/format";
+import { PublicationsSettings } from "./publications-settings";
 import { WatchDrafts } from "./watch-drafts";
 
 type Topic = { id: string; tag: string; name: string };
 type SourceView = WatchDiagnostics["sources"][number];
 const selectClass = "rounded-md border bg-background px-3 py-2";
 const date = (value: string | null) => (value ? new Date(value).toLocaleString("fr-FR", { timeZone: "Europe/Paris", dateStyle: "short", timeStyle: "short" }) : "—");
-const STATUS: Record<string, string> = { proposed: "En attente d’approbation", approved: "Active", rejected: "Rejetée", disabled: "Désactivée", deleted: "Supprimée" };
+const STATUS: Record<string, string> = { proposed: "En attente (collectée, insuffisante seule)", approved: "Approuvée", rejected: "Refusée", disabled: "Désactivée", deleted: "Supprimée" };
 const OUTCOME: Record<string, string> = { ok: "Collecte réussie", "not-modified": "Inchangé (304)", error: "Erreur", robots: "Refusé par robots.txt" };
 const JOB: Record<string, string> = { "publication-window": "Fenêtre de publication", "weekly-review": "Bilan hebdomadaire", "collect-source": "Collecte", "discover-sources": "Découverte de sources", "evaluate-story": "Évaluation d’une actualité", "draft-candidate": "Rédaction d’un brouillon", "publish-alert": "Alerte immédiate" };
 const JOB_STATE: Record<string, string> = { pending: "Planifiée", running: "En cours", done: "Terminée", failed: "Échec" };
@@ -20,8 +22,7 @@ const CANDIDATE: Record<string, string> = { evaluating: "En cours d’évaluatio
 const LANE: Record<string, string> = { night: "fenêtre nocturne", immediate: "alerte majeure", weekly: "bilan hebdomadaire" };
 const NOVELTY: Record<string, string> = { new: "nouveau sujet", development: "nouveau développement", duplicate: "déjà traité" };
 const CLAIM_KIND: Record<string, string> = { fact: "Fait", attributed: "Déclaration attribuée", hypothesis: "Hypothèse", interpretation: "Interprétation" };
-const CLAIM_STATUS: Record<string, string> = { corroborated: "corroboré", primary: "source primaire", "single-source": "une seule voix", qualified: "présenté comme tel", contradicted: "contredit", unsupported: "non étayé, écarté" };
-const DECISION: Record<string, string> = { published: "Publiée", deferred: "Reportée", abandoned: "Abandonnée", skipped: "Non publiée", selected: "Retenue pour le bilan" };
+const CLAIM_STATUS: Record<string, string> = { corroborated: "corroboré", primary: "source primaire", "single-source": "une seule voix", "pending-trust": "source en attente d’approbation", qualified: "présenté comme tel", contradicted: "contredit", unsupported: "non étayé, écarté" };
 const score = (value: number | null) => (value === null ? "—" : value.toFixed(2));
 const HISTORY: Record<string, string> = { proposed: "Proposée", approved: "Approuvée", rejected: "Rejetée", disabled: "Désactivée", deleted: "Supprimée", updated: "Modifiée" };
 
@@ -55,16 +56,18 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
     <h2 id="watch-title" className="text-lg font-bold">Veille autonome</h2>
     <p className="text-sm">État : <strong>{status}</strong> · Publication automatique : <strong>{data.autoPublish ? "autorisée" : "désactivée"}</strong>{data.nextWindow && <> · Prochaine fenêtre : {date(data.nextWindow)}</>}</p>
     <p className="text-sm">Mode autonome : <strong>{data.watch.policy.autoPublish ? `activé (${data.watch.policy.visibility === "public" ? "public" : "privé"})` : "désactivé"}</strong> · Opérateur : publication automatique {data.autoPublish ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH)"}, publique {data.allowPublic ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH_PUBLIC)"}{data.watch.publicConfirmedAt && <> · publication publique confirmée le {date(data.watch.publicConfirmedAt)}</>}</p>
+    {data.publishBlocks.length > 0 && <p className="text-sm">Aucun brouillon ne peut être publié automatiquement : {data.publishBlocks.join(" ")}</p>}
     <p className="text-sm">Worker : {data.worker.lastTickAt ? <>dernier passage {date(data.worker.lastTickAt)}{data.worker.stale && <strong className="text-destructive"> — aucun passage depuis plus de 30 min</strong>}</> : <strong className="text-destructive">aucun passage enregistré</strong>}{data.worker.lastError && <span className="text-destructive"> · dernière erreur {date(data.worker.lastErrorAt)} : {data.worker.lastError}</span>}{data.failedJobs > 0 && <span className="text-destructive"> · {data.failedJobs} tâche(s) en échec</span>}</p>
     {llm ? <p className="text-sm">Inférence locale : {llm.ok ? <strong>{resolutionText(llm)}</strong> : <strong className="text-destructive"><span aria-hidden="true">⚠ </span>{resolutionText(llm)}</strong>}. Aucun service d’IA distant n’est utilisé.</p>
       : <p className="text-sm">Inférence locale : <strong>{data.inference.error ? "configuration refusée" : data.inference.configured ? "configurée" : "non configurée"}</strong>{data.inference.configured && <> · modèle par défaut {data.inference.model ?? "aucun (référence du ΞAgent requise)"}</>}{data.inference.error && <span className="text-destructive"> — {data.inference.error}</span>}. Aucun service d’IA distant n’est utilisé.</p>}
     <div aria-live="polite">{notice && <p role="status" className="text-sm">{notice}</p>}{error && <p role="alert" className="text-sm text-destructive">{error}</p>}</div>
 
     <PolicyForm key={data.watch.revision ?? "initial"} agentId={agentId} watch={data.watch} busy={busy} act={act} />
+    <PublicationsSettings key={`publications-${data.watch.revision ?? "initial"}`} agentId={agentId} data={data} busy={busy} act={act} send={send} />
 
     <section aria-labelledby="sources-title" className="space-y-3">
       <h3 id="sources-title" className="font-semibold">Sources</h3>
-      <p className="text-sm text-muted-foreground">Aucune source n’est collectée avant votre approbation. Les sources approuvées sont partagées entre vos ΞAgents selon leurs topics.{data.invalidSources > 0 && ` ${data.invalidSources} fichier(s) source illisible(s) ignoré(s).`}</p>
+      <p className="text-sm text-muted-foreground">Les sources en attente sont collectées et analysées, mais seules les sources approuvées peuvent établir une information. Les décisions par ΞAgent ou par topic se prennent dans la <Link className="underline" href="/dashboard/sources">page Sources</Link>.{data.invalidSources > 0 && ` ${data.invalidSources} fichier(s) source illisible(s) ignoré(s).`}</p>
       <ProposeForm agentId={agentId} busy={busy} act={act} />
       <SourceList title={`En attente d’approbation (${pending.length})`} sources={pending} empty="Aucune proposition." {...{ busy, act, topicName, topics, agentTopicIds }} />
       <SourceList title={`Actives (${active.length})`} sources={active} empty="Aucune source active." {...{ busy, act, topicName, topics, agentTopicIds }} />
@@ -108,13 +111,14 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
           <details>
             <summary className="cursor-pointer"><span className="font-medium break-words">{candidate.title}</span>
               <span className="block text-muted-foreground">{CANDIDATE[candidate.status] ?? candidate.status}{candidate.lane ? ` · ${LANE[candidate.lane]}` : ""} · sujet {candidate.topicId ? topicName(candidate.topicId) : "—"} · pertinence {score(candidate.relevance)} · nouveauté {score(candidate.novelty)}{candidate.noveltyKind ? ` (${NOVELTY[candidate.noveltyKind]})` : ""} · importance {score(candidate.importance)}</span>
-              {candidate.reason && <span className="block break-words">{candidate.reason}</span>}</summary>
+              {candidate.reason && <span className="block break-words">{candidate.reason}</span>}
+              <span className="block break-words text-xs">{candidate.blocker.step === "publiée" ? "Publiée." : <>Arrêt à l’étape « {candidate.blocker.step} » : {candidate.blocker.reason}</>}</span></summary>
             <div className="mt-2 space-y-2">
               {candidate.relevanceJustification && <p className="break-words">Pertinence : {candidate.relevanceJustification}{candidate.outOfScope.length ? ` Hors périmètre : ${candidate.outOfScope.join(" ; ")}.` : ""}</p>}
               {candidate.noveltyJustification && <p className="break-words">Nouveauté : {candidate.noveltyJustification}{candidate.newFacts.length ? ` Faits nouveaux : ${candidate.newFacts.join(" ; ")}.` : ""}</p>}
               {(candidate.relatedPublicationId || candidate.relatedStory) && <p>Continuité : {candidate.relatedPublicationId ? <a className="underline" href={`/dashboard/publications/${candidate.relatedPublicationId}`}>publication précédente</a> : `actualité « ${candidate.relatedStory!.title ?? "fusionnée"} »`} (lien préparé, non créé).</p>}
               {candidate.importanceFactors.length > 0 && <div><p className="font-medium">Importance {score(candidate.importance)}</p><ul className="list-disc pl-5">{candidate.importanceFactors.map(factor => <li key={factor.label}>{factor.label} : {factor.value.toFixed(2)} × {factor.weight} = {factor.contribution.toFixed(2)}</li>)}</ul>{candidate.impactReasons.length > 0 && <p className="text-muted-foreground break-words">Impact : {candidate.impactReasons.join(" ; ")}</p>}<p className="text-muted-foreground">{candidate.importanceNote}</p></div>}
-              {candidate.sources.length > 0 && <div><p className="font-medium">Sources utilisées</p><ul className="list-disc pl-5">{candidate.sources.map((source, i) => <li key={i} className="break-words">Voix {source.lineage + 1} · {source.publisher}{source.official ? " (source officielle)" : ""} — <a className="underline" href={source.url} target="_blank" rel="noopener noreferrer nofollow">article</a></li>)}</ul></div>}
+              {candidate.sources.length > 0 && <div><p className="font-medium">Sources utilisées</p><ul className="list-disc pl-5">{candidate.sources.map((source, i) => <li key={i} className="break-words">Voix {source.lineage + 1} · {source.publisher}{source.official ? " (source officielle)" : ""}{source.trust && source.trust !== "approved" ? ` (${source.trust === "pending" ? "en attente d’approbation" : "refusée"})` : ""} — <a className="underline" href={source.url} target="_blank" rel="noopener noreferrer nofollow">article</a></li>)}</ul></div>}
               {candidate.claims.length > 0 && <div><p className="font-medium">Faits extraits</p><ol className="space-y-1 pl-5" style={{ listStyle: "decimal" }}>{candidate.claims.map((claim, i) => <li key={i} className="break-words">
                 <span className="font-medium">{CLAIM_KIND[claim.kind] ?? claim.kind}{claim.attribution ? ` (${claim.attribution})` : ""}</span> — {claim.text} <span className={claim.status === "unsupported" || claim.status === "contradicted" ? "text-destructive" : "text-muted-foreground"}>[{CLAIM_STATUS[claim.status] ?? claim.status} : {claim.reason}{claim.rejectedQuotes ? ` ${claim.rejectedQuotes} citation(s) rejetée(s).` : ""}]</span>
                 {claim.quotes.length > 0 && <ul className="pl-4 text-muted-foreground">{claim.quotes.map((quote, j) => <li key={j}>« {quote.quote} » — {quote.publisher}</li>)}</ul>}
@@ -122,16 +126,6 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
               {candidate.model && <p className="text-muted-foreground">Modèle local : {candidate.model} · mis à jour {date(candidate.updatedAt)}</p>}
             </div>
           </details>
-        </li>)}</ul>}
-    </section>
-
-    <section aria-labelledby="decisions-title" className="space-y-2">
-      <h3 id="decisions-title" className="font-semibold">Journal des décisions de publication</h3>
-      {!data.decisions.length ? <p className="text-sm text-muted-foreground">Aucune décision de publication.</p> :
-        <ul className="divide-y rounded-lg border text-sm">{data.decisions.map((decision, i) => <li key={i} className="flex flex-wrap gap-x-3 gap-y-1 p-2">
-          <span>{date(decision.at)}</span><span className={decision.outcome === "published" ? "font-semibold" : decision.outcome === "abandoned" ? "text-destructive" : ""}>{DECISION[decision.outcome] ?? decision.outcome}{decision.visibility && decision.outcome === "published" ? ` (${decision.visibility === "public" ? "public" : "privé"})` : ""}</span>
-          {decision.title && <span className="break-words font-medium">{decision.title}</span>}
-          <span className="w-full break-words text-muted-foreground">{decision.reason}{decision.draftId && decision.outcome === "published" ? <> · <a className="underline" href={`/dashboard/publications/${decision.draftId}`}>voir la publication</a></> : null}</span>
         </li>)}</ul>}
     </section>
 
@@ -152,33 +146,21 @@ type Act = (task: () => Promise<unknown>, success: string) => Promise<void>;
 
 function PolicyForm({ agentId, watch, busy, act }: { agentId: string; watch: WatchDiagnostics["watch"]; busy: boolean; act: Act }) {
   const [policy, setPolicy] = useState(watch.policy);
-  const [confirmPublic, setConfirmPublic] = useState(false);
-  const needsConfirmation = policy.visibility === "public" && !watch.publicConfirmedAt;
-  const save = (next: typeof policy, success: string) => act(() => send(`/api/xiagents/${agentId}/watch`, "PATCH", { revision: watch.revision, policy: next, ...(needsConfirmation && confirmPublic ? { confirmPublic: true } : {}) }), success);
-  const number = (key: "maxPerDay" | "minIntervalMinutes" | "testMaxPerDay" | "alertThreshold" | "nightThreshold" | "maxImmediatePerDay", label: string, min: number, max: number, step = 1) =>
+  const save = (next: typeof policy, success: string) => act(() => send(`/api/xiagents/${agentId}/watch`, "PATCH", { revision: watch.revision, policy: next }), success);
+  const number = (key: "testMaxPerDay" | "alertThreshold" | "nightThreshold", label: string, min: number, max: number, step = 1) =>
     <label className="grid gap-1 text-sm">{label}<Input type="number" min={min} max={max} step={step} required value={policy[key]} onChange={event => setPolicy({ ...policy, [key]: Number(event.target.value) })} /></label>;
   return <section aria-labelledby="policy-title" className="space-y-3">
-    <h3 id="policy-title" className="font-semibold">Paramètres de veille et de fréquence</h3>
+    <h3 id="policy-title" className="font-semibold">Paramètres de veille</h3>
     <form className="space-y-3" onSubmit={event => { event.preventDefault(); void save(policy, "Paramètres de veille enregistrés."); }}>
       <fieldset disabled={busy} className="space-y-3">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={policy.enabled} onChange={event => setPolicy({ ...policy, enabled: event.target.checked })} /> Veille activée</label>
         <div className="grid gap-3 sm:grid-cols-3">
-          {number("maxPerDay", "Plafond de publications réelles (24 h)", 1, 24)}
-          {number("minIntervalMinutes", "Intervalle minimal (minutes)", 15, 10_080)}
           {number("testMaxPerDay", "Plafond de publications de test (24 h)", 1, 100)}
           {number("alertThreshold", "Seuil d’importance des alertes majeures", 0.5, 1, 0.05)}
           {number("nightThreshold", "Seuil d’importance de la fenêtre nocturne", 0, 0.95, 0.05)}
-          {number("maxImmediatePerDay", "Plafond d’alertes immédiates (24 h)", 0, 5)}
         </div>
-        <fieldset className="space-y-2 rounded-md border p-3">
-          <legend className="px-1 font-medium">Publication autonome</legend>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={policy.autoPublish} onChange={event => setPolicy({ ...policy, autoPublish: event.target.checked })} /> Mode autonome : publier automatiquement les brouillons validés</label>
-          <label className="grid gap-1 text-sm">Visibilité des publications automatiques<select className={selectClass} value={policy.visibility} onChange={event => { setPolicy({ ...policy, visibility: event.target.value as "private" | "public" }); setConfirmPublic(false); }}><option value="private">Privé (visible par vous seul)</option><option value="public">Public</option></select></label>
-          {needsConfirmation && <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={confirmPublic} onChange={event => setConfirmPublic(event.target.checked)} />Je confirme que ce ΞAgent pourra publier automatiquement des contenus publics, visibles par tous les utilisateurs de Ξ, sans relecture individuelle.</label>}
-          <p className="text-xs text-muted-foreground">Rien n’est publié tant que l’opérateur n’a pas autorisé la publication automatique sur le worker ; le public exige en plus son autorisation distincte.</p>
-        </fieldset>
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={needsConfirmation && !confirmPublic}>Enregistrer les paramètres</Button>
+          <Button type="submit">Enregistrer les paramètres</Button>
           <a href="#xiagent-control" className="inline-flex items-center px-2 text-sm underline">Pause et reprise : section Pilotage</a>
         </div>
       </fieldset>
@@ -217,7 +199,7 @@ function SourceCard({ source, busy, act, topicName, agentTopicIds }: { source: S
     <p>Sujets : {source.topicIds.map(topicName).join(" · ")}</p>
     <p>Fiabilité {source.reliability.estimated ? "estimée" : "évaluée"} : <strong>{source.reliability.level}</strong>{source.reliability.reasons.length ? ` — ${source.reliability.reasons.join(" ")}` : ""}</p>
     <p>Orientation éditoriale : {source.orientation ?? "non évaluée"}{source.ownerGroup ? ` · Groupe : ${source.ownerGroup}` : ""} · Collecte toutes les {source.pollMinutes} min</p>
-    {source.state && <p className="text-muted-foreground">Dernière collecte : {date(source.state.lastFetchAt)} ({source.state.lastOutcome ? OUTCOME[source.state.lastOutcome] ?? source.state.lastOutcome : "—"}) · Prochaine : {source.status === "approved" ? date(source.state.nextFetchAt) : "—"}{source.state.consecutiveErrors ? ` · ${source.state.consecutiveErrors} erreur(s) consécutive(s)` : ""}</p>}
+    {source.state && <p className="text-muted-foreground">Dernière collecte : {date(source.state.lastFetchAt)} ({source.state.lastOutcome ? OUTCOME[source.state.lastOutcome] ?? source.state.lastOutcome : "—"}) · Prochaine : {source.status === "approved" || source.status === "proposed" ? date(source.state.nextFetchAt) : "—"}{source.state.consecutiveErrors ? ` · ${source.state.consecutiveErrors} erreur(s) consécutive(s)` : ""}</p>}
     {editing && <fieldset disabled={busy} className="grid gap-2 rounded-md border p-2">
       <legend className="px-1 font-medium">{editing === "approve" ? "Vérifier avant approbation" : "Modifier la source"}</legend>
       <label className="grid gap-1">Éditeur<Input required maxLength={200} value={edits.publisher} onChange={event => setEdits({ ...edits, publisher: event.target.value })} /></label>
@@ -234,7 +216,7 @@ function SourceCard({ source, busy, act, topicName, agentTopicIds }: { source: S
     </fieldset>}
     {!editing && <div className="flex flex-wrap gap-2">
       {["proposed", "rejected", "disabled"].includes(source.status) && <Button type="button" size="sm" disabled={busy} onClick={() => setEditing("approve")}>{source.status === "disabled" ? "Réactiver" : "Approuver"}</Button>}
-      {source.status === "proposed" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void decide("reject", "Source rejetée.")}>Rejeter</Button>}
+      {source.status !== "rejected" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void decide("reject", "Source refusée.")}>Refuser</Button>}
       {source.status === "approved" && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void decide("disable", "Source désactivée.")}>Désactiver</Button>}
       {["proposed", "approved", "disabled"].includes(source.status) && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setEditing("update")}>Modifier</Button>}
       {!confirmDelete ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setConfirmDelete(true)}>Supprimer</Button>

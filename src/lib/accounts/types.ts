@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { GENERATOR_SLUG } from "../graph/types";
 import type { AgentLLMSettings } from "../llm/types";
+import { formatOverridesSchema } from "../watch/format";
 import type { Step, RunEvent } from "../topics/types";
 import type { Pause, ResolvedSchedule } from "../xiagents/schedule";
 
@@ -36,6 +37,10 @@ export const watchPolicySchema = z.object({
   visibility: z.enum(["private", "public"]).default("private"),
   /** Separate ceiling for immediate alerts over a rolling 24 h (0 disables alerts). */
   maxImmediatePerDay: z.number().int().min(0).max(5).default(1),
+  /** Publication limits overriding the owner's global ones (watch/format.ts); absent = all inherited. */
+  format: formatOverridesSchema.optional(),
+  /** Weekly review when nothing was published for seven days; absent = on (earlier behaviour). */
+  weeklyReview: z.boolean().optional(),
 }).strict();
 export const storedWatchPolicySchema = watchPolicySchema.extend({
   revision: z.uuid(), updatedAt: z.iso.datetime(), updatedBy: z.string().min(1),

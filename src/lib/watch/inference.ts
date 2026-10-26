@@ -1,7 +1,9 @@
 import { BlockList, isIP } from "node:net";
 import { z } from "zod";
 import type { LLMErrorCode } from "../llm/types";
+import { reportRejectedOutput } from "./events";
 import { createSafeFetch, FetchError } from "./net";
+import type { InferenceStage } from "./stages";
 
 /**
  * Local inference only (Ollama, or a server exposing the OpenAI chat API, e.g. llama.cpp, LM Studio,
@@ -23,7 +25,8 @@ export class InferenceOutputError extends Error {
   constructor(message: string, readonly code: LLMErrorCode = "invalid-response") { super(message); }
 }
 
-export type ChatRequest = { model: string; system: string; prompt: string };
+/** `stage`: the editorial step asking, for logs and its generation budget (stages.ts). */
+export type ChatRequest = { model: string; system: string; prompt: string; stage?: InferenceStage };
 /** Seam for tests: a deterministic fake implements the same contract. */
 export type Inference = { complete(request: ChatRequest): Promise<string> };
 
@@ -88,19 +91,36 @@ export function createLocalInference(config: InferenceConfig, { resolve }: { res
   };
 }
 
-/** The JSON object of a reply, tolerating code fences or text around it. */
-function extractJson(text: string) {
+/** The JSON object of a reply, tolerating code fences or text around it; throws when there is none. */
+function extractJson(text: string): unknown {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) throw new InferenceOutputError("Aucun objet JSON dans la réponse.");
+  if (start < 0 || end < start) throw new SyntaxError("no JSON object");
   return JSON.parse(text.slice(start, end + 1));
 }
 
-/** Asks for JSON matching `schema`; one more attempt on invalid output, then InferenceOutputError. */
+/** Where the answer departs from the schema: paths and Zod codes only, never the model's values. */
+const issuePaths = (error: z.ZodError) => error.issues.slice(0, 5).map(issue =>
+  `${issue.path.map(part => typeof part === "number" || (typeof part === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(part)) ? String(part) : "?").join(".") || "(racine)"}: ${issue.code}`);
+
+/**
+ * Asks for JSON matching `schema`; one more attempt on invalid output, then InferenceOutputError
+ * coded "invalid-json" (no readable JSON object) or "schema" (JSON off the expected format).
+ */
 export async function askJson<T>(inference: Inference, request: ChatRequest, schema: z.ZodType<T>, attempts = 2): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     const text = await inference.complete(attempt === 1 ? request : { ...request, prompt: `${request.prompt}\n\nTa réponse précédente était invalide. Réponds uniquement par un objet JSON conforme au format demandé.` });
-    try { return schema.parse(extractJson(text)); }
-    catch { if (attempt >= attempts) throw new InferenceOutputError("Réponse du modèle non conforme au format attendu."); }
+    let json: unknown;
+    let code: "invalid-json" | "schema";
+    let issues: string[] = [];
+    try {
+      json = extractJson(text);
+      const parsed = schema.safeParse(json);
+      if (parsed.success) return parsed.data;
+      code = "schema";
+      issues = issuePaths(parsed.error);
+    } catch { code = "invalid-json"; }
+    reportRejectedOutput({ stage: request.stage, errorKind: code, errorCode: code, attempt, issues });
+    if (attempt >= attempts) throw new InferenceOutputError(code === "schema" ? "Réponse du modèle non conforme au format attendu." : "Réponse du modèle non conforme : aucun objet JSON lisible.", code);
   }
 }

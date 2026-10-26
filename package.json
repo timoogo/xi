@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "concurrently --kill-others -n next,worker \"pnpm dev:web\" \"pnpm dev:worker\"",
+    "dev:web": "next dev",
+"dev:worker": "node --env-file=.env.local --import tsx scripts/watch-dev.ts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -18,14 +20,16 @@
     "test:topics:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/topics-browser.test.ts",
     "test:xiagents": "tsx --tsconfig tests/tsconfig.json --test tests/xiagents.test.ts tests/xiagents-calendar.test.ts tests/xiagents-deploy.test.ts tests/xiagents-orchestrator.test.ts tests/xiagents-schedule-ui.test.tsx tests/xiagents-widget.test.tsx tests/xiagents-suggest.test.ts tests/xiagents-yaml.test.ts tests/xiagents-creation.test.ts tests/xiagents-topic-refs.test.ts tests/xiagents-handles.test.ts tests/xiagents-exclusions.test.ts tests/xiagents-deploy-resume.test.ts tests/xiagents-generation.test.ts tests/account-store-cache.test.ts tests/publication-store-cache.test.ts",
     "test:xiagents:pages": "tsx --tsconfig tests/tsconfig.json --test tests/xiagents-page.test.ts",
-    "test:xiagents:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/xiagents-browser.test.ts tests/xiagents-create-browser.test.ts tests/xiagents-import-browser.test.ts tests/xiagents-widget-browser.test.ts",
+    "test:xiagents:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/xiagents-browser.test.ts tests/xiagents-create-browser.test.ts tests/xiagents-import-browser.test.ts tests/xiagents-widget-browser.test.ts tests/sources-browser.test.ts",
     "test:accounts": "tsx --tsconfig tests/tsconfig.json --test tests/accounts.test.ts",
     "test:accounts:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/accounts-browser.test.ts",
     "test:avatars": "tsx --tsconfig tests/tsconfig.json --test tests/avatars.test.ts tests/bloub.test.ts tests/bloub-avatar.test.tsx",
     "test:avatars:e2e": "tsx --tsconfig tests/tsconfig.json --test tests/avatars-browser.test.ts",
     "test:llm": "tsx --tsconfig tests/tsconfig.json --test tests/llm-ollama.test.ts tests/llm-config.test.ts tests/llm-integration.test.ts tests/llm-ui.test.tsx",
     "watch:tick": "tsx --env-file-if-exists=.env.local scripts/watch-worker.ts tick",
-    "test:watch": "tsx --tsconfig tests/tsconfig.json --test tests/watch.test.ts tests/watch-collect.test.ts tests/watch-evaluate.test.ts tests/watch-draft.test.ts tests/watch-publish.test.ts"
+    "watch:reevaluate": "tsx --env-file-if-exists=.env.local scripts/watch-worker.ts reevaluate",
+    "watch:explain": "tsx --env-file-if-exists=.env.local scripts/watch-worker.ts explain",
+    "test:watch": "tsx --tsconfig tests/tsconfig.json --test tests/watch-events.test.ts tests/watch.test.ts tests/watch-collect.test.ts tests/watch-evaluate.test.ts tests/watch-draft.test.ts tests/watch-publish.test.ts tests/watch-format.test.ts tests/watch-trust.test.ts tests/watch-source-admin.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
@@ -68,6 +72,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.6",
     "eslint": "^9",
     "eslint-config-next": "15.4.5",
     "playwright-core": "^1.64.1",

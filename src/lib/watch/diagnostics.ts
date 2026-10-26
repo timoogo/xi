@@ -1,3 +1,4 @@
+import { tooOld } from "./drafting";
 import type Database from "better-sqlite3";
 import type { AccountStore } from "../accounts/store";
 import type { Resolution } from "../llm/types";
@@ -5,6 +6,8 @@ import { splitSourcesSection } from "../publications/markdown";
 import type { PublicationStore } from "../publications/store";
 import { migrateWatchCollection, sourceState } from "./collect";
 import { migrateWatchCandidates } from "./evaluate";
+import { resolveFormat } from "./format";
+import { ownerFormat } from "./format-store";
 import { migrateWatchJobs } from "./jobs";
 import { migrateWatchDecisions } from "./publisher";
 import { migrateWatchWorker } from "./worker";
@@ -13,6 +16,37 @@ import type { Source, SourceStore } from "./sources";
 
 /** The operator's environment server (XI_INFERENCE_URL), kept for compatibility. */
 export type InferenceStatus = { configured: boolean; model: string | null; error: string | null };
+
+const CLAIM_LABELS: Record<string, string> = {
+  corroborated: "corroborée", primary: "source primaire", "single-source": "une seule voix", "pending-trust": "source en attente d’approbation",
+  qualified: "hypothèse ou interprétation", contradicted: "contredite", unsupported: "sans citation valide",
+};
+export type CandidateBlocker = { step: "évaluation" | "rédaction" | "publication" | "publiée"; reason: string };
+
+/**
+ * Where a candidate stops on the way to a publication, from stored state only: evaluation (with the
+ * verdict on its claims), drafting (lane, job), or publication (operator and agent switches, window).
+ */
+export function candidateBlocker(candidate: { status: string; reason: string | null; lane: string | null; claims: { status: string }[]; draftJob: { state: string; lastError: string | null } | null; obsolete?: boolean },
+  publishBlocks: string[], nextWindow: string | null): CandidateBlocker {
+  const { status, reason, lane, claims } = candidate;
+  if (status === "published") return { step: "publiée", reason: "Publiée." };
+  if (status === "drafted") {
+    if (publishBlocks.length) return { step: "publication", reason: publishBlocks.join(" ") };
+    return { step: "publication", reason: lane === "immediate" ? "Brouillon prêt : publication d’alerte dès que la fenêtre et les plafonds le permettent." : `Brouillon prêt : publication à la prochaine fenêtre${nextWindow ? ` (${nextWindow})` : ""}, dans la limite des plafonds.` };
+  }
+  if (status === "accepted") {
+    if (lane === "weekly") return { step: "rédaction", reason: "Importance sous le seuil de la fenêtre nocturne : réservée au bilan hebdomadaire du dimanche." };
+    if (candidate.obsolete) return { step: "rédaction", reason: "Actualité déjà trop ancienne pour sa voie : ne sera ni rédigée ni publiée." };
+    if (candidate.draftJob?.state === "failed") return { step: "rédaction", reason: `Rédaction échouée : ${candidate.draftJob.lastError ?? "erreur inconnue"}.` };
+    if (candidate.draftJob) return { step: "rédaction", reason: "Rédaction planifiée ou en cours." };
+    return { step: "rédaction", reason: "Retenue : rédaction à la prochaine passe de veille." };
+  }
+  const counts = new Map<string, number>();
+  for (const claim of claims) counts.set(claim.status, (counts.get(claim.status) ?? 0) + 1);
+  const verdict = claims.length ? ` Affirmations : ${[...counts].map(([key, n]) => `${n} ${CLAIM_LABELS[key] ?? key}`).join(", ")}.` : "";
+  return { step: "évaluation", reason: `${reason ?? (status === "evaluating" ? "Évaluation en cours." : "Non retenue.")}${verdict}` };
+}
 
 /**
  * Everything the agent page shows about its watch. Owner only: a foreign agent is 404. Plain JSON.
@@ -57,6 +91,18 @@ export async function watchDiagnostics({ db, accounts, sources, publications, ow
      WHERE instr(key, ?) > 0 ${ids.length ? `OR (kind = 'collect-source' AND json_extract(payload, '$.sourceId') IN (${marks}))` : ""} ORDER BY updated_at DESC LIMIT 30`).all(agentId, ...ids)
     .map(job => ({ kind: job.kind, state: job.state, runAfter: iso(job.run_after)!, attempts: job.attempts, maxAttempts: job.max_attempts, lastError: job.last_error, result: job.result ? JSON.parse(job.result) as Record<string, unknown> : null, updatedAt: iso(job.updated_at)!, source: publisher.get(job.key.split(":")[1]) ?? null }));
 
+  const nextWindow = running ? planAgentJobs({ id: agentId, active: true, watch }, now)[0]?.runAfter.toISOString() ?? null : null;
+  // Same switches as the publisher (publisher.ts), so a ready draft says what keeps it waiting.
+  const publishBlocks = [
+    ...(!autoPublish ? ["Publication automatique désactivée par l’opérateur (XI_WATCH_AUTOPUBLISH)."] : []),
+    ...(!running ? ["Veille arrêtée, en pause ou ΞAgent inactif."] : []),
+    ...(!watch.policy.autoPublish ? ["Mode autonome désactivé pour ce ΞAgent."] : []),
+    ...(watch.policy.visibility === "public" && !watch.publicConfirmedAt ? ["Visibilité publique non confirmée."] : []),
+    ...(watch.policy.visibility === "public" && !allowPublic ? ["Publication publique non autorisée par l’opérateur (XI_WATCH_AUTOPUBLISH_PUBLIC)."] : []),
+  ];
+  const draftJobs = new Map(db.prepare<[string], { story: string; state: string; last_error: string | null }>(
+    "SELECT json_extract(payload, '$.storyId') AS story, state, last_error FROM watch_job WHERE kind = 'draft-candidate' AND json_extract(payload, '$.agentId') = ? ORDER BY updated_at").all(agentId)
+    .map(row => [row.story, { state: row.state, lastError: row.last_error }]));
   type CandidateRow = { story_id: string; status: string; stage: string; lane: string | null; topic_id: string | null; relevance: number | null; novelty: number | null; novelty_kind: string | null; importance: number | null; related_publication_id: string | null; related_story_id: string | null; reason: string | null; data: string; model: string | null; updated_at: number; story_title: string | null; related_title: string | null };
   const candidateRows = db.prepare<[string], CandidateRow>(`SELECT c.story_id, c.status, c.stage, c.lane, c.topic_id, c.relevance, c.novelty, c.novelty_kind, c.importance, c.related_publication_id, c.related_story_id, c.reason, c.data, c.model, c.updated_at,
     s.title AS story_title, r.title AS related_title FROM watch_candidate c LEFT JOIN watch_story s ON s.id = c.story_id LEFT JOIN watch_story r ON r.id = c.related_story_id
@@ -67,7 +113,7 @@ export async function watchDiagnostics({ db, accounts, sources, publications, ow
     const stages = JSON.parse(row.data) as {
       title?: string; relevance?: { justification: string; outOfScope: string[] }; novelty?: { justification: string; newFacts: string[] };
       importance?: { factors: { label: string; weight: number; value: number; contribution: number }[]; note: string }; extraction?: { impact: { reasons: string[] } };
-      sources?: { publisher: string; url: string; lineage: number; official: boolean }[];
+      sources?: { publisher: string; url: string; lineage: number; official: boolean; trust?: "approved" | "pending" | "denied" }[];
     };
     return {
       storyId: row.story_id, title: row.story_title ?? stages.title ?? "Actualité fusionnée ou expirée", status: row.status, stage: row.stage, lane: row.lane, topicId: row.topic_id,
@@ -77,6 +123,7 @@ export async function watchDiagnostics({ db, accounts, sources, publications, ow
       relatedPublicationId: row.related_publication_id, relatedStory: row.related_story_id ? { id: row.related_story_id, title: row.related_title } : null,
       importanceFactors: stages.importance?.factors ?? [], importanceNote: stages.importance?.note ?? null, impactReasons: stages.extraction?.impact.reasons ?? [],
       sources: stages.sources ?? [],
+      blocker: candidateBlocker({ status: row.status, reason: row.reason, lane: row.lane, claims: claimRows.filter(claim => claim.story_id === row.story_id), draftJob: draftJobs.get(row.story_id) ?? null, obsolete: row.status === "accepted" && tooOld(db, owner, row.story_id, row.lane, now.getTime()) }, publishBlocks, nextWindow),
       claims: claimRows.filter(claim => claim.story_id === row.story_id).map(claim => ({
         text: claim.text, kind: claim.kind, attribution: claim.attribution, status: claim.status, reason: claim.reason, independent: claim.independent_count,
         quotes: (JSON.parse(claim.evidence) as { quotes: { publisher: string; quote: string; url: string }[] }).quotes.map(({ publisher, quote, url }) => ({ publisher, quote, url })),
@@ -105,14 +152,23 @@ export async function watchDiagnostics({ db, accounts, sources, publications, ow
   const decisions = db.prepare<[string], { story_id: string | null; draft_id: string | null; lane: string | null; outcome: string; reason: string; visibility: string | null; at: number; title: string | null }>(
     "SELECT d.story_id, d.draft_id, d.lane, d.outcome, d.reason, d.visibility, d.at, s.title FROM watch_decision d LEFT JOIN watch_story s ON s.id = d.story_id WHERE d.agent_id = ? ORDER BY d.at DESC LIMIT 30").all(agentId)
     .map(row => ({ storyId: row.story_id, title: row.title, draftId: row.draft_id, lane: row.lane, outcome: row.outcome, reason: row.reason, visibility: row.visibility, at: iso(row.at)! }));
+  // Drafting failures and refusals: candidates held after a drafting attempt (limits, sources, model's decline).
+  const draftFailures = db.prepare<[string], { story_id: string; reason: string | null; data: string; updated_at: number; title: string | null }>(
+    `SELECT c.story_id, c.reason, c.data, c.updated_at, s.title FROM watch_candidate c LEFT JOIN watch_story s ON s.id = c.story_id
+     WHERE c.agent_id = ? AND c.status = 'held' AND json_extract(c.data, '$.drafting') IS NOT NULL ORDER BY c.updated_at DESC LIMIT 20`).all(agentId)
+    .map(row => {
+      const data = JSON.parse(row.data) as { title?: string; drafting?: { attempts: { format: string; messages: number; problems: string[] }[]; declined?: string } };
+      return { storyId: row.story_id, title: row.title ?? data.title ?? "Actualité", reason: row.reason, at: iso(row.updated_at)!, declined: data.drafting?.declined ?? null, attempts: data.drafting?.attempts ?? [] };
+    });
+  const global = ownerFormat(db, owner);
+  const format = { global, overrides: watch.policy.format ?? {}, resolved: resolveFormat(global.format, watch.policy.format) };
   const workerRow = db.prepare<[], { last_tick_at: number | null; summary: string | null; last_error: string | null; last_error_at: number | null }>("SELECT last_tick_at, summary, last_error, last_error_at FROM watch_worker WHERE id = 'worker'").get();
   // The timer runs every 10 minutes: no pass for 30 minutes means the worker is not running.
   const worker = { lastTickAt: iso(workerRow?.last_tick_at), stale: !workerRow?.last_tick_at || now.getTime() - workerRow.last_tick_at > 30 * 60_000, summary: workerRow?.summary ? JSON.parse(workerRow.summary) as Record<string, unknown> : null, lastError: workerRow?.last_error ?? null, lastErrorAt: iso(workerRow?.last_error_at) };
   const failedJobs = (db.prepare<[string], { n: number }>("SELECT count(*) AS n FROM watch_job WHERE state = 'failed' AND instr(key, ?) > 0").get(agentId))!.n;
 
-  const nextWindow = running ? planAgentJobs({ id: agentId, active: true, watch }, now)[0]?.runAfter.toISOString() ?? null : null;
   return {
-    watch, running, autoPublish, allowPublic, inference, llm, nextWindow, invalidSources: invalid, candidates, drafts, decisions, worker, failedJobs,
+    watch, running, publishBlocks, autoPublish, allowPublic, inference, llm, nextWindow, invalidSources: invalid, candidates, drafts, decisions, worker, failedJobs, format, draftFailures,
     sources: relevant.map(withState),
     fetchLog,
     stories: stories.map(story => ({

@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { AccountStore } from "../accounts/store";
 import { TopicError } from "../topics/types";
 import { prepareDraft } from "../watch/drafting";
-import { relaunchEvaluation } from "../watch/evaluate";
+import { relaunchEvaluation, relaunchHeld } from "../watch/evaluate";
 import { createJobQueue, PRIORITY } from "../watch/jobs";
 import { catchUp, finishRun, grant, startRun } from "../watch/orchestrator";
 import type { SourceStore } from "../watch/sources";
@@ -28,7 +28,7 @@ async function ownedAgent(accounts: AccountStore, owner: string, id: string) {
 export const controlSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("pause"), resumeAt: z.iso.datetime().nullable(), resumeWith: z.enum(["now", "catch-up"]) }).strict(),
   z.object({ action: z.literal("resume"), resumeWith: z.enum(["now", "catch-up"]) }).strict(),
-  z.object({ action: z.literal("run"), task: z.literal("watch"), storyId: z.undefined().optional() }).strict(),
+  z.object({ action: z.literal("run"), task: z.enum(["watch", "reanalyze-held"]), storyId: z.undefined().optional() }).strict(),
 ]).or(z.object({ action: z.literal("run"), task: z.enum(["reanalyze", "prepare"]), storyId: z.string().min(1).max(200) }).strict());
 
 export async function control({ db, accounts, sources, now = () => new Date() }: Deps, owner: string, id: string, input: unknown) {
@@ -65,10 +65,15 @@ export async function control({ db, accounts, sources, now = () => new Date() }:
     // One hour of monitoring outside the calendar: collection now, then evaluation and drafting by the next passes.
     grant(db, { id: `manual:${runId}`, agentId: id, owner, kind: "manual", from: at, until: at + HOUR, reason: "Veille lancée manuellement." }, at);
     const topics = new Set([agent.primaryTopicId, ...agent.secondaryTopicIds]);
-    const approved = (await sources.approved()).filter(source => source.owner === owner && source.topicIds.some(topic => topics.has(topic)));
-    for (const source of approved) queue.enqueue({ kind: "collect-source", key: `collect-source:manual:${runId}:${source.id}`, payload: { sourceId: source.id, owner, agentId: id, trigger: "manual" }, runAfter: at, maxAttempts: 3, priority: PRIORITY.manual });
-    const log = approved.length ? `Veille manuelle : ${approved.length} collecte(s) planifiée(s) ; évaluation et rédaction autorisées hors calendrier pendant 1 h. Exécution au prochain passage du worker.` : "Veille manuelle : aucune source approuvée à collecter.";
-    return { runId: record("manual-watch", log, { sources: approved.length, until: new Date(at + HOUR).toISOString() }), planned: approved.length };
+    const collectable = (await sources.collectable()).filter(source => source.owner === owner && source.topicIds.some(topic => topics.has(topic)));
+    for (const source of collectable) queue.enqueue({ kind: "collect-source", key: `collect-source:manual:${runId}:${source.id}`, payload: { sourceId: source.id, owner, agentId: id, trigger: "manual" }, runAfter: at, maxAttempts: 3, priority: PRIORITY.manual });
+    const log = collectable.length ? `Veille manuelle : ${collectable.length} collecte(s) planifiée(s) ; évaluation et rédaction autorisées hors calendrier pendant 1 h. Exécution au prochain passage du worker.` : "Veille manuelle : aucune source approuvée ou en attente à collecter.";
+    return { runId: record("manual-watch", log, { sources: collectable.length, until: new Date(at + HOUR).toISOString() }), planned: collectable.length };
+  }
+  if (command.task === "reanalyze-held") {
+    const { relaunched, skipped } = relaunchHeld(db, queue, agent, at, runId);
+    const log = `${relaunched.length} analyse(s) suspendue(s) relancée(s)${skipped.length ? `, ${skipped.length} écartée(s) : ${skipped.map(entry => entry.reason).join(" ; ")}` : ""}. Évaluation par le pipeline normal ; aucune publication.`;
+    return { runId: record("manual-reanalyze-held", log, { relaunched, skipped }), relaunched, skipped };
   }
   if (command.task === "reanalyze" && command.storyId) {
     const { previous } = relaunchEvaluation(db, queue, agent, command.storyId, at, runId);

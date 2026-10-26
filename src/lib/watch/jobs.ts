@@ -53,6 +53,14 @@ export const PRIORITY = { ordinary: 0, manual: 5, major: 10 } as const;
  */
 export const AGING_MS = 6 * 60_000;
 const MAX_AGING = 20;
+/**
+ * Pipeline stage: drafting an already accepted candidate ranks just below a fresh major event, so a
+ * backlog of evaluations (a bulk re-analysis) never holds back the next publication. Aging still
+ * applies: evaluations waiting about an hour longer pass first, and drafts are few (one per accepted
+ * candidate). No preemption: a running job keeps its lease and the concurrency limits hold.
+ */
+export const STAGE_BONUS: Record<string, number> = { "draft-candidate": PRIORITY.major - 1 };
+const stageBonus = `CASE kind ${Object.entries(STAGE_BONUS).map(([kind, bonus]) => `WHEN '${kind}' THEN ${bonus}`).join(" ")} ELSE 0 END`;
 /** At most `max` jobs of these kinds may hold a live lease at once, across every process. */
 export type ConcurrencyLimit = { kinds: readonly string[]; max: number };
 
@@ -94,7 +102,7 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
   }
 
   /**
-   * Claims the due job of the given kinds with the highest aged priority (oldest first on ties).
+   * Claims the due job of the given kinds with the highest aged priority plus stage bonus (oldest first on ties).
    * Kinds whose concurrency limit is reached are skipped. BEGIN IMMEDIATE: one claimer at a time across processes.
    */
   const claimTransaction = db.transaction((wanted: string[], leaseMs: number, limits: readonly ConcurrencyLimit[]) => {
@@ -106,7 +114,7 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
     const placeholders = kinds.map(() => "?").join(", ");
     const due = db.prepare<unknown[], Row>(`SELECT * FROM watch_job WHERE kind IN (${placeholders})
       AND ((state = 'pending' AND run_after <= ?) OR (state = 'running' AND lease_until <= ?))
-      ORDER BY priority + min((? - run_after) / ${AGING_MS}, ${MAX_AGING}) DESC, run_after, created_at, rowid LIMIT 1`);
+      ORDER BY priority + ${stageBonus} + min((? - run_after) / ${AGING_MS}, ${MAX_AGING}) DESC, run_after, created_at, rowid LIMIT 1`);
     for (;;) {
       const row = due.get(...kinds, at, at, at);
       if (!row) return null;

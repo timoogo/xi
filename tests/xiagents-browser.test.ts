@@ -164,24 +164,30 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   const watch = page.getByRole("region", { name: "Veille autonome" });
   await watch.getByText("Désactivée", { exact: true }).waitFor();
   await watch.getByLabel("Veille activée").check();
-  await watch.getByLabel("Plafond de publications réelles (24 h)").fill("2");
   await watch.getByRole("button", { name: "Enregistrer les paramètres" }).click();
   await watch.getByRole("status").filter({ hasText: "Paramètres de veille enregistrés." }).waitFor();
   await watch.getByText("Active", { exact: true }).waitFor();
+  // Publications section: frequency and an agent-level format override (empty = account limit).
+  const publishing = watch.getByRole("region", { name: "Publications" });
+  await publishing.getByLabel("Plafond de publications réelles (24 h)").fill("2");
+  await publishing.getByLabel("Longueur maximale d’un post (caractères)").fill("260");
+  await publishing.getByRole("button", { name: "Enregistrer les publications" }).click();
+  await watch.getByRole("status").filter({ hasText: "Paramètres de publication enregistrés." }).waitFor();
+  await publishing.getByText("post ≤ 260 caractères", { exact: false }).waitFor();
   // Pause lives in the Pilotage section (pause details and resume choice recorded).
   const control = page.getByRole("region", { name: "Pilotage" });
   await control.getByRole("button", { name: "Mettre en pause" }).click();
   await control.getByRole("status").filter({ hasText: "Pause indéfinie." }).waitFor();
   await watch.getByText("En pause", { exact: true }).waitFor();
-  assert.deepEqual((await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json()).policy, { enabled: true, paused: true, maxPerDay: 2, minIntervalMinutes: 240, testMaxPerDay: 10, alertThreshold: 0.85, nightThreshold: 0.45, autoPublish: false, visibility: "private", maxImmediatePerDay: 1 });
+  assert.deepEqual((await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json()).policy, { enabled: true, paused: true, maxPerDay: 2, minIntervalMinutes: 240, testMaxPerDay: 10, alertThreshold: 0.85, nightThreshold: 0.45, autoPublish: false, visibility: "private", maxImmediatePerDay: 1, format: { maxPostChars: 260 } });
   // Autonomous public mode: its own confirmation, saving is impossible without it.
-  await watch.getByLabel("Mode autonome", { exact: false }).check();
-  await watch.getByLabel("Visibilité des publications automatiques").selectOption("public");
-  const save = watch.getByRole("button", { name: "Enregistrer les paramètres" });
+  await publishing.getByLabel("Mode autonome", { exact: false }).check();
+  await publishing.getByLabel("Visibilité des publications automatiques").selectOption("public");
+  const save = publishing.getByRole("button", { name: "Enregistrer les publications" });
   assert.equal(await save.isDisabled(), true);
-  await watch.getByLabel("Je confirme que ce ΞAgent pourra publier automatiquement des contenus publics", { exact: false }).check();
+  await publishing.getByLabel("Je confirme que ce ΞAgent pourra publier automatiquement des contenus publics", { exact: false }).check();
   await save.click();
-  await watch.getByRole("status").filter({ hasText: "Paramètres de veille enregistrés." }).waitFor();
+  await watch.getByRole("status").filter({ hasText: "Paramètres de publication enregistrés." }).waitFor();
   await watch.getByText("activé (public)", { exact: false }).waitFor();
   const autonomous = (await (await alice.request.get(`${app.origin}/api/xiagents/${agentId}/watch`)).json());
   assert.deepEqual([autonomous.policy.autoPublish, autonomous.policy.visibility, !!autonomous.publicConfirmedAt], [true, "public", true]);

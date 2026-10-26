@@ -1,3 +1,5 @@
+import { setOwnerFormat } from "../src/lib/watch/format-store";
+import { DEFAULT_FORMAT } from "../src/lib/watch/format";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -248,13 +250,13 @@ test("pre-publication checks: sources, quotes, edits, rejections, newer informat
   // Owner edited the draft after validation: not published automatically, still approvable by hand.
   const edited = await w.drafted({ title: "Le préfet interdit une manifestation", fact: "Le préfet de police a interdit la manifestation prévue samedi" });
   const current = await w.publications.get({ id: "alice" }, edited.id);
-  await reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: edited.id, input: { action: "update", revision: current.revision, messages: ["Samedi, le préfet de police a interdit la manifestation prévue samedi."] } });
+  await reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: edited.id, format: DEFAULT_FORMAT, input: { action: "update", revision: current.revision, messages: ["Samedi, le préfet de police a interdit la manifestation prévue samedi."] } });
   const editedAttempt = await publisher.attempt(w.agentId, edited.story, "night");
   assert.deepEqual([editedAttempt.outcome, /approbation manuelle/.test(editedAttempt.reason), w.candidate(edited.story).status], ["skipped", true, "held"]);
   assert.equal((await w.publications.get({ id: "alice" }, edited.id)).status, "draft");
   // Rejected by the owner: the candidate is no longer drafted, nothing happens.
   const rejected = await w.drafted({ title: "Le conseil régional vote son budget", fact: "Le conseil régional de Bretagne a voté son budget primitif" });
-  await reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: rejected.id, input: { action: "reject", revision: (await w.publications.get({ id: "alice" }, rejected.id)).revision } });
+  await reviewDraft({ db: w.db, publications: w.publications, owner: "alice", agentId: w.agentId, draftId: rejected.id, format: DEFAULT_FORMAT, input: { action: "reject", revision: (await w.publications.get({ id: "alice" }, rejected.id)).revision } });
   assert.equal((await publisher.attempt(w.agentId, rejected.story, "night")).outcome, "skipped");
   w.db.prepare("UPDATE watch_candidate SET status = 'drafted' WHERE story_id = ?").run(rejected.story); // even if the candidate were wrongly re-marked
   const forced = await publisher.attempt(w.agentId, rejected.story, "night");
@@ -338,4 +340,22 @@ test("DST: publications land inside 03:00–06:00 Paris on the spring-forward an
     assert.ok(published && published.publishedAt.getTime() >= Date.parse(start) && published.publishedAt.getTime() < Date.parse(end));
     assert.equal(w.candidate(story.story).status, "published");
   }
+});
+
+test("format limits re-checked at publication; weekly review can be turned off", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  const a = await w.drafted({ title: "Le Conseil constitutionnel valide la loi logement", fact: "Le Conseil constitutionnel a validé mardi la loi sur le logement" });
+  // Limits tightened after drafting: the draft is not published, never truncated; held with the reason.
+  setOwnerFormat(w.db, "alice", { revision: null, format: { ...DEFAULT_FORMAT, maxPostChars: 50, targetPostMin: 50, targetPostMax: 50 } });
+  const refused = await createPublisher({ db: w.db, accounts: w.accounts, sources: w.sources, publications: w.publications, settings: w.settings, now: () => w.clock.now }).attempt(w.agentId, a.story, "night");
+  assert.equal(refused.outcome, "abandoned");
+  assert.match(refused.reason, /hors des limites de publication actuelles : Message 1 : 65 caractères, au-delà de la limite de 50/);
+  assert.deepEqual([w.candidate(a.story).status, (await w.publications.get({ id: "alice" }, a.id)).status], ["held", "draft"]);
+  assert.equal(w.publications.agentPublications(w.agentId).length, 0);
+  assert.equal(w.decisions().at(-1)!.outcome, "abandoned");
+
+  const sunday = await world(t, "2026-01-11T03:30:00Z");
+  await sunday.policy({ weeklyReview: false });
+  const job = { id: "w", kind: "weekly-review", key: "w", payload: { agentId: sunday.agentId }, state: "running" as const, runAfter: 0, attempts: 1, maxAttempts: 3, leaseToken: "t", leaseUntil: 0, lastError: null, result: null, createdAt: 0, updatedAt: 0 };
+  assert.deepEqual(await sunday.handlers()["weekly-review"](job), { status: "done", result: { outcome: "skipped", reason: "Bilan hebdomadaire désactivé pour ce ΞAgent." } });
 });

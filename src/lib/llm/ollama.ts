@@ -46,15 +46,17 @@ const MEMORY = /requires more system memory|out of memory|insufficient memory|cu
 const CONTEXT = /context length|context window|exceeds|too long|too many tokens/i;
 const MISSING = /model .*not found|not found, try pulling|no such model|pull the model/i;
 
+/** The transport error is kept as `cause`: its system code (ECONNRESET…) is what diagnoses a failure. */
 function fromFetch(error: unknown): never {
-  if (error instanceof InterruptedFetchError) throw new InferenceUnavailableError("Connexion à Ollama interrompue pendant la réponse.", null, "interrupted");
+  const caused = <T extends Error>(wrapped: T) => Object.assign(wrapped, { cause: error });
+  if (error instanceof InterruptedFetchError) throw caused(new InferenceUnavailableError("Connexion à Ollama interrompue pendant la réponse.", null, "interrupted"));
   if (error instanceof FetchError) {
-    if (error.code === "redirect") throw new InferenceConfigError("Redirection refusée : indiquez l’adresse directe du serveur Ollama.", "blocked");
-    if (error.code === "blocked-address" || error.code === "blocked-url") throw new InferenceConfigError("Destination refusée : le serveur doit être sur le réseau local ou autorisé par l’opérateur.", "blocked");
-    if (error.code === "timeout") throw new InferenceUnavailableError("Délai de réponse d’Ollama dépassé.", null, "timeout");
-    if (error.code === "too-large") throw new InferenceOutputError("Réponse d’Ollama trop volumineuse.", "invalid-response");
+    if (error.code === "redirect") throw caused(new InferenceConfigError("Redirection refusée : indiquez l’adresse directe du serveur Ollama.", "blocked"));
+    if (error.code === "blocked-address" || error.code === "blocked-url") throw caused(new InferenceConfigError("Destination refusée : le serveur doit être sur le réseau local ou autorisé par l’opérateur.", "blocked"));
+    if (error.code === "timeout") throw caused(new InferenceUnavailableError("Délai de réponse d’Ollama dépassé.", null, "timeout"));
+    if (error.code === "too-large") throw caused(new InferenceOutputError("Réponse d’Ollama trop volumineuse.", "invalid-response"));
   }
-  throw new InferenceUnavailableError("Serveur Ollama injoignable (connexion refusée, nom introuvable ou réseau indisponible).", null, "unreachable");
+  throw caused(new InferenceUnavailableError("Serveur Ollama injoignable (connexion refusée, nom introuvable ou réseau indisponible).", null, "unreachable"));
 }
 
 /** Non-200 status: Ollama explains in `{error}`; only its category is used, never its text. */
@@ -136,10 +138,10 @@ export function createOllamaClient({ baseUrl, policy, fetch }: { baseUrl: string
       const { message, done, done_reason: reason } = parsed.data;
       const unfinished = done === false || reason === "length";
       if (unfinished && !message.content.trim() && message.thinking?.trim()) {
-        throw new InferenceOutputError(`Réponse incomplète : le modèle a épuisé la limite de génération (${options.maxTokens} tokens) en raisonnement (thinking) sans produire de réponse.`, "invalid-response");
+        throw new InferenceOutputError(`Réponse incomplète : le modèle a épuisé la limite de génération (${options.maxTokens} tokens) en raisonnement (thinking) sans produire de réponse.`, "truncated");
       }
-      if (structured && unfinished) throw new InferenceOutputError(`Réponse incomplète : la génération s’est arrêtée (${reason === "length" ? `limite de ${options.maxTokens} tokens atteinte` : "réponse non terminée"}) avant la fin de l’objet JSON.`, "invalid-response");
-      if (structured && !message.content.trim()) throw new InferenceOutputError("Réponse vide du modèle : aucun objet JSON produit.", "invalid-response");
+      if (structured && unfinished) throw new InferenceOutputError(`Réponse incomplète : la génération s’est arrêtée (${reason === "length" ? `limite de ${options.maxTokens} tokens atteinte` : "réponse non terminée"}) avant la fin de l’objet JSON.`, "truncated");
+      if (structured && !message.content.trim()) throw new InferenceOutputError("Réponse vide du modèle : aucun objet JSON produit.", "invalid-json");
       return message.content;
     },
   };

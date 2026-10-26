@@ -132,14 +132,55 @@ test("ΞAgent management page: owner renders identity, topics and history; missi
     const decide = (cookie: string, data: unknown, origin?: string) => postJson(cookie, `/api/watch/sources/${source.id}`, data, origin);
     assert.equal((await decide(other, { action: "approve", revision: source.revision })).status, 404);
     assert.equal((await decide(owner, { action: "approve", revision: source.revision }, "https://foreign.example")).status, 403);
-    assert.equal((await decide(owner, { action: "disable", revision: source.revision })).status, 409);
+    assert.equal((await decide(owner, { action: "enable", revision: source.revision })).status, 409);
     assert.equal((await decide(owner, { action: "approve", revision: source.revision, edits: { topicIds: [randomUUID()] } })).status, 400);
     const approved = await (await decide(owner, { action: "approve", revision: source.revision, note: "Vérifiée", edits: { orientation: "Non déclarée" } })).json();
     assert.deepEqual([approved.status, approved.orientation, approved.history.at(-1).action], ["approved", "Non déclarée", "approved"]);
     assert.equal((await decide(owner, { action: "reject", revision: source.revision })).status, 409, "stale revision");
     const page = await (await read(owner, path)).text();
-    for (const text of ["Veille autonome", "Paramètres de veille et de fréquence", "Le Quotidien", "Actives (1)", "Publication automatique", "Candidats éditoriaux", "Inférence locale", "Aucune instance IA", "Aucun service d’IA distant", "Mode autonome", "non autorisée (XI_WATCH_AUTOPUBLISH)", "Plafond d’alertes immédiates", "Journal des décisions de publication", "aucun passage enregistré"]) assert.ok(page.includes(text), text);
+    for (const text of ["Veille autonome", "Paramètres de veille", "Publications", "Échecs de génération et refus de validation", "Limites appliquées", "Le Quotidien", "Actives (1)", "Publication automatique", "Candidats éditoriaux", "Inférence locale", "Aucune instance IA", "Aucun service d’IA distant", "Mode autonome", "non autorisée (XI_WATCH_AUTOPUBLISH)", "Plafond d’alertes immédiates", "Journal des décisions de publication", "aucun passage enregistré"]) assert.ok(page.includes(text), text);
     assert.ok(!(await (await read(other, path)).text()).includes("Le Quotidien"));
+
+    // Trust matrix: owner-only API and page, Origin-checked decisions, foreign scopes refused.
+    const trust = (cookie: string, data: unknown, origin?: string) => postJson(cookie, "/api/watch/trust", data, origin);
+    const matrix = await (await read(owner, "/api/watch/trust")).json();
+    assert.deepEqual([matrix.sources.map((s: { id: string }) => s.id), matrix.agents.map((a: { id: string }) => a.id)], [[source.id], [agent.id]]);
+    assert.deepEqual(matrix.decisions.map((d: { scope: string; decision: string }) => [d.scope, d.decision]), [["global", "approved"]]);
+    assert.deepEqual((await (await read(other, "/api/watch/trust")).json()).sources, []);
+    assert.equal((await fetch(app.origin + "/api/watch/trust")).status, 401);
+    const denial = { sourceId: source.id, scope: "agent", scopeId: agent.id, decision: "denied" };
+    assert.equal((await trust(other, denial)).status, 404);
+    assert.equal((await trust(owner, denial, "https://foreign.example")).status, 403);
+    assert.equal((await trust(owner, { ...denial, scopeId: randomUUID() })).status, 404);
+    assert.equal((await trust(owner, { ...denial, decision: "maybe" })).status, 400);
+    assert.deepEqual(await (await trust(owner, denial)).json(), { sourceId: source.id, scope: "agent", scopeId: agent.id, decision: "denied", changed: true, rechecked: 0 });
+    const sourcesPage = await (await read(owner, "/dashboard/sources")).text();
+    for (const text of ["Niveau de confiance", "Tous les ΞAgents", "Le Quotidien", "feeds.example", `@${agent.handle}`, "Globale", "1 décision spécifique", "Périmètre"]) assert.ok(sourcesPage.includes(text), text);
+    assert.ok(!(await (await read(other, "/dashboard/sources")).text()).includes("Le Quotidien"));
+
+    // Source CRUD: creation validated and deduplicated before any request, detail and page owner-only.
+    const create = (cookie: string, data: unknown, origin?: string) => postJson(cookie, "/api/watch/sources", data, origin);
+    assert.equal((await fetch(app.origin + "/api/watch/sources", { method: "POST", headers: { Origin: app.origin, "Content-Type": "application/json" }, body: "{}" })).status, 401);
+    assert.equal((await create(owner, { url: "feeds.example/rss", topicIds: [topic.topicId] }, "https://foreign.example")).status, 403);
+    assert.equal((await create(owner, { url: "ftp://feeds.example/rss", topicIds: [topic.topicId] })).status, 400);
+    assert.equal((await create(owner, { url: "feeds.example/rss", topicIds: [randomUUID()] })).status, 400);
+    assert.equal((await create(other, { url: "feeds.example/rss", topicIds: [topic.topicId] })).status, 400, "another owner's topics");
+    const duplicate = await (await create(owner, { url: "FEEDS.example/rss?utm_source=x", topicIds: [topic.topicId] })).json();
+    assert.deepEqual([duplicate.duplicate, duplicate.created, duplicate.source.id], [true, false, source.id]);
+    for (const url of ["http://127.0.0.1/rss", "http://169.254.169.254/latest/meta-data"]) assert.equal((await create(owner, { url, topicIds: [topic.topicId] })).status, 422, url);
+    const detail = await (await read(owner, `/api/watch/sources/${source.id}`)).json();
+    assert.deepEqual([detail.source.publisher, detail.globalTrust, detail.collector.lastFetchAt, detail.items], ["Le Quotidien", "approved", null, []]);
+    assert.deepEqual(detail.effective.map((row: { agentId: string; trust: string }) => [row.agentId, row.trust]), [[agent.id, "denied"]]);
+    assert.equal((await read(other, `/api/watch/sources/${source.id}`)).status, 404);
+    assert.equal((await read(owner, `/api/watch/sources/${randomUUID()}`)).status, 404);
+    assert.equal((await read(owner, "/api/watch/sources/not-an-id")).status, 404);
+    assert.equal((await fetch(`${app.origin}/api/watch/sources/${source.id}`)).status, 401);
+    const sourcePage = await read(owner, `/dashboard/sources/${source.id}`);
+    assert.equal(sourcePage.status, 200);
+    const sourceHtml = await sourcePage.text();
+    for (const text of ["Le Quotidien", "https://feeds.example/rss", "Flux RSS/Atom", "Jamais collectée", "Aucune actualité collectée", "Historique des décisions", "Retour aux sources", "Supprimer"]) assert.ok(sourceHtml.includes(text), text);
+    assert.equal((await read(other, `/dashboard/sources/${source.id}`)).status, 404);
+    assert.ok(!(await (await read(other, `/dashboard/sources/${source.id}`)).text()).includes("feeds.example/rss"));
 
     // A watch draft (written here as the worker would): private, reviewed by the owner only.
     const draftId = randomUUID();

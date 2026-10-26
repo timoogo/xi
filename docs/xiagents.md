@@ -156,9 +156,10 @@ même déploiement ; le serveur revalide tout (`deploymentSpecSchema`).
      globale du propriétaire, docs/llm.md) est facultatif. Il ne remplace jamais un champ modifié à la main
      (`applySuggestion`) et liste les choix conservés ; s’il est indisponible,
      la modale le dit.
-   - Sources suggérées ou importées : jamais approuvées automatiquement. Seules
-     les sources approuvées sont collectées, les exclues deviennent des sources
-     rejetées, les non décidées ne sont pas enregistrées.
+   - Sources suggérées ou importées : jamais approuvées automatiquement. Les
+     sources approuvées sont enregistrées comme telles, les exclues deviennent des
+     sources refusées, les non décidées ne sont pas enregistrées (voir la matrice
+     de confiance, docs/watch.md).
    - « Exporter le YAML » est disponible à chaque étape à partir d’ici.
    - Paramètres avancés → Intelligence artificielle : hériter de la configuration
      globale (défaut), autre modèle, ou autre instance Ollama, avec paramètres

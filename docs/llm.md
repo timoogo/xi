@@ -53,7 +53,9 @@ ancienne référence `modelRef` comme choix de modèle sur l'instance globale.
 
 Options : `temperature`, `maxTokens` (`num_predict`), `contextSize` (`num_ctx`), `timeoutMs` ;
 valeurs intégrées (température 0, 2 048 jetons, contexte du modèle, 180 s) ← instance ← agent. Le
-décodage reste déterministe (graine fixe) pour qu'une tâche reprise ne dérive pas.
+décodage reste déterministe (graine fixe) pour qu'une tâche reprise ne dérive pas. Dans le moteur de
+veille, chaque étape relève `maxTokens` au minimum qu'exige sa réponse (extraction 2 048, voir
+`docs/watch.md`, « Journaux du worker ») ; une valeur plus haute n'est jamais réduite.
 
 ## Intégration au moteur
 

@@ -82,7 +82,8 @@ export function createProviderFetch(policy: DestinationPolicy, { resolve = (host
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (error) rejectPromise(error instanceof FetchError ? error : new FetchError("network", "Connexion refusée."));
+        // The socket error (ECONNRESET, ECONNREFUSED…) stays available as `cause` for diagnosis.
+        if (error) rejectPromise(error instanceof FetchError ? error : Object.assign(new FetchError("network", "Connexion refusée."), { cause: error }));
         else resolvePromise(value!);
       };
       const client = url.protocol === "https:" ? https : http;
@@ -105,7 +106,7 @@ export function createProviderFetch(policy: DestinationPolicy, { resolve = (host
           } else chunks.push(chunk);
         });
         response.on("end", () => { ended = true; finish(null, { status, url: url.href, headers: responseHeaders, body: Buffer.concat(chunks) }); });
-        response.on("error", () => finish(new InterruptedFetchError()));
+        response.on("error", error => finish(Object.assign(new InterruptedFetchError(), { cause: error })));
         response.on("close", () => { if (!ended) finish(new InterruptedFetchError()); });
       });
       const timer = setTimeout(() => { request.destroy(); finish(new FetchError("timeout", "Délai dépassé.")); }, remaining);

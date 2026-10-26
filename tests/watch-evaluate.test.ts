@@ -12,13 +12,14 @@ import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
 import { watchDiagnostics } from "../src/lib/watch/diagnostics";
-import { chooseLane, scoreImportance, verificationOutcome, verifyClaims, type EvidenceSource, type Extraction } from "../src/lib/watch/evaluate";
+import { articleBody, chooseLane, extractionSchema, PROMPT_VERSION, scoreImportance, verificationOutcome, verifyClaims, type EvidenceSource, type Extraction } from "../src/lib/watch/evaluate";
 import { askJson, createLocalInference, InferenceConfigError, InferenceOutputError, InferenceUnavailableError, inferenceConfigFromEnv, isLocalAddress, type ChatRequest } from "../src/lib/watch/inference";
 import { createJobQueue } from "../src/lib/watch/jobs";
 import { createPoliteFetch, createSafeFetch } from "../src/lib/watch/net";
 import { createSourceStore } from "../src/lib/watch/sources";
 import { recordEntries } from "../src/lib/watch/stories";
-import { engineHandlers, tick } from "../src/lib/watch/worker";
+import { migrateWatchDecisions } from "../src/lib/watch/publisher";
+import { engineHandlers, reevaluate, tick } from "../src/lib/watch/worker";
 import { z } from "zod";
 import { bindTo } from "./helpers/llm";
 
@@ -99,13 +100,35 @@ test("inference client: unavailable server, errors and invalid replies are typed
   await assert.rejects(askJson(replies("{\"value\": \"quatre\"}"), request, schema), InferenceOutputError);
 });
 
+test("pipeline: an extraction cut by the generation limit is a failure, never a verification", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  const { db, accounts, sources, politiks } = w;
+  const agentId = await w.agent("alice", politiks);
+  const a = await w.approved("alice", "https://a.example/rss", "Source A", [politiks]);
+  let clock = Date.parse("2026-01-15T12:00:00Z");
+  recordEntries(db, { owner: "alice", source: { ...a, ownerGroup: null }, entries: [{ url: "https://a.example/1", guid: null, title: "Le gouvernement présente son budget", summary: "Le gouvernement a présenté mercredi le projet de budget pour 2027.", publishedAt: null, author: null, credits: [], links: [] }], now: clock });
+  const model = fakeModel(stage => {
+    if (stage === "relevance") return { relevant: true, score: 0.8, topic: "T1", justification: "Budget de l’État.", outOfScope: [] };
+    throw new InferenceOutputError("Réponse incomplète : la génération s’est arrêtée (limite de 2048 tokens atteinte) avant la fin de l’objet JSON.", "truncated");
+  });
+  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch: createPoliteFetch({ db, fetch: createSafeFetch() }), llm: bindTo(model.inference), settings: { autoPublish: false, allowPublic: false }, now: () => new Date(clock) });
+  for (let i = 0; i < 4; i++) { await tick({ db, accounts, sources, handlers: { "evaluate-story": handlers["evaluate-story"] }, canEvaluate: () => true, now: () => new Date(clock) }); clock += 5 * MIN; }
+  const row = db.prepare("SELECT status, stage, reason, data FROM watch_candidate WHERE agent_id = ?").get(agentId) as { status: string; stage: string; reason: string; data: string };
+  // Held with the real cause, no extraction recorded, no claim stored, relevance asked once.
+  assert.deepEqual([row.status, /limite de 2048 tokens/.test(row.reason), JSON.parse(row.data).extraction ?? null], ["held", true, null]);
+  assert.equal((db.prepare("SELECT count(*) AS n FROM watch_claim WHERE agent_id = ?").get(agentId) as { n: number }).n, 0);
+  assert.deepEqual([model.calls.filter(call => call.stage === "relevance").length, model.calls.filter(call => call.stage === "extraction").length], [1, 3]);
+  const runs = db.prepare("SELECT status FROM xiagent_run WHERE kind = 'evaluate-story' ORDER BY started_at, attempt").all() as { status: string }[];
+  assert.deepEqual(runs.map(run => run.status), ["retrying", "retrying", "failed"]);
+});
+
 test("verification: exact quotes, figures, independent voices, official primary sources, contradictions", () => {
   const dispatch = "Le Parlement a définitivement adopté jeudi la réforme des retraites, qui repousse l'âge légal à 64 ans.";
   const sources: EvidenceSource[] = [
-    { label: "I1", itemId: "a", publisher: "Le Quotidien", lineage: 0, official: false, url: "https://q.example/1", text: `Le Parlement adopte la réforme\nParis (AFP) - ${dispatch}` },
-    { label: "I2", itemId: "b", publisher: "La Gazette", lineage: 0, official: false, url: "https://g.example/1", text: `Réforme adoptée\n${dispatch}` },
-    { label: "I3", itemId: "c", publisher: "Le Journal", lineage: 1, official: false, url: "https://j.example/1", text: "Retraites : vote final\nLes parlementaires ont définitivement adopté jeudi la réforme des retraites. L’âge légal passera à 64 ans." },
-    { label: "I4", itemId: "d", publisher: "Ministère du Travail", lineage: 2, official: true, url: "https://travail.gouv.fr/c", text: "Communiqué\nLe ministère du Travail a déclaré que la réforme garantira l’équilibre du système d’ici 2030." },
+    { label: "I1", itemId: "a", publisher: "Le Quotidien", lineage: 0, official: false, trust: "approved", url: "https://q.example/1", title: "Le Parlement adopte la réforme", text: `Paris (AFP) - ${dispatch}` },
+    { label: "I2", itemId: "b", publisher: "La Gazette", lineage: 0, official: false, trust: "approved", url: "https://g.example/1", title: "Réforme adoptée", text: dispatch },
+    { label: "I3", itemId: "c", publisher: "Le Journal", lineage: 1, official: false, trust: "approved", url: "https://j.example/1", title: "Retraites : vote final", text: "Les parlementaires ont définitivement adopté jeudi la réforme des retraites. L’âge légal passera à 64 ans." },
+    { label: "I4", itemId: "d", publisher: "Ministère du Travail", lineage: 2, official: true, trust: "approved", url: "https://travail.gouv.fr/c", title: "Communiqué", text: "Le ministère du Travail a déclaré que la réforme garantira l’équilibre du système d’ici 2030." },
   ];
   const claim = (text: string, kind: Extraction["claims"][number]["kind"], evidence: [string, string][], attribution: string | null = null) => ({ text, kind, attribution, evidence: evidence.map(([item, quote]) => ({ item, quote })) });
   const extraction: Extraction = {
@@ -122,20 +145,24 @@ test("verification: exact quotes, figures, independent voices, official primary 
     ],
     contradictions: [], impact: { score: 0.9, reasons: ["Concerne tous les actifs."] },
   };
-  const verified = verifyClaims(extraction, sources);
-  assert.deepEqual(verified.map(c => c.status), ["corroborated", "corroborated", "single-source", "unsupported", "unsupported", "primary", "single-source", "qualified", "unsupported"]);
+  const { claims: verified } = verifyClaims(extraction, sources);
+  assert.deepEqual(verified.map(c => c.status), ["corroborated", "corroborated", "single-source", "unsupported", "unsupported", "primary", "primary", "qualified", "unsupported"]);
+  // A "fact" quoted only from the institution's own publication is its announcement: attributed to it by code, never a bare fact.
+  assert.deepEqual([verified[6].kind, verified[6].attribution], ["attributed", "Ministère du Travail"]);
+  assert.match(verified[6].reason, /Annonce officielle de Ministère du Travail.*pas une confirmation indépendante/);
+  assert.deepEqual([verified[5].kind, verified[5].attribution], ["attributed", "ministère du Travail"], "the model's own attribution is kept when it names the institution");
   assert.equal(verified[0].independent, 2);
   assert.equal(verified[2].independent, 1, "two copies of one AFP dispatch are one voice");
   assert.match(verified[3].reason, /introuvable/); assert.equal(verified[3].rejectedQuotes, 2);
   assert.match(verified[4].reason, /65/, "a figure absent from the quotes is a hallucination");
   assert.match(verified[5].reason, /primaire/);
-  assert.match(verified[6].reason, /seule voix/, "an official source is not an independent confirmation of its claims about the world");
+  assert.equal(verified[6].independent, 1, "an official source is not an independent confirmation: one voice, attributed to it");
   assert.equal(verified[8].rejectedQuotes, 1, "quotes shorter than three words are refused");
   assert.deepEqual(verificationOutcome(verified).level, "verified");
-  const contradicted = verifyClaims({ ...extraction, contradictions: [{ claims: [0, 1], explanation: "x" }] }, sources);
+  const contradicted = verifyClaims({ ...extraction, contradictions: [{ claims: [0, 1], positions: ["adoptée jeudi", "âge légal à 64 ans"], explanation: "x", relation: "incompatible" }] }, sources).claims;
   assert.equal(verificationOutcome(contradicted).level, "contradicted");
-  assert.equal(verificationOutcome(verifyClaims({ ...extraction, claims: [extraction.claims[2]] }, sources)).level, "insufficient");
-  assert.equal(verificationOutcome(verifyClaims({ ...extraction, claims: [extraction.claims[3], extraction.claims[4]] }, sources)).level, "unsupported");
+  assert.equal(verificationOutcome(verifyClaims({ ...extraction, claims: [extraction.claims[2]] }, sources).claims).level, "insufficient");
+  assert.equal(verificationOutcome(verifyClaims({ ...extraction, claims: [extraction.claims[3], extraction.claims[4]] }, sources).claims).level, "unsupported");
   // Importance: explainable, bounded, without any popularity input.
   const importance = scoreImportance({ impact: 0.9, relevance: 0.9, novelty: 1, noveltyKind: "new", claims: verified });
   assert.equal(importance.score, 0.89);
@@ -144,6 +171,79 @@ test("verification: exact quotes, figures, independent voices, official primary 
   assert.ok(importance.factors.every(factor => !/article|éditeur|popularit/i.test(factor.label)));
   assert.match(importance.note, /popularité/);
   assert.ok(scoreImportance({ impact: 0.9, relevance: 0.9, novelty: 1, noveltyKind: "development", claims: verified }).score < importance.score);
+});
+
+test("contradictions: only supported, distinct, incompatible facts hold a candidate (Artemis, El Niño, Rosetta)", () => {
+  const source = (label: string, lineage: number, publisher: string, title: string, text: string): EvidenceSource => ({ label, itemId: label, publisher, lineage, official: false, trust: "approved", url: `https://${label}.example`, title, text });
+  const claim = (text: string, evidence: [string, string][], kind: Extraction["claims"][number]["kind"] = "fact") => ({ text, kind, attribution: null, evidence: evidence.map(([item, quote]) => ({ item, quote })) });
+  const impact = { score: 0.6, reasons: ["Exploration spatiale."] };
+  const parse = (raw: unknown) => extractionSchema.parse(raw);
+
+  // Artemis: two compatible claims; the model itself says they do not contradict each other.
+  const artemis = [
+    source("I1", 0, "Space Daily", "Artemis II: crew named", "NASA named the four astronauts of the Artemis II mission on Monday."),
+    source("I2", 1, "Orbit News", "Artemis II update", "The Artemis II mission will fly around the Moon without landing."),
+  ];
+  const artemisClaims = [claim("NASA named the four Artemis II astronauts.", [["I1", "NASA named the four astronauts of the Artemis II mission"]]), claim("Artemis II will fly around the Moon without landing.", [["I2", "will fly around the Moon without landing"]])];
+  const artemisResult = verifyClaims(parse({ claims: artemisClaims, contradictions: [{ claims: [0, 1], positions: ["crew named", "lunar flyby"], explanation: "These two claims are not contradictory.", relation: "compatible" }], impact }), artemis);
+  assert.notEqual(verificationOutcome(artemisResult.claims).level, "contradicted");
+  assert.deepEqual(artemisResult.claims.map(c => c.status), ["single-source", "single-source"], "the claims are kept");
+  assert.equal(artemisResult.contradictions[0].kept, false);
+
+  // El Niño: the same fact twice is redundancy, even when the model labels it incompatible.
+  const elNino = [
+    source("I1", 0, "Météo Monde", "El Niño", "El Niño conditions are expected to persist through the winter, the agency said."),
+    source("I2", 1, "Climat Info", "El Niño persists", "El Niño conditions are expected to persist through the winter."),
+  ];
+  const redundant = [claim("El Niño conditions are expected to persist through the winter.", [["I1", "El Niño conditions are expected to persist through the winter"]]), claim("El Niño conditions are expected to persist through the winter.", [["I2", "El Niño conditions are expected to persist through the winter"]])];
+  const explanation = "This is a form of redundancy and does not constitute a contradiction.";
+  for (const relation of ["redundant", "incompatible"] as const) {
+    const result = verifyClaims(parse({ claims: redundant, contradictions: [{ claims: [0, 1], positions: ["persist through winter", "persist through winter"], explanation, relation }], impact }), elNino);
+    assert.deepEqual(result.claims.map(c => c.status), ["single-source", "single-source"], `redundancy (${relation}) never contradicts`);
+    assert.equal(result.contradictions[0].kept, false);
+  }
+
+  // Rosetta: a claim without a valid quote is not a contradiction of a supported one.
+  const rosetta = [source("I1", 0, "Astro Mag", "Rosetta", "The Rosetta probe ended its mission by landing on comet 67P in 2016.")];
+  const rosettaResult = verifyClaims(parse({
+    claims: [claim("Rosetta ended its mission on comet 67P in 2016.", [["I1", "ended its mission by landing on comet 67P in 2016"]]), claim("Rosetta is still operating.", [["I1", "the probe is still operating today"]])],
+    contradictions: [{ claims: [0, 1], positions: ["mission ended in 2016", "still operating"], explanation: "The second claim is not supported by the text.", relation: "incompatible" }], impact,
+  }), rosetta);
+  assert.deepEqual(rosettaResult.claims.map(c => c.status), ["single-source", "unsupported"]);
+  assert.match(rosettaResult.contradictions[0].reason, /absence de preuve/);
+  assert.notEqual(verificationOutcome(rosettaResult.claims).level, "contradicted");
+
+  // A real, justified contradiction still holds the candidate.
+  const strike = [source("I1", 0, "Le Quotidien", "Grève", "Selon la direction, 20 % des conducteurs sont en grève ce mardi."), source("I2", 1, "Le Journal", "Grève", "Selon les syndicats, 60 % des conducteurs sont en grève ce mardi.")];
+  const real = verifyClaims(parse({
+    claims: [claim("20 % des conducteurs sont en grève.", [["I1", "20 % des conducteurs sont en grève"]]), claim("60 % des conducteurs sont en grève.", [["I2", "60 % des conducteurs sont en grève"]])],
+    contradictions: [{ claims: [0, 1], positions: ["20 %", "60 %"], explanation: "Taux de grévistes incompatibles.", relation: "incompatible" }], impact,
+  }), strike);
+  assert.equal(verificationOutcome(real.claims).level, "contradicted");
+  assert.deepEqual(real.claims.map(c => c.status), ["contradicted", "contradicted"]);
+
+  // Malformed or legacy entries (no verdict) are ignored without discarding the extraction.
+  const legacy = parse({ claims: real.claims.map(c => claim(c.text, c.evidence.map(e => [e.label, e.quote]))), contradictions: [{ claims: [0, 1], explanation: "These two claims are not contradictory" }, { claims: [0, 7], positions: ["a", "b"], explanation: "x", relation: "incompatible" }], impact });
+  const screened = verifyClaims(legacy, strike);
+  assert.deepEqual(screened.claims.map(c => c.status), ["single-source", "single-source"]);
+  assert.deepEqual(screened.contradictions.map(c => c.kept), [false, false]);
+
+  // Hypotheses and interpretations are never contradicted facts.
+  const opinion = verifyClaims(parse({ claims: [claim("20 % des conducteurs sont en grève.", [["I1", "20 % des conducteurs sont en grève"]]), claim("La grève sera massive.", [["I2", "60 % des conducteurs sont en grève"]], "interpretation")], contradictions: [{ claims: [0, 1], positions: ["20 %", "massive"], explanation: "x", relation: "incompatible" }], impact }), strike);
+  assert.equal(opinion.contradictions[0].kept, false);
+});
+
+test("metadata: titles, bylines and credits are never quotable", () => {
+  assert.equal(articleBody("Par Jeanne Martin\nLe ministère a annoncé un plan de 3 milliards.\nPhoto : AFP\n© Reuters 2026\nMis à jour le 3 mars 2026"), "Le ministère a annoncé un plan de 3 milliards.");
+  assert.equal(articleBody("Jeanne Martin, envoyée spéciale\nLe ministère a annoncé un plan.", "Jeanne Martin"), "Le ministère a annoncé un plan.");
+  assert.equal(articleBody("Par ailleurs, le gouvernement a confirmé mardi le calendrier de la réforme des retraites devant les députés de la commission."), "Par ailleurs, le gouvernement a confirmé mardi le calendrier de la réforme des retraites devant les députés de la commission.", "a long sentence is content");
+  const sources: EvidenceSource[] = [{ label: "I1", itemId: "a", publisher: "Le Quotidien", lineage: 0, official: false, trust: "approved", url: "https://q.example", title: "Le gouvernement annonce un plan de 3 milliards", text: articleBody("Par Jeanne Martin\nLe ministère a annoncé un plan de 3 milliards d'euros.") }];
+  const { claims } = verifyClaims(extractionSchema.parse({ claims: [
+    { text: "Le gouvernement annonce un plan de 3 milliards.", kind: "fact", evidence: [{ item: "I1", quote: "Le gouvernement annonce un plan de 3 milliards" }] },
+    { text: "L'article est signé Jeanne Martin.", kind: "fact", evidence: [{ item: "I1", quote: "Par Jeanne Martin" }] },
+    { text: "Le ministère annonce un plan de 3 milliards.", kind: "fact", evidence: [{ item: "I1", quote: "a annoncé un plan de 3 milliards d'euros" }] },
+  ], impact: { score: 0.5, reasons: ["Budget."] } }), sources);
+  assert.deepEqual(claims.map(c => c.status), ["unsupported", "unsupported", "single-source"]);
 });
 
 test("lanes: alerts need verification and respect the agent's real ceilings", () => {
@@ -164,9 +264,78 @@ test("lanes: alerts need verification and respect the agent's real ceilings", ()
 
 // ---------------------------------------------------------------- full pipeline with a deterministic fake model
 
+test("manual re-evaluation: held candidates replayed by the normal pipeline, traced, never drafted, published or duplicated", { timeout: 30_000 }, async t => {
+  const w = await world(t);
+  const { db, accounts, sources, politiks } = w;
+  const agentId = await w.agent("alice", politiks);
+  const handle = (await accounts.watchAgents()).find(agent => agent.id === agentId)!.handle;
+  const a = await w.approved("alice", "https://a.example/rss", "Source A", [politiks]);
+  const b = await w.approved("alice", "https://b.example/rss", "Source B", [politiks]);
+  let clock = Date.parse("2026-01-15T12:00:00Z");
+  const entry = (url: string, title: string, summary: string) => ({ url, guid: null, title, summary, publishedAt: null, author: null, credits: [], links: [] });
+  recordEntries(db, { owner: "alice", source: { ...a, ownerGroup: null }, entries: [entry("https://a.example/1", "Le gouvernement présente son budget", "Le gouvernement a présenté mercredi le projet de budget pour 2027."), entry("https://a.example/2", "Le Sénat rejette une motion de censure", "La motion de censure a été rejetée par le Sénat jeudi soir."), entry("https://a.example/3", "Le Conseil d'État annule un décret", "Le Conseil d'État a annulé lundi le décret sur les retraites anticipées.")], now: clock });
+  recordEntries(db, { owner: "alice", source: { ...b, ownerGroup: null }, entries: [entry("https://b.example/1", "Budget 2027 : le projet présenté", "Le projet de budget pour 2027 a été présenté mercredi par le gouvernement.")], now: clock });
+  // First prompt: a single quoted voice, every story held.
+  let corroborate = false;
+  const model = fakeModel((stage, prompt) => {
+    if (stage === "relevance") return { relevant: true, score: 0.8, topic: "T1", justification: "Vie institutionnelle.", outOfScope: [] };
+    if (stage === "merge") return { sameEvent: null, justification: "Événements distincts." };
+    if (stage === "novelty") return { kind: "new", related: null, score: 1, newFacts: [], justification: "Sujet non traité." };
+    const quote = /Texte : (.{20,60}?) (?:mercredi|jeudi|lundi)/.exec(prompt)![1];
+    // The second voice is whichever source is not I1 (the order of the sources is not fixed).
+    const second = !corroborate || !prompt.includes("Source B") ? []
+      : label(prompt, "Source B") !== "I1" ? [{ item: label(prompt, "Source B"), quote: "a été présenté mercredi par le gouvernement" }]
+      : [{ item: label(prompt, "Source A"), quote: "Le gouvernement a présenté mercredi le projet de budget" }];
+    return { claims: [{ text: quote, kind: "fact", attribution: null, evidence: [{ item: "I1", quote }, ...second] }], contradictions: [], impact: { score: 0.9, reasons: ["Portée nationale."] } };
+  });
+  const handlers = engineHandlers({ db, accounts, topics: w.topics, publications: createPublicationStore({ vault: w.vault, db }), sources, fetch: createPoliteFetch({ db, fetch: createSafeFetch() }), llm: bindTo(model.inference), settings: { autoPublish: true, allowPublic: true }, now: () => new Date(clock) });
+  await tick({ db, accounts, sources, handlers: { "evaluate-story": handlers["evaluate-story"] }, canEvaluate: () => true, now: () => new Date(clock) });
+  const story = (word: string) => (db.prepare("SELECT id FROM watch_story WHERE title LIKE ?").get(`%${word}%`) as { id: string }).id;
+  const [budget, censure, decret] = [story("budget"), story("censure"), story("décret")];
+  const statusOf = (id: string) => db.prepare("SELECT status, prompt_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, id) as { status: string; prompt_version: string };
+  assert.deepEqual([budget, censure, decret].map(id => statusOf(id).status), ["held", "held", "held"]);
+  // Fixtures: one story already has a draft, another an automatic publication.
+  db.prepare("UPDATE watch_candidate SET data = json_set(data, '$.draft', json('{\"id\":\"d1\",\"revision\":\"r1\"}')) WHERE story_id = ?").run(censure);
+  migrateWatchDecisions(db);
+  db.prepare("INSERT INTO watch_decision (id, agent_id, owner, story_id, draft_id, lane, outcome, reason, visibility, at) VALUES ('p1', ?, 'alice', ?, 'd2', 'night', 'published', 'Publiée.', 'private', ?)").run(agentId, decret, clock);
+  const count = (sql: string, ...args: unknown[]) => (db.prepare(sql).get(...args) as { n: number }).n;
+  const before = { jobs: count("SELECT count(*) AS n FROM watch_job"), decisions: count("SELECT count(*) AS n FROM watch_decision"), publications: count("SELECT count(*) AS n FROM publication") };
+
+  // New prompt: the same story, now quoted by two independent voices.
+  corroborate = true;
+  clock += HOUR;
+  const run = (storyId?: string) => reevaluate({ db, accounts, sources, evaluate: handlers["evaluate-story"], agent: `@${handle}`, storyId, now: () => new Date(clock) });
+  const result = await run();
+  assert.deepEqual(result.candidates.map(c => [c.storyId, c.status, c.prompt_version]), [[budget, "accepted", PROMPT_VERSION]]);
+  assert.deepEqual(result.skipped.map(s => [s.storyId, /publication ou un brouillon/.test(s.reason)]).sort(), [[censure, true], [decret, true]].sort());
+  assert.deepEqual([statusOf(censure).status, statusOf(decret).status], ["held", "held"], "skipped candidates are untouched");
+  // One evaluation job, no drafting or publication job, decision or publication.
+  assert.equal(count("SELECT count(*) AS n FROM watch_job") - before.jobs, 1);
+  assert.equal(count("SELECT count(*) AS n FROM watch_job WHERE kind != 'evaluate-story'"), 0);
+  assert.equal(count("SELECT count(*) AS n FROM watch_job WHERE kind = 'evaluate-story' AND key LIKE 'evaluate-story:manual:%' AND priority != 0"), 0, "a bulk relaunch is queued at ordinary priority");
+  assert.deepEqual([count("SELECT count(*) AS n FROM watch_decision"), count("SELECT count(*) AS n FROM publication")], [before.decisions, before.publications]);
+  // Trace: the command with the previous state, then the evaluation run with its outcome.
+  const command = db.prepare("SELECT result FROM xiagent_run WHERE kind = 'manual-reanalyze-held'").get() as { result: string };
+  assert.deepEqual(JSON.parse(command.result).relaunched.map((entry: { storyId: string; previous: { status: string } }) => [entry.storyId, entry.previous.status]), [[budget, "held"]]);
+  const evaluation = db.prepare("SELECT trigger, status, result FROM xiagent_run WHERE kind = 'evaluate-story' AND trigger = 'manual'").all() as { trigger: string; status: string; result: string }[];
+  assert.deepEqual(evaluation.map(row => [row.status, JSON.parse(row.result).outcome]), [["done", "accepted"]]);
+
+  // Idempotent: nothing held left to relaunch, no new job.
+  const again = await run();
+  assert.deepEqual([again.candidates.length, again.drained], [0, null]);
+  assert.equal(count("SELECT count(*) AS n FROM watch_job") - before.jobs, 1);
+  // Targeted: refused for a story with a draft, or while an evaluation is already queued.
+  await assert.rejects(run(censure), /publication ou un brouillon/);
+  createJobQueue(db, () => clock).enqueue({ kind: "evaluate-story", key: "evaluate-story:pending", payload: { agentId, storyId: budget, version: 2 }, runAfter: clock + HOUR, maxAttempts: 3 });
+  await assert.rejects(run(budget), /déjà planifiée/);
+  assert.equal(statusOf(budget).status, "accepted");
+  await assert.rejects(run("inconnu"), /introuvable/);
+  await assert.rejects(reevaluate({ db, accounts, sources, evaluate: handlers["evaluate-story"], agent: "@personne", now: () => new Date(clock) }), /ΞAgent introuvable/);
+});
+
 const between = (text: string, start: string, end: string) => { const i = text.indexOf(start); return i < 0 ? "" : text.slice(i + start.length, end ? text.indexOf(end, i + start.length) : undefined); };
 /** Label of a publisher's text in an extraction prompt. */
-const label = (prompt: string, publisher: string) => new RegExp(`\\[(I\\d+)\\] ${publisher}\\n`).exec(prompt)?.[1] ?? "I99";
+const label = (prompt: string, publisher: string) => new RegExp(`\\[(I\\d+)\\] ${publisher}( \\(publication officielle de l’institution\\))?\\n`).exec(prompt)?.[1] ?? "I99";
 
 type Stage = "relevance" | "merge" | "novelty" | "extraction";
 function fakeModel(script: (stage: Stage, prompt: string) => unknown) {
@@ -175,8 +344,10 @@ function fakeModel(script: (stage: Stage, prompt: string) => unknown) {
   return {
     calls, setUnavailable: (value: boolean) => { unavailable = value; },
     inference: {
-      async complete({ prompt }: ChatRequest) {
+      async complete({ prompt, stage: tagged }: ChatRequest) {
         const stage: Stage = prompt.startsWith("Périmètre") ? "relevance" : prompt.startsWith("Actualité A") ? "merge" : prompt.startsWith("Nouvelle actualité") ? "novelty" : "extraction";
+        // Every call names its editorial step (logs, generation budget).
+        assert.equal(tagged, stage);
         calls.push({ stage, story: prompt.slice(0, 400) });
         if (unavailable) throw new InferenceUnavailableError("Mac mini injoignable.");
         const answer = script(stage, prompt);
@@ -287,7 +458,7 @@ test("pipeline: relevance, verification, holds, duplicates, developments, contin
         { text: "20 % des conducteurs sont en grève.", kind: "fact", attribution: null, evidence: [{ item: label(prompt, "Le Quotidien"), quote: "20 % des conducteurs sont en grève" }] },
         { text: "60 % des conducteurs sont en grève.", kind: "fact", attribution: null, evidence: [{ item: label(prompt, "Le Journal"), quote: "60 % des conducteurs sont en grève" }] },
       ],
-      contradictions: [{ claims: [0, 1], explanation: "Chiffres incompatibles." }], impact: { score: 0.5, reasons: ["Transports perturbés."] },
+      contradictions: [{ claims: [0, 1], positions: ["20 % de grévistes", "60 % de grévistes"], explanation: "Chiffres incompatibles.", relation: "incompatible" }], impact: { score: 0.5, reasons: ["Transports perturbés."] },
     };
     if (has("plan vélo")) return {
       claims: [{ text: "Lyon consacre 30 millions d'euros à un plan vélo.", kind: "fact", attribution: null, evidence: [

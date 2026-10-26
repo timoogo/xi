@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import { PageHeader } from "@/components/page-header";
 import { AvatarSettings } from "@/components/avatar-settings";
 import { LLMSettings } from "@/components/llm/llm-settings";
+import { PublicationFormatSettings } from "@/components/publication-format-settings";
+import { getAppDatabase } from "@/lib/auth";
 import { getCurrentUser } from "@/lib/current-user";
 import { getLLMRuntime } from "@/lib/llm/server";
+import { ownerFormat } from "@/lib/watch/format-store";
 
 export const metadata: Metadata = { title: "Ξ | Paramètres du compte" };
 
@@ -16,5 +19,6 @@ export default async function SettingsPage() {
     <PageHeader title="Paramètres du compte" back={{ href: "/dashboard/profile", label: "Retour au profil" }} />
     <AvatarSettings name={user.name} image={user.image} avatar={user.avatar} />
     <LLMSettings initial={{ instances, settings, environment: llm.environment() }} />
+    <PublicationFormatSettings initial={ownerFormat(getAppDatabase(), user.id)} />
   </>;
 }

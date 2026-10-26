@@ -9,10 +9,12 @@ import { TopicError } from "../topics/types";
 import { runningAgents } from "./collect";
 import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "./inference";
 import { bindSafely, describeLLM, type BindLLM } from "./llm-binding";
+import type { InferenceStage } from "./stages";
 import { PRIORITY, type JobQueue } from "./jobs";
 import { publicationGate } from "./schedule";
 import { isOfficialUrl, type SourceStore } from "./sources";
 import { EVENT_THRESHOLD, eventSimilarity, mergeStories, migrateWatchItems, signature, tokens } from "./stories";
+import { itemCarriers, trustResolver, type Trust } from "./trust";
 import type { Handler } from "./worker";
 
 /**
@@ -22,7 +24,7 @@ import type { Handler } from "./worker";
  * stored before the next one: an unavailable server resumes where it stopped. Nothing is written
  * or published here.
  */
-export const PROMPT_VERSION = "veille-3.1";
+export const PROMPT_VERSION = "veille-3.3";
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const RECENT_MS = 72 * HOUR;
@@ -94,12 +96,19 @@ export const noveltySchema = z.object({
   newFacts: z.array(z.string().max(500)).max(10).default([]), justification: z.string().min(1).max(1_000),
 });
 export const CLAIM_KINDS = ["fact", "attributed", "hypothesis", "interpretation"] as const;
+/** The model classifies every pair it reports: only "incompatible" can be a contradiction. */
+export const CONTRADICTION_RELATIONS = ["incompatible", "compatible", "redundant", "unsupported", "rephrasing"] as const;
+const contradictionSchema = z.object({
+  claims: z.array(z.number().int().min(0)).min(2).max(4), positions: z.array(z.string().trim().min(1).max(300)).min(2).max(4),
+  explanation: z.string().trim().min(1).max(500), relation: z.enum(CONTRADICTION_RELATIONS),
+});
 export const extractionSchema = z.object({
   claims: z.array(z.object({
     text: z.string().min(1).max(600), kind: z.enum(CLAIM_KINDS), attribution: z.string().max(200).nullable().default(null),
     evidence: z.array(z.object({ item: z.string().max(10), quote: z.string().min(1).max(600) })).max(6),
   })).max(20),
-  contradictions: z.array(z.object({ claims: z.array(z.number().int().min(0)).min(2).max(4), explanation: z.string().max(500) })).max(10).default([]),
+  // A malformed entry is ignored (null), never a reason to discard the claims.
+  contradictions: z.array(contradictionSchema.nullable().catch(null)).max(10).default([]),
   impact: z.object({ score: z.number().min(0).max(1), reasons: z.array(z.string().max(300)).min(1).max(5) }),
 });
 export type Extraction = z.infer<typeof extractionSchema>;
@@ -108,17 +117,28 @@ const SYSTEM = "Tu es l’assistant de veille factuelle d’un ΞAgent de Ξ. Le
 
 // ---------------------------------------------------------------- deterministic verification
 
-export type EvidenceSource = { label: string; itemId: string; publisher: string; lineage: number; official: boolean; url: string; text: string };
-export const CLAIM_STATUSES = ["corroborated", "primary", "single-source", "qualified", "contradicted", "unsupported"] as const;
+/**
+ * `text` is the article body without metadata lines: the only quotable text. The title is shown, never quotable.
+ * `trust`: the source's trust for the agent and the retained topic (trust.ts); a denied article is never evidence.
+ */
+export type EvidenceSource = { label: string; itemId: string; publisher: string; lineage: number; official: boolean; trust: Trust; url: string; title: string; text: string };
+export const CLAIM_STATUSES = ["corroborated", "primary", "single-source", "pending-trust", "qualified", "contradicted", "unsupported"] as const;
 export type VerifiedClaim = {
   text: string; kind: Extraction["claims"][number]["kind"]; attribution: string | null; status: (typeof CLAIM_STATUSES)[number]; reason: string;
-  evidence: { itemId: string; label: string; publisher: string; quote: string; lineage: number; official: boolean; url: string }[]; rejectedQuotes: number; independent: number;
+  evidence: { itemId: string; label: string; publisher: string; quote: string; lineage: number; official: boolean; trust: Trust; url: string }[]; rejectedQuotes: number; independent: number;
 };
 
 /** Only typography and spacing are normalized: a quote must otherwise appear as is. */
 export const normalizeQuote = (value: string) => value.normalize("NFC").replace(/[’‘`´]/g, "'").replace(/[«»“”„]/g, "\"").replace(/[  ]/g, " ").replace(/\s+/g, " ").trim();
 export const numbersIn = (text: string) => (normalizeQuote(text).replace(/(\d) (?=\d{3}\b)/g, "$1").match(/\d+(?:[.,]\d+)?/g) ?? []).map(value => value.replace(",", "."));
 export const folded = (value: string) => value.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+const METADATA_LINE = /^(?:par|by|photo|photos|crédits?|credits?|image|illustration|vidéo|video|légende|publié|mis à jour|modifié|updated|published|(?:à )?lire aussi|read more|see also)\b|©/iu;
+/** Article body without its metadata lines (byline, credits, dates): those are never claims. */
+export function articleBody(summary: string, author: string | null = null) {
+  const byline = author && folded(author).length >= 4 ? folded(author) : null;
+  return summary.split(/\n+/).map(line => line.trim())
+    .filter(line => line && !(line.length <= 100 && (METADATA_LINE.test(line) || (byline && folded(line).includes(byline))))).join("\n");
+}
 /** The institution named by the claim is the one publishing the official source. */
 const sameInstitution = (attribution: string | null, publisher: string) => {
   if (!attribution) return false;
@@ -126,37 +146,85 @@ const sameInstitution = (attribution: string | null, publisher: string) => {
   return a.length >= 3 && p.length >= 3 && (a.includes(p) || p.includes(a));
 };
 
+type CheckedClaim = Omit<VerifiedClaim, "status"> & { status: Exclude<VerifiedClaim["status"], "contradicted"> };
 /**
- * Claim statuses. A quote counts only if it occurs in its source text (≥ 3 words, 12 characters);
- * every figure of the claim must appear in a valid quote. Independent voices are the lineages
- * computed at collection (one dispatch, agency, publisher or group = one voice). An official
- * source is primary only for its own acts and statements (`attribution` = itself), and counts as
- * one ordinary voice for anything else.
+ * Claim statuses. A quote counts only if it occurs in its source body (≥ 3 words, 12 characters)
+ * and its source is not denied in this scope; every figure of the claim must appear in a valid
+ * quote. Independent voices are the lineages computed at collection (one dispatch, agency,
+ * publisher or group = one voice). Nothing is usable without at least one approved source: pending
+ * sources are analysed and may corroborate, never establish alone. An approved official source is
+ * primary only for its own acts and statements (`attribution` = itself), and counts as one
+ * ordinary voice for anything else.
  */
-export function verifyClaims(extraction: Extraction, sources: EvidenceSource[]): VerifiedClaim[] {
-  const byLabel = new Map(sources.map(source => [source.label, source]));
-  const contradicted = new Set(extraction.contradictions.flatMap(entry => entry.claims));
-  return extraction.claims.map((claim, index) => {
-    const evidence: VerifiedClaim["evidence"] = [];
-    let rejectedQuotes = 0;
-    for (const proof of claim.evidence) {
-      const source = byLabel.get(proof.item);
-      const quote = normalizeQuote(proof.quote);
-      if (!source || quote.length < 12 || quote.split(" ").length < 3 || !normalizeQuote(source.text).includes(quote)) { rejectedQuotes++; continue; }
-      if (!evidence.some(entry => entry.itemId === source.itemId && entry.quote === quote)) evidence.push({ itemId: source.itemId, label: source.label, publisher: source.publisher, quote, lineage: source.lineage, official: source.official, url: source.url });
+function checkClaim(claim: Extraction["claims"][number], byLabel: Map<string, EvidenceSource>): CheckedClaim {
+  const evidence: VerifiedClaim["evidence"] = [];
+  let rejectedQuotes = 0, denied = 0;
+  for (const proof of claim.evidence) {
+    const source = byLabel.get(proof.item);
+    const quote = normalizeQuote(proof.quote);
+    if (!source || quote.length < 12 || quote.split(" ").length < 3 || !normalizeQuote(source.text).includes(quote)) { rejectedQuotes++; continue; }
+    if (source.trust === "denied") { rejectedQuotes++; denied++; continue; }
+    if (!evidence.some(entry => entry.itemId === source.itemId && entry.quote === quote)) evidence.push({ itemId: source.itemId, label: source.label, publisher: source.publisher, quote, lineage: source.lineage, official: source.official, trust: source.trust, url: source.url });
+  }
+  const independent = new Set(evidence.map(entry => entry.lineage)).size;
+  const quoted = new Set(numbersIn(evidence.map(entry => entry.quote).join(" ")));
+  const missing = numbersIn(claim.text).filter(value => !quoted.has(value));
+  const base = { text: claim.text, kind: claim.kind, attribution: claim.attribution, evidence, rejectedQuotes, independent };
+  if (!evidence.length) return { ...base, status: "unsupported", reason: denied ? "Citation tirée d’une source refusée dans ce périmètre : écartée." : rejectedQuotes ? "Citation introuvable dans les sources : rejetée." : "Aucune citation fournie." };
+  if (missing.length) return { ...base, status: "unsupported", reason: `Chiffre absent des citations : ${[...new Set(missing)].join(", ")}.` };
+  if (!evidence.some(entry => entry.trust === "approved")) return { ...base, status: "pending-trust", reason: "Sources en attente d’approbation dans ce périmètre : analysée, insuffisante seule." };
+  if (claim.kind === "hypothesis" || claim.kind === "interpretation") return { ...base, status: "qualified", reason: claim.kind === "hypothesis" ? "Hypothèse : jamais présentée comme un fait." : "Interprétation : jamais présentée comme un fait." };
+  // An institution's own publication (official domain, approved here): what it states is its own
+  // announcement. Whatever the model labelled, the claim becomes a statement attributed to it by
+  // code, never an unattributed fact; a statement attributed to someone else is left as it is.
+  const institution = evidence[0].publisher;
+  if (evidence.every(entry => entry.official && entry.trust === "approved" && entry.publisher === institution)
+    && (claim.kind === "fact" || !claim.attribution || sameInstitution(claim.attribution, institution))) {
+    const attribution = claim.attribution && sameInstitution(claim.attribution, institution) ? claim.attribution : institution;
+    return { ...base, kind: "attributed", attribution, status: "primary", reason: `Annonce officielle de ${institution} : source primaire, attribuée explicitement à ${attribution} (ce n’est pas une confirmation indépendante).` };
+  }
+  if (evidence.some(entry => entry.official && entry.trust === "approved" && sameInstitution(claim.attribution, entry.publisher))) return { ...base, status: "primary", reason: "Source primaire : acte ou déclaration de l’institution elle-même, pas une confirmation de ses autres affirmations." };
+  if (independent >= 2) return { ...base, status: "corroborated", reason: `${independent} voix indépendantes.` };
+  return { ...base, status: "single-source", reason: "Une seule voix indépendante (reprises d’une même dépêche, d’un même éditeur ou groupe comptées une fois)." };
+}
+
+export type ContradictionCheck = { claims: number[]; explanation: string | null; kept: boolean; reason: string };
+const wordSet = (text: string) => [...new Set(folded(text).split(" ").filter(Boolean))].sort().join(" ");
+/**
+ * A reported contradiction is kept only if the model classifies it as incompatible AND the code
+ * confirms its structure: distinct existing claims, all facts or attributed statements, all backed
+ * by valid quotes, pairwise distinct (different words, different positions, no shared quote).
+ * Redundancy, missing evidence or rewording are discarded; the claims themselves are untouched.
+ */
+export function screenContradictions(reported: Extraction["contradictions"], claims: CheckedClaim[]): ContradictionCheck[] {
+  return reported.map(entry => {
+    if (!entry) return { claims: [], explanation: null, kept: false, reason: "Entrée mal formée : ignorée." };
+    const discard = (reason: string) => ({ claims: entry.claims, explanation: entry.explanation, kept: false, reason });
+    if (entry.relation !== "incompatible") return discard(`Relation « ${entry.relation} » : pas une contradiction.`);
+    if (new Set(entry.claims).size !== entry.claims.length || entry.claims.some(index => index >= claims.length)) return discard("Indices d’affirmations invalides.");
+    if (entry.positions.length !== entry.claims.length) return discard("Une position par affirmation est requise.");
+    const involved = entry.claims.map(index => claims[index]);
+    if (involved.some(claim => claim.kind !== "fact" && claim.kind !== "attributed")) return discard("Hypothèse ou interprétation : pas une affirmation factuelle contredite.");
+    if (involved.some(claim => claim.status === "unsupported")) return discard("Affirmation sans citation valide : une absence de preuve n’est pas une contradiction.");
+    for (let i = 0; i < involved.length; i++) for (let j = i + 1; j < involved.length; j++) {
+      const [a, b] = [involved[i], involved[j]];
+      if (wordSet(a.text) === wordSet(b.text) || wordSet(entry.positions[i]) === wordSet(entry.positions[j])) return discard("Affirmations équivalentes : redondance ou reformulation.");
+      if (a.evidence.some(x => b.evidence.some(y => x.itemId === y.itemId && x.quote === y.quote))) return discard("Même passage cité pour les deux affirmations : pas une contradiction.");
     }
-    const independent = new Set(evidence.map(entry => entry.lineage)).size;
-    const quoted = new Set(numbersIn(evidence.map(entry => entry.quote).join(" ")));
-    const missing = numbersIn(claim.text).filter(value => !quoted.has(value));
-    const base = { text: claim.text, kind: claim.kind, attribution: claim.attribution, evidence, rejectedQuotes, independent };
-    if (!evidence.length) return { ...base, status: "unsupported", reason: rejectedQuotes ? "Citation introuvable dans les sources : rejetée." : "Aucune citation fournie." };
-    if (missing.length) return { ...base, status: "unsupported", reason: `Chiffre absent des citations : ${[...new Set(missing)].join(", ")}.` };
-    if (contradicted.has(index)) return { ...base, status: "contradicted", reason: "Contredite par une autre affirmation des sources." };
-    if (claim.kind === "hypothesis" || claim.kind === "interpretation") return { ...base, status: "qualified", reason: claim.kind === "hypothesis" ? "Hypothèse : jamais présentée comme un fait." : "Interprétation : jamais présentée comme un fait." };
-    if (evidence.some(entry => entry.official && sameInstitution(claim.attribution, entry.publisher))) return { ...base, status: "primary", reason: "Source primaire : acte ou déclaration de l’institution elle-même, pas une confirmation de ses autres affirmations." };
-    if (independent >= 2) return { ...base, status: "corroborated", reason: `${independent} voix indépendantes.` };
-    return { ...base, status: "single-source", reason: "Une seule voix indépendante (reprises d’une même dépêche, d’un même éditeur ou groupe comptées une fois)." };
+    return { claims: entry.claims, explanation: entry.explanation, kept: true, reason: "Affirmations factuelles étayées et incompatibles." };
   });
+}
+
+export function verifyClaims(extraction: Extraction, sources: EvidenceSource[]): { claims: VerifiedClaim[]; contradictions: ContradictionCheck[] } {
+  const byLabel = new Map(sources.map(source => [source.label, source]));
+  const checked = extraction.claims.map(claim => checkClaim(claim, byLabel));
+  const contradictions = screenContradictions(extraction.contradictions, checked);
+  const against = new Map<number, string>();
+  for (const entry of contradictions) if (entry.kept) for (const index of entry.claims) against.set(index, entry.explanation!);
+  const claims = checked.map((claim, index): VerifiedClaim => against.has(index)
+    ? { ...claim, status: "contradicted", reason: `Contredite par une autre affirmation des sources : ${against.get(index)}` }
+    : claim);
+  return { claims, contradictions };
 }
 
 export type Verification = { level: "verified" | "insufficient" | "contradicted" | "unsupported"; reason: string };
@@ -165,6 +233,7 @@ export function verificationOutcome(claims: VerifiedClaim[]): Verification {
   if (claims.some(claim => claim.status === "contradicted")) return { level: "contradicted", reason: "Contradiction entre sources : en attente d’éléments supplémentaires." };
   if (established) return { level: "verified", reason: `${established} affirmation(s) établie(s).` };
   if (claims.some(claim => claim.status === "single-source")) return { level: "insufficient", reason: "Corroboration insuffisante : en attente d’une autre voix indépendante." };
+  if (claims.some(claim => claim.status === "pending-trust")) return { level: "insufficient", reason: "Aucune source approuvée dans ce périmètre : en attente d’une décision de confiance." };
   return { level: "unsupported", reason: "Aucune affirmation vérifiable : citations absentes ou inventées." };
 }
 
@@ -213,9 +282,15 @@ type StageData = {
   merge?: { checked: string[]; into: string | null; justification: string | null };
   novelty?: z.infer<typeof noveltySchema> & { relatedPublicationId: string | null; relatedStoryId: string | null };
   extraction?: Extraction;
+  contradictions?: ContradictionCheck[];
+  /** Written by drafting: a story with a draft is never evaluated again. */
+  draft?: { id: string; revision: string };
   verification?: Verification;
   importance?: ReturnType<typeof scoreImportance>;
-  sources?: { itemId: string; publisher: string; url: string; lineage: number; official: boolean }[];
+  /** Articles shown to the model, in label order, with their trust when last checked. */
+  sources?: { itemId: string; publisher: string; url: string; lineage: number; official: boolean; trust?: Trust }[];
+  /** Articles the extraction was asked on: a change of usable sources asks it again. */
+  extractedFrom?: string[];
 };
 
 function candidates(db: Database.Database, now: () => number) {
@@ -271,21 +346,46 @@ export function planEvaluation(db: Database.Database, queue: JobQueue, agents: W
 }
 
 /**
- * Manual "relaunch an analysis": a candidate is evaluated again from its first stage (previous
- * stages are cleared; the run history keeps what they concluded). Published candidates are final.
+ * Manual "relaunch an analysis": a candidate is evaluated again from its first stage, with the
+ * current prompt (previous stages are cleared; the run history keeps what they concluded) by the
+ * normal evaluation job. Refused when a publication or a draft exists for the story, or when an
+ * evaluation of it is already queued or running: never a duplicate job, draft or publication.
  */
-export function relaunchEvaluation(db: Database.Database, queue: JobQueue, agent: WatchAgent, storyId: string, now: number, runId: string) {
-  migrateWatchCandidates(db);
-  const row = db.prepare<[string, string], { status: string; reason: string | null; story_version: number }>("SELECT status, reason, story_version FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agent.id, storyId);
+export function relaunchEvaluation(db: Database.Database, queue: JobQueue, agent: WatchAgent, storyId: string, now: number, runId: string, priority: number = PRIORITY.manual) {
+  const store = candidates(db, () => now);
+  const row = store.get(agent.id, storyId);
   if (!row) throw new TopicError("Analyse introuvable.", 404);
   if (["published", "drafted", "evaluating"].includes(row.status)) throw new TopicError("Cette analyse ne peut pas être relancée dans son état actuel.", 409);
   const story = db.prepare<[string, string], { item_count: number }>("SELECT item_count FROM watch_story WHERE id = ? AND owner = ?").get(storyId, agent.owner);
   if (!story) throw new TopicError("Actualité expirée : analyse impossible à relancer.", 409);
-  db.prepare("UPDATE watch_candidate SET status = 'evaluating', stage = 'relevance', lane = NULL, data = json_object('title', json_extract(data, '$.title')), reason = ?, updated_at = ? WHERE agent_id = ? AND story_id = ?")
-    .run("Analyse relancée manuellement.", now, agent.id, storyId);
-  db.prepare("DELETE FROM watch_claim WHERE agent_id = ? AND story_id = ?").run(agent.id, storyId);
-  queue.enqueue({ kind: "evaluate-story", key: `evaluate-story:manual:${runId}`, payload: { agentId: agent.id, storyId, version: story.item_count, trigger: "manual" }, runAfter: now, maxAttempts: 3, priority: PRIORITY.manual });
-  return { previous: { status: row.status, reason: row.reason } };
+  const decisions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'watch_decision'").get();
+  if (data(row).draft || (decisions && db.prepare("SELECT 1 FROM watch_decision WHERE agent_id = ? AND story_id = ? AND outcome = 'published'").get(agent.id, storyId))) {
+    throw new TopicError("Une publication ou un brouillon existe déjà pour cette actualité : analyse non relancée.", 409);
+  }
+  if (db.prepare("SELECT 1 FROM watch_job WHERE kind = 'evaluate-story' AND state IN ('pending', 'running') AND json_extract(payload, '$.agentId') = ? AND json_extract(payload, '$.storyId') = ?").get(agent.id, storyId)) {
+    throw new TopicError("Une évaluation de cette actualité est déjà planifiée.", 409);
+  }
+  const previous = { status: row.status, reason: row.reason, promptVersion: row.prompt_version };
+  db.transaction(() => {
+    store.start(agent, storyId, story.item_count, row.model ?? "");
+    store.update(agent.id, storyId, { reason: "Analyse relancée manuellement.", data: { title: data(row).title } });
+    queue.enqueue({ kind: "evaluate-story", key: `evaluate-story:manual:${runId}`, payload: { agentId: agent.id, storyId, version: story.item_count, trigger: "manual" }, runAfter: now, maxAttempts: 3, priority });
+  })();
+  return { previous };
+}
+
+/** Every held candidate of the agent, relaunched one by one; a refusal skips that candidate only. */
+export function relaunchHeld(db: Database.Database, queue: JobQueue, agent: WatchAgent, now: number, runId: string) {
+  migrateWatchCandidates(db);
+  const held = db.prepare<[string], { story_id: string }>("SELECT story_id FROM watch_candidate WHERE agent_id = ? AND status = 'held' ORDER BY updated_at").all(agent.id);
+  const relaunched: { storyId: string; previous: ReturnType<typeof relaunchEvaluation>["previous"] }[] = [];
+  const skipped: { storyId: string; reason: string }[] = [];
+  for (const { story_id: storyId } of held) {
+    // A bulk relaunch is a backlog: ordinary priority, so it never holds back drafting or newer stories.
+    try { relaunched.push({ storyId, previous: relaunchEvaluation(db, queue, agent, storyId, now, `${runId}:${storyId}`, PRIORITY.ordinary).previous }); }
+    catch (error) { if (error instanceof TopicError) skipped.push({ storyId, reason: error.message }); else throw error; }
+  }
+  return { relaunched, skipped };
 }
 
 /** Candidates and claims are kept 30 days after their last update. */
@@ -298,25 +398,25 @@ export function purgeCandidates(db: Database.Database, now: number) {
 
 // ---------------------------------------------------------------- evaluation
 
-type ItemRow = { id: string; title: string; summary: string; publisher: string; lineage: number; source_id: string; url: string; published_at: string | null; fetched_at: number };
+type ItemRow = { id: string; title: string; summary: string; author: string | null; publisher: string; lineage: number; source_id: string; url: string; published_at: string | null; fetched_at: number };
 const clip = (text: string, max: number) => (text.length > max ? text.slice(0, max - 1) + "…" : text);
 
 /** Up to ten items, one per voice first, so the model sees the diversity of sources. */
-function pick(items: ItemRow[]) {
-  const byLineage = new Map<number, ItemRow[]>();
+function pick<T extends { lineage: number }>(items: T[]) {
+  const byLineage = new Map<number, T[]>();
   for (const item of items) byLineage.set(item.lineage, [...(byLineage.get(item.lineage) ?? []), item]);
-  const ordered: ItemRow[] = [];
+  const ordered: T[] = [];
   for (let round = 0; ordered.length < Math.min(10, items.length); round++) for (const group of byLineage.values()) if (group[round] && ordered.length < 10) ordered.push(group[round]);
   return ordered;
 }
-const render = (sources: EvidenceSource[]) => sources.map(source => `[${source.label}] ${source.publisher}\n${source.text}`).join("\n\n");
+const render = (sources: EvidenceSource[]) => sources.map(source => `[${source.label}] ${source.publisher}${source.official ? " (publication officielle de l’institution)" : ""}\nTitre : ${source.title}\nTexte : ${source.text}`).join("\n\n");
 
 export function evaluateHandler({ db, accounts, topics, publications, sources, llm, now = Date.now }: {
   db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; sources: SourceStore; llm: BindLLM; now?: () => number;
 }): Handler {
   const store = candidates(db, now);
   return async job => {
-    const { agentId, storyId, version } = job.payload as { agentId: string; storyId: string; version: number };
+    const { agentId, storyId, version, recheck } = job.payload as { agentId: string; storyId: string; version: number; recheck?: boolean };
     const agents = await accounts.watchAgents();
     const agent = runningAgents(agents).find(item => item.id === agentId);
     if (!agent) return { status: "done", result: { outcome: "skipped", reason: "not-running" } };
@@ -324,7 +424,15 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, l
     if (!story) return { status: "done", result: { outcome: "skipped", reason: "story-missing" } };
     if (story.item_count !== version) return { status: "done", result: { outcome: "skipped", reason: "outdated" } };
     let row = store.get(agentId, storyId);
-    if (row && row.story_version === version && row.status !== "evaluating") return { status: "done", result: { outcome: "already-evaluated", status: row.status } };
+    if (row && row.story_version === version && row.status !== "evaluating") {
+      // A trust change (trust.ts) replays the stored stages; drafted, published or merged candidates are never re-opened, nor one being drafted.
+      const stored = data(row);
+      const reopen = recheck && !stored.draft && (row.status === "held" || row.status === "accepted" || (row.status === "rejected" && !!stored.extraction))
+        && !db.prepare("SELECT 1 FROM watch_job WHERE kind = 'draft-candidate' AND state IN ('pending', 'running') AND json_extract(payload, '$.agentId') = ? AND json_extract(payload, '$.storyId') = ?").get(agentId, storyId);
+      if (!reopen) return { status: "done", result: { outcome: "already-evaluated", status: row.status } };
+      store.update(agentId, storyId, { status: "evaluating", lane: null, importance: null, reason: "Réévaluation après une décision de confiance." });
+      row = store.get(agentId, storyId)!;
+    }
     // The agent's own resolution (agent → global → error); a problem waits visibly, never falls back.
     const binding = bindSafely(llm, agent);
     if (!binding.ok) {
@@ -344,24 +452,34 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, l
       store.update(agentId, storyId, { ...fields, status, stage: "done", reason, data: stages });
       return { status: "done" as const, result: { outcome: status, llm: used } };
     };
-    const ask = <T>(prompt: string, schema: z.ZodType<T>) => askJson(inference, { model, system: SYSTEM, prompt }, schema);
+    const ask = <T>(stage: InferenceStage, prompt: string, schema: z.ZodType<T>) => askJson(inference, { model, system: SYSTEM, prompt, stage }, schema);
     const describe = describeLLM(resolved);
 
     try {
-      const urls = new Map((await sources.list(agent.owner, { includeDeleted: true })).sources.map(source => [source.id, source.url]));
-      const items = db.prepare<[string], ItemRow>("SELECT id, title, summary, publisher, lineage, source_id, url, published_at, fetched_at FROM watch_item WHERE story_id = ? ORDER BY lineage, coalesce(published_at, fetched_at)").all(storyId);
-      const evidence: EvidenceSource[] = pick(items).map((item, i) => ({
-        label: `I${i + 1}`, itemId: item.id, publisher: item.publisher, lineage: item.lineage, url: item.url,
-        official: isOfficialUrl(item.url) || (urls.has(item.source_id) && isOfficialUrl(urls.get(item.source_id)!)),
-        text: `${item.title}\n${clip(item.summary, 1_500)}`,
-      }));
-      stages.sources = evidence.map(({ itemId, publisher, url, lineage, official }) => ({ itemId, publisher, url, lineage, official }));
+      const trust = await trustResolver(db, sources, agent.owner);
+      const items = db.prepare<[string], ItemRow>("SELECT id, title, summary, author, publisher, lineage, source_id, url, published_at, fetched_at FROM watch_item WHERE story_id = ? ORDER BY lineage, coalesce(published_at, fetched_at)").all(storyId);
+      const carriers = itemCarriers(db, items.map(item => item.id));
+      // Denied articles are never shown: before the topic is retained, global and agent decisions apply; then the retained topic's too.
+      const evidenceFor = (topicId: string | null): EvidenceSource[] => pick(items.map(item => ({ ...item, trust: trust.item(carriers.get(item.id) ?? [item.source_id], agentId, topicId) })).filter(item => item.trust !== "denied"))
+        .map((item, i) => {
+          const url = trust.catalog.get(item.source_id)?.url;
+          return {
+            label: `I${i + 1}`, itemId: item.id, publisher: item.publisher, lineage: item.lineage, url: item.url, trust: item.trust,
+            official: isOfficialUrl(item.url) || (!!url && isOfficialUrl(url)),
+            title: item.title, text: articleBody(clip(item.summary, 1_500), item.author),
+          };
+        });
+      const describeSources = (list: EvidenceSource[]) => list.map(({ itemId, publisher, url, lineage, official, trust }) => ({ itemId, publisher, url, lineage, official, trust }));
+      const previousSources = stages.sources?.map(source => source.itemId);
+      const screening = evidenceFor(null);
+      stages.sources = describeSources(screening);
+      if (!screening.length) return finish("held", "Aucune source utilisable : toutes les sources de cette actualité sont refusées pour ce ΞAgent.");
 
       // 1. Relevance to the agent's scope; one topic only.
       const catalog = await topics.list();
       const agentTopics = [agent.primaryTopicId, ...agent.secondaryTopicIds].map(id => catalog.find(topic => topic.id === id)).filter(topic => !!topic);
       if (!stages.relevance) {
-        const answer = await ask(`${agent.profile?.perimeter ? `Périmètre éditorial défini par le propriétaire : ${agent.profile.perimeter}\n\n` : ""}Périmètre du ΞAgent (un topic par ligne) :\n${agentTopics.map((topic, i) => `[T${i + 1}] ${topic.tag} — ${topic.name} : ${topic.scope}`).join("\n")}\n\nActualité :\n${render(evidence)}\n\nÉvalue l’adéquation de cette actualité au périmètre (pas sa popularité). Choisis au plus UN topic, celui qui correspond le mieux ; signale les aspects hors périmètre.\nFormat : {"relevant": booléen, "score": nombre de 0 à 1, "topic": "T1" ou null, "justification": "…", "outOfScope": ["…"]}`, relevanceSchema);
+        const answer = await ask("relevance", `${agent.profile?.perimeter ? `Périmètre éditorial défini par le propriétaire : ${agent.profile.perimeter}\n\n` : ""}Périmètre du ΞAgent (un topic par ligne) :\n${agentTopics.map((topic, i) => `[T${i + 1}] ${topic.tag} — ${topic.name} : ${topic.scope}`).join("\n")}\n\nActualité :\n${render(screening)}\n\nÉvalue l’adéquation de cette actualité au périmètre (pas sa popularité). Choisis au plus UN topic, celui qui correspond le mieux ; signale les aspects hors périmètre.\nFormat : {"relevant": booléen, "score": nombre de 0 à 1, "topic": "T1" ou null, "justification": "…", "outOfScope": ["…"]}`, relevanceSchema);
         const index = answer.topic && /^T\d+$/.test(answer.topic) ? Number(answer.topic.slice(1)) - 1 : -1;
         stages.relevance = { ...answer, topicId: agentTopics[index]?.id ?? null };
         save("merge", { relevance: answer.score, topic_id: stages.relevance.topicId });
@@ -382,7 +500,7 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, l
         }).filter(other => other.score >= 0.12 && other.score < EVENT_THRESHOLD).sort((a, b) => b.score - a.score).slice(0, 3);
         // Recorded only once answered: an interruption before the answer re-asks on resume.
         if (near.length) {
-          const answer = await ask(`Actualité A :\n${render(evidence)}\n\nActualités récentes :\n${near.map((other, i) => `[S${i + 1}] ${other.texts.slice(0, 3).map(text => `${text.title} — ${clip(text.summary, 300)}`).join(" | ")}`).join("\n")}\n\nL’actualité A décrit-elle exactement le même événement (même décision, même incident, même annonce) qu’une des actualités S, et pas seulement le même thème ?\nFormat : {"sameEvent": "S1" ou null, "justification": "…"}`, mergeSchema);
+          const answer = await ask("merge", `Actualité A :\n${render(screening)}\n\nActualités récentes :\n${near.map((other, i) => `[S${i + 1}] ${other.texts.slice(0, 3).map(text => `${text.title} — ${clip(text.summary, 300)}`).join(" | ")}`).join("\n")}\n\nL’actualité A décrit-elle exactement le même événement (même décision, même incident, même annonce) qu’une des actualités S, et pas seulement le même thème ?\nFormat : {"sameEvent": "S1" ou null, "justification": "…"}`, mergeSchema);
           const match = answer.sameEvent && /^S\d+$/.test(answer.sameEvent) ? near[Number(answer.sameEvent.slice(1)) - 1] : undefined;
           stages.merge = { checked: near.map(other => other.id), into: match?.id ?? null, justification: answer.justification };
           if (match) {
@@ -419,7 +537,7 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, l
           stages.novelty = { kind: "new", related: null, score: 1, newFacts: [], justification: "Aucune publication ni candidat antérieur proche.", relatedPublicationId: null, relatedStoryId: null };
         } else {
           const labelled = references.map((reference, i) => ({ ...reference, label: `${reference.kind === "publication" ? "P" : "C"}${i + 1}` }));
-          const answer = await ask(`Nouvelle actualité :\n${render(evidence)}\n\nPublications et candidats antérieurs du ΞAgent :\n${labelled.map(reference => `[${reference.label}] ${clip(reference.text, 600)}`).join("\n")}\n\n"duplicate" : aucune information nouvelle, même reformulée. "development" : suite d’un sujet déjà traité, avec au moins un fait nouveau (liste-les). "new" : sujet non traité.\nFormat : {"kind": "new" | "development" | "duplicate", "related": "P1" | "C2" | null, "score": nouveauté de 0 à 1, "newFacts": ["…"], "justification": "…"}`, noveltySchema);
+          const answer = await ask("novelty", `Nouvelle actualité :\n${render(screening)}\n\nPublications et candidats antérieurs du ΞAgent :\n${labelled.map(reference => `[${reference.label}] ${clip(reference.text, 600)}`).join("\n")}\n\n"duplicate" : aucune information nouvelle, même reformulée. "development" : suite d’un sujet déjà traité, avec au moins un fait nouveau (liste-les). "new" : sujet non traité.\nFormat : {"kind": "new" | "development" | "duplicate", "related": "P1" | "C2" | null, "score": nouveauté de 0 à 1, "newFacts": ["…"], "justification": "…"}`, noveltySchema);
           const related = labelled.find(reference => reference.label === answer.related);
           // A duplicate or a development must name what it repeats or continues.
           stages.novelty = !related && answer.kind !== "new"
@@ -431,12 +549,22 @@ export function evaluateHandler({ db, accounts, topics, publications, sources, l
       const novelty = stages.novelty;
       if (novelty.kind === "duplicate") return finish("rejected", `Déjà traité : ${novelty.justification}`);
 
-      // 4. Claims extracted by the model, checked against the sources by code.
+      // 4. Claims extracted by the model, checked against the sources by code, with the trust of the retained topic.
+      const evidence = evidenceFor(relevance.topicId);
+      stages.sources = describeSources(evidence);
+      if (!evidence.length) return finish("held", "Aucune source utilisable pour le topic retenu : toutes y sont refusées.");
+      // Older candidates have no `extractedFrom`: their extraction was asked on the articles last shown.
+      const basis = stages.extractedFrom ?? previousSources;
+      if (stages.extraction && basis?.join(" ") !== evidence.map(source => source.itemId).join(" ")) {
+        delete stages.extraction; delete stages.contradictions; delete stages.verification; delete stages.importance;
+      } else if (stages.extraction) stages.extractedFrom ??= evidence.map(source => source.itemId);
       if (!stages.extraction) {
-        stages.extraction = await ask(`Sources (chaque texte est identifié par [In]) :\n${render(evidence)}\n\nExtrais au plus 12 affirmations atomiques (une information chacune), sans rien ajouter aux textes.\n- "kind" : "fact" (fait rapporté), "attributed" (déclaration d’une personne ou d’une institution), "hypothesis" (prévision, conditionnel, hypothèse), "interpretation" (analyse, opinion, jugement).\n- "attribution" : qui parle ou agit, pour une déclaration ou pour un acte d’une institution ; sinon null.\n- "evidence" : [{"item": "In", "quote": "citation copiée mot pour mot du texte In"}].\nSignale les contradictions entre affirmations par leurs indices (à partir de 0).\nÉvalue l’impact réel (conséquences, personnes concernées, portée institutionnelle), pas la couverture médiatique.\nFormat : {"claims": [{"text": "…", "kind": "fact", "attribution": null, "evidence": [{"item": "I1", "quote": "…"}]}], "contradictions": [{"claims": [0, 2], "explanation": "…"}], "impact": {"score": 0.5, "reasons": ["…"]}}`, extractionSchema);
+        stages.extraction = await ask("extraction", `Sources (chaque texte est identifié par [In]) :\n${render(evidence)}\n\nExtrais au plus 12 affirmations atomiques (une information chacune), sans rien ajouter aux textes, uniquement depuis les lignes « Texte ». Le titre, l’auteur, la signature, les crédits photo, les dates de publication et autres métadonnées ne sont jamais des affirmations.\n- "kind" : "fact" (fait rapporté), "attributed" (déclaration d’une personne ou d’une institution), "hypothesis" (prévision, conditionnel, hypothèse), "interpretation" (analyse, opinion, jugement).\n- "attribution" : qui parle ou agit, pour une déclaration ou pour un acte d’une institution ; sinon null.\n- Texte d’une « publication officielle de l’institution » : ce qu’elle annonce ou fait elle-même est "attributed", avec pour "attribution" le nom de cette institution (ex. : "NASA") ; une déclaration d’une autre personne citée dans ce texte reste attribuée à cette personne.\n- "evidence" : [{"item": "In", "quote": "citation copiée mot pour mot du texte In"}].\nContradictions (indices à partir de 0) : signale seulement deux affirmations factuelles qui ne peuvent pas être vraies en même temps (ex. : « 20 % de grévistes » et « 60 % de grévistes » pour le même décompte). Ne sont PAS des contradictions : deux affirmations qui disent la même chose (redondance), une reformulation, des aspects différents compatibles, une affirmation non étayée ou une absence de preuve. Pour chaque paire : "positions" = ce que chaque affirmation dit du point en litige, "explanation" = pourquoi elles s’excluent, puis "relation" : "incompatible" (contradiction réelle), "compatible", "redundant", "rephrasing" ou "unsupported". Sans contradiction réelle : "contradictions": [].\nÉvalue l’impact réel (conséquences, personnes concernées, portée institutionnelle), pas la couverture médiatique.\nFormat : {"claims": [{"text": "…", "kind": "fact", "attribution": null, "evidence": [{"item": "I1", "quote": "…"}]}], "contradictions": [{"claims": [0, 2], "positions": ["…", "…"], "explanation": "…", "relation": "incompatible"}], "impact": {"score": 0.5, "reasons": ["…"]}}`, extractionSchema);
+        stages.extractedFrom = evidence.map(source => source.itemId);
         save("verification");
       }
-      const claims = verifyClaims(stages.extraction, evidence);
+      const { claims, contradictions } = verifyClaims(stages.extraction, evidence);
+      stages.contradictions = contradictions;
       stages.verification = verificationOutcome(claims);
       db.transaction(() => {
         db.prepare("DELETE FROM watch_claim WHERE agent_id = ? AND story_id = ?").run(agentId, storyId);

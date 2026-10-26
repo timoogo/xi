@@ -234,7 +234,7 @@ test("source catalogue: proposals wait for approval, owner isolation, transition
   await assert.rejects(sources.decide("bob", source.id, { action: "approve", revision: source.revision }), /introuvable/);
   assert.equal((await sources.propose("bob", proposal, "bob")).created, true, "catalogues are per owner");
   await assert.rejects(sources.decide("alice", source.id, { action: "approve", revision: randomUUID() }), /changé/);
-  await assert.rejects(sources.decide("alice", source.id, { action: "disable", revision: source.revision }), /impossible/);
+  await assert.rejects(sources.decide("alice", source.id, { action: "enable", revision: source.revision }), /impossible/);
   await assert.rejects(sources.decide("alice", source.id, { action: "reject", revision: source.revision, edits: { publisher: "x" } }), /Modifications/);
   const approved = await sources.decide("alice", source.id, { action: "approve", revision: source.revision, note: "Vérifiée", edits: { topicIds: [topicId, otherTopicId], ownerGroup: "Groupe Q", orientation: "Centre (déclarée)", reliability: "moyenne" } });
   assert.deepEqual([approved.status, approved.topicIds, approved.ownerGroup, approved.reliability.level, approved.reliability.estimated], ["approved", [topicId, otherTopicId], "Groupe Q", "moyenne", false]);
@@ -254,7 +254,7 @@ test("source catalogue: proposals wait for approval, owner isolation, transition
   assert.deepEqual([(await sources.list("alice", { includeDeleted: true })).invalid, (await sources.approved()).length], [1, 0]);
 });
 
-test("collector: approved sources only, conditional requests, duplicates, stories, errors, robots, pause, restart, discovery", { timeout: 60_000 }, async t => {
+test("collector: pending and approved sources, never denied ones, conditional requests, duplicates, stories, errors, robots, pause, restart, discovery", { timeout: 60_000 }, async t => {
   const env = await setup(t);
   const { db, accounts, publications, sources, topicId, agentId } = env;
   const feeds: Record<string, string> = {};
@@ -296,12 +296,12 @@ test("collector: approved sources only, conditional requests, duplicates, storie
   assert.equal(server.hits.length, 0);
   const policy = await accounts.setWatchPolicy("alice", agentId, { revision: null, policy: { ...DEFAULT_WATCH_POLICY, enabled: true } });
   const first = await run();
-  assert.equal(first.planned, 5, "window + three collections + discovery");
-  assert.equal(server.count("news-p.test /rss"), 0, "a proposal is never collected");
+  assert.equal(first.planned, 6, "window + three approved and one pending collections + discovery");
+  assert.equal(server.count("news-p.test /rss"), 1, "a pending source is collected and analysed");
   const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
   assert.equal(count("SELECT count(*) AS n FROM watch_item"), 4, "the aggregated copy of a known URL is not a new item");
   const sightings = db.prepare("SELECT count(*) AS n FROM watch_item_seen s JOIN watch_item i ON i.id = s.item_id WHERE i.url_key LIKE 'news-a.test%/a/1'").get() as { n: number };
-  assert.equal(sightings.n, 2, "provenance of both feeds kept");
+  assert.equal(sightings.n, 3, "provenance of every feed kept");
   const stories = db.prepare("SELECT title, item_count, publisher_count, independent_count, first_published_at FROM watch_story ORDER BY item_count DESC").all() as { title: string; item_count: number; publisher_count: number; independent_count: number; first_published_at: string }[];
   assert.deepEqual(stories.map(s => [s.item_count, s.publisher_count, s.independent_count]), [[3, 3, 2], [1, 1, 1]], "AFP copies count once");
   assert.equal(stories[0].first_published_at, "2026-01-15T09:00:00.000Z");
@@ -311,6 +311,8 @@ test("collector: approved sources only, conditional requests, duplicates, storie
   assert.deepEqual([proposals[0].status, proposals[0].url, proposals[0].publisher, proposals[0].topicIds], ["proposed", `${server.base("newsite.test")}/rss.xml`, "Nouveau Site", [topicId]]);
   assert.ok(proposals[0].reliability.reasons.some(reason => reason.includes("Citée par 2")), JSON.stringify(proposals[0].reliability));
   assert.equal(server.count("newsite.test /rss.xml"), 1, "fetched once to validate the proposal");
+  // The owner refuses it: a denied source is never collected.
+  await sources.decide("alice", proposals[0].id, { action: "reject", revision: proposals[0].revision });
   // Not due yet: nothing is planned again.
   assert.equal((await run()).planned, 0);
   // One hour later: 304 thanks to the stored ETag, duplicates are not re-added, errors back off.
@@ -322,7 +324,7 @@ test("collector: approved sources only, conditional requests, duplicates, storie
   assert.deepEqual(log.map(entry => entry.outcome), ["ok", "not-modified"]);
   const cState = sourceState(db, c.id)!;
   assert.deepEqual([cState.last_outcome, cState.consecutive_errors, cState.next_fetch_at - clock], ["error", 1, 120 * MIN], "exponential backoff");
-  assert.equal(server.count("newsite.test /rss.xml"), 1, "the discovered source waits for approval");
+  assert.equal(server.count("newsite.test /rss.xml"), 1, "the denied source is never collected");
   // Restart: new stores, fetchers and handlers on the same database and vault.
   engine = build();
   clock += 61 * MIN;
@@ -344,7 +346,7 @@ test("collector: approved sources only, conditional requests, duplicates, storie
   // Diagnostics: owner only.
   const diagnostics = await watchDiagnostics({ db, accounts, sources, owner: "alice", agentId, autoPublish: false, now: new Date(clock) });
   assert.equal(diagnostics.running, false);
-  assert.deepEqual(diagnostics.sources.map(s => s.status).sort(), ["approved", "approved", "approved", "approved", "proposed", "proposed"]);
+  assert.deepEqual(diagnostics.sources.map(s => s.status).sort(), ["approved", "approved", "approved", "approved", "proposed", "rejected"]);
   assert.ok(diagnostics.fetchLog.some(entry => entry.outcome === "error" && entry.httpStatus === 500));
   assert.deepEqual(diagnostics.stories.map(story => [story.itemCount, story.independentCount]).sort(), [[1, 1], [3, 2]]);
   assert.ok(diagnostics.jobs.some(job => job.kind === "collect-source") && diagnostics.jobs.some(job => job.kind === "discover-sources"));

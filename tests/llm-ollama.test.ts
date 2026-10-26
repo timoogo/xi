@@ -6,6 +6,7 @@ import { createProviderFetch, destinationPolicyFromEnv, validateBaseUrl, type De
 import { createOllamaClient } from "../src/lib/llm/ollama";
 import { BUILTIN_INFERENCE_OPTIONS, type LLMErrorCode } from "../src/lib/llm/types";
 import { askJson, InferenceConfigError, InferenceOutputError, InferenceUnavailableError } from "../src/lib/watch/inference";
+import { STAGE_MIN_TOKENS } from "../src/lib/watch/stages";
 import { z } from "zod";
 
 type Reply = { status?: number; body?: unknown; raw?: string; delayMs?: number; headers?: Record<string, string>; cut?: boolean };
@@ -89,6 +90,13 @@ test("ollama: chat sends the model, deterministic options and the JSON format", 
   const inference = bindInference({ type: "ollama", baseUrl: server.url, policy, options });
   assert.deepEqual(await askJson(inference, { model: "qwen3:1.7b", system: "s", prompt: "p" }, z.object({ ok: z.boolean() })), { ok: true });
   assert.equal((server.requests[2].body as { format: string }).format, "json");
+  // Each editorial step gets at least the budget its answer needs: a configured 512 is raised for
+  // the extraction (12 claims with verbatim quotes), kept for the relevance, never lowered.
+  const small = bindInference({ type: "ollama", baseUrl: server.url, policy, options: { ...options, maxTokens: 512 } });
+  const large = bindInference({ type: "ollama", baseUrl: server.url, policy, options: { ...options, maxTokens: 4_096 } });
+  for (const [bound, stage] of [[small, "extraction"], [small, "relevance"], [small, undefined], [large, "extraction"]] as const) await bound.complete({ model: "qwen3:1.7b", system: "s", prompt: "p", stage });
+  assert.deepEqual(server.requests.slice(3).map(request => (request.body as { options: { num_predict: number } }).options.num_predict), [STAGE_MIN_TOKENS.extraction, 512, 512, 4_096]);
+  assert.ok(STAGE_MIN_TOKENS.extraction >= 2_048 && STAGE_MIN_TOKENS.draft >= 1_536);
 });
 
 test("ollama: valid, thinking, truncated, unfinished, empty and malformed JSON answers", async t => {
@@ -106,18 +114,22 @@ test("ollama: valid, thinking, truncated, unfinished, empty and malformed JSON a
     "/thinking-only/api/chat": answer("", { thinking: "{\"ok\": true}" }),
   });
   const at = (prefix: string) => createOllamaClient({ baseUrl: `${server.url}/${prefix}/`, policy });
-  const output = (pattern: RegExp) => (error: Error) => error instanceof InferenceOutputError && error.code === "invalid-response" && pattern.test(error.message);
+  // Each failure keeps its own code: cut by the generation limit, no JSON, JSON off the schema.
+  const output = (pattern: RegExp, expected: LLMErrorCode = "truncated") => (error: Error) => error instanceof InferenceOutputError && error.code === expected && pattern.test(error.message);
   assert.equal(await at("valid").chat(chat), "{\"ok\": true}");
   assert.equal(await at("reasoned").chat(chat), "{\"ok\": true}");
   await assert.rejects(at("exhausted").chat(chat), output(/raisonnement \(thinking\)/));
   await assert.rejects(at("truncated").chat(chat), output(/incomplète.*limite de 2048 tokens/));
   await assert.rejects(at("unfinished").chat(chat), output(/non terminée/));
-  await assert.rejects(at("empty").chat(chat), output(/vide/));
+  await assert.rejects(at("empty").chat(chat), output(/vide/, "invalid-json"));
   // The reasoning is never promoted to the answer, even when it looks like valid JSON.
-  await assert.rejects(at("thinking-only").chat(chat), output(/vide/));
+  await assert.rejects(at("thinking-only").chat(chat), output(/vide/, "invalid-json"));
   // Syntactically broken JSON reaches askJson, which retries once then refuses it.
   const inference = bindInference({ type: "ollama", baseUrl: `${server.url}/malformed/`, policy, options });
-  await assert.rejects(askJson(inference, { model: "qwen3:1.7b", system: "s", prompt: "p" }, z.object({ ok: z.boolean() })), output(/non conforme/));
+  await assert.rejects(askJson(inference, { model: "qwen3:1.7b", system: "s", prompt: "p" }, z.object({ ok: z.boolean() })), output(/non conforme : aucun objet JSON/, "invalid-json"));
+  // Valid JSON off the schema is a validation failure, not a JSON one.
+  const valid = bindInference({ type: "ollama", baseUrl: `${server.url}/valid/`, policy, options });
+  await assert.rejects(askJson(valid, { model: "qwen3:1.7b", system: "s", prompt: "p" }, z.object({ ok: z.literal(false) })), output(/non conforme au format attendu/, "schema"));
   // Free text keeps a truncated answer (no JSON contract), but not an exhausted reasoning.
   assert.equal(await at("truncated").chat({ ...chat, json: false }), "{\"messages\": [");
   await assert.rejects(at("exhausted").chat({ ...chat, json: false }), output(/raisonnement/));
@@ -129,7 +141,10 @@ test("ollama: unavailable server, timeout and interrupted connection wait withou
   const server = await fakeOllama(t, { "/api/version": { body: { version: "1" }, delayMs: 1_500 }, "/api/chat": { cut: true } });
   const client = createOllamaClient({ baseUrl: server.url, policy });
   await assert.rejects(client.version({ timeoutMs: 300 }), code(InferenceUnavailableError, "timeout"));
-  await assert.rejects(client.chat(chat), code(InferenceUnavailableError, "interrupted"));
+  // The socket error survives as the technical cause (the log shows it, the message stays fixed).
+  await assert.rejects(client.chat(chat), (error: Error) => code(InferenceUnavailableError, "interrupted")(error) && error.cause instanceof Error && (error.cause as Error & { code: string }).code === "network");
+  const refused = await createOllamaClient({ baseUrl: `http://127.0.0.1:${port}`, policy }).version().then(() => assert.fail("refused"), (error: Error) => error);
+  assert.equal(((refused.cause as Error).cause as Error & { code: string }).code, "ECONNREFUSED");
   // A name that does not resolve is unreachable too.
   const unresolved = createOllamaClient({ baseUrl: "http://ollama.test:11434", policy, fetch: createProviderFetch(policy, { resolve: async () => { throw new Error("ENOTFOUND"); } }) });
   await assert.rejects(unresolved.version(), code(InferenceUnavailableError, "unreachable"));
@@ -156,7 +171,7 @@ test("ollama: missing model, memory, context and server errors are typed without
   await assert.rejects(at("refused").chat(chat), (error: Error) => code(InferenceConfigError, "http")(error) && !/token/.test(error.message));
   await assert.rejects(at("bad").chat(chat), code(InferenceOutputError, "invalid-response"));
   await assert.rejects(at("odd").chat(chat), code(InferenceOutputError, "invalid-response"));
-  await assert.rejects(at("truncated").chat(chat), (error: Error) => code(InferenceOutputError, "invalid-response")(error) && /incomplète/.test(error.message));
+  await assert.rejects(at("truncated").chat(chat), (error: Error) => code(InferenceOutputError, "truncated")(error) && /incomplète/.test(error.message));
   // Free text may legitimately stop at the limit.
   assert.equal(await at("truncated").chat({ ...chat, json: false }), "{\"messages\": [");
   await assert.rejects(at("odd").models(), code(InferenceOutputError, "invalid-response"));

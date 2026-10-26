@@ -12,9 +12,10 @@ import { canonicalUrl } from "./stories";
 /**
  * Semi-autonomous source catalogue: `<vault>/watch/sources/<uuid>.md`, private (0700), one file
  * per source, owned by one user and shared by that user's agents through topic attribution.
- * Only `approved` sources are ever collected: every proposal, including the owner's own and the
- * agents' discoveries, waits for an explicit decision. Each decision is appended to `history`;
- * deletion keeps a tombstone, so rejected or deleted sources are never proposed again.
+ * The status is the owner's global trust decision (trust.ts): `proposed` = pending, `approved`,
+ * `rejected` = denied. Pending and approved sources are collected and analysed; only approved ones
+ * can establish a claim. Each decision is appended to `history`; deletion keeps a tombstone, so
+ * rejected or deleted sources are never proposed again.
  */
 const iso = z.iso.datetime();
 const httpUrl = z.string().max(2_000).refine(value => {
@@ -44,15 +45,17 @@ const editsSchema = z.object({
   pollMinutes: z.number().int().min(15).max(1_440), reliability: z.enum(RELIABILITY),
 }).partial().strict();
 export const decisionSchema = z.object({
-  action: z.enum(["approve", "reject", "disable", "delete", "update"]), revision: z.uuid(),
+  action: z.enum(["approve", "reject", "reset", "disable", "enable", "delete", "update"]), revision: z.uuid(),
   note: z.string().trim().max(1_000).optional(), edits: editsSchema.optional(),
 }).strict();
 const FROM: Record<z.infer<typeof decisionSchema>["action"], readonly Source["status"][]> = {
-  approve: ["proposed", "rejected", "disabled"], reject: ["proposed"], disable: ["approved"],
+  approve: ["proposed", "rejected", "disabled"], reject: ["proposed", "approved", "disabled"], reset: ["approved", "rejected", "disabled"], disable: ["approved", "proposed"], enable: ["disabled"],
   delete: ["proposed", "approved", "rejected", "disabled"], update: ["proposed", "approved", "disabled"],
 };
-const TO = { approve: "approved", reject: "rejected", disable: "disabled", delete: "deleted" } as const;
-const HISTORY_ACTION = { approve: "approved", reject: "rejected", disable: "disabled", delete: "deleted", update: "updated" } as const;
+const TO = { approve: "approved", reject: "rejected", reset: "proposed", disable: "disabled", delete: "deleted" } as const;
+// `reset` (back to pending) is recorded as an update of the status: files stay readable by earlier versions.
+// `enable` restores the status the source had before it was disabled (statusBeforeDisable).
+const HISTORY_ACTION = { approve: "approved", reject: "rejected", reset: "updated", disable: "disabled", delete: "deleted", update: "updated" } as const;
 
 export type Proposal = {
   url: string; kind: Source["kind"]; site: string | null; publisher: string; topicIds: string[];
@@ -80,6 +83,32 @@ export function estimateReliability({ url, citedBy = 0, entries }: { url: string
   return { level, reasons, estimated: true };
 }
 
+export const isCollectable = (source: Pick<Source, "status">) => source.status === "approved" || source.status === "proposed";
+
+/** The status a disabled source had before its collection was turned off (re-enabling restores it). */
+export function statusBeforeDisable(source: Pick<Source, "history">): "approved" | "proposed" {
+  let status: string = "proposed";
+  let before: string = "approved";
+  for (const entry of source.history) {
+    if (entry.action === "disabled") before = status;
+    status = entry.action === "updated" ? String(entry.changes?.status ?? status) : entry.action;
+  }
+  return before === "proposed" ? "proposed" : "approved";
+}
+
+/**
+ * Owner input: trimmed, `https://` added when no scheme is given, http(s) only, no credentials,
+ * no fragment, tracking parameters removed (canonicalUrl).
+ */
+export function normalizeSourceUrl(input: string) {
+  const text = input.trim();
+  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`;
+  let url: URL;
+  try { url = new URL(withScheme); } catch { throw new TopicError("Adresse invalide."); }
+  if (!["http:", "https:"].includes(url.protocol)) throw new TopicError("Seules les adresses http(s) sont acceptées.");
+  if (url.username || url.password) throw new TopicError("Une adresse ne doit pas contenir d’identifiants.");
+  return httpUrl.parse(canonicalUrl(url.href).url);
+}
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
 const decode = (text: string) => { const match = /^---\n([\s\S]*?)\n---\n/.exec(text); if (!match) throw new Error("invalid"); return parse(match[1]); };
 
@@ -127,18 +156,40 @@ export function createSourceStore({ vault, topics, now = () => new Date() }: { v
     if (!source) throw new TopicError("Source introuvable.", 404);
     return source;
   }
-  /** Approved sources of every owner: the collector's only input. */
   async function approved() {
     return (await all()).sources.filter(source => source.status === "approved");
   }
+  /** Pending and approved sources of every owner: the collector's only input. Denied, disabled and deleted ones are never fetched. */
+  async function collectable() {
+    return (await all()).sources.filter(source => isCollectable(source));
+  }
 
-  /** Idempotent per owner and feed URL, whatever the existing status (a rejection is not undone by re-proposing). */
-  async function propose(owner: string, input: Proposal, by: string) {
+  /** The owner's source (tombstones included) whose feed or site is this address. */
+  async function find(owner: string, url: string) {
+    const key = canonicalUrl(url).key;
+    return (await all()).sources.find(source => source.owner === owner && [source.url, source.site].some(address => address && canonicalUrl(address).key === key)) ?? null;
+  }
+
+  /**
+   * Idempotent per owner and feed URL, whatever the existing status: a rejection is not undone by
+   * re-proposing, and a deleted source stays deleted (never re-discovered) unless `revive` (the
+   * owner adding it again by hand): it is then pending again, with the same id and its history.
+   */
+  async function propose(owner: string, input: Proposal, by: string, { revive = false } = {}) {
     const url = httpUrl.parse(input.url);
     await validTopics(input.topicIds);
     return exclusive(async () => {
       const key = canonicalUrl(url).key;
       const existing = (await all()).sources.find(source => source.owner === owner && canonicalUrl(source.url).key === key);
+      if (existing?.status === "deleted" && revive) {
+        const at = now().toISOString();
+        const source = sourceSchema.parse({
+          ...existing, status: "proposed", topicIds: input.topicIds, revision: randomUUID(), updatedAt: at,
+          history: [...existing.history, { at, by, action: "proposed", note: input.note ?? "Ajoutée à nouveau après suppression.", changes: null }],
+        });
+        await write(source);
+        return { source, created: false, revived: true };
+      }
       if (existing) return { source: existing, created: false };
       const at = now().toISOString();
       const source = sourceSchema.parse({
@@ -164,19 +215,20 @@ export function createSourceStore({ vault, topics, now = () => new Date() }: { v
       if (!FROM[decision.action].includes(source.status)) throw new TopicError("Action impossible dans l’état actuel de la source.", 409);
       const at = now().toISOString();
       const { reliability, ...edits } = decision.edits ?? {};
-      const changes: Record<string, unknown> = { ...edits, ...(reliability ? { reliability } : {}) };
+      const status = decision.action === "update" ? source.status : decision.action === "enable" ? statusBeforeDisable(source) : TO[decision.action];
+      const action = decision.action === "enable" ? (status === "approved" ? "approved" : "updated") : HISTORY_ACTION[decision.action];
+      const changes: Record<string, unknown> = { ...edits, ...(reliability ? { reliability } : {}), ...(action === "updated" && status === "proposed" && decision.action !== "update" ? { status: "proposed" } : {}) };
       const next: Source = sourceSchema.parse({
         ...source, ...edits,
         ...(reliability ? { reliability: { ...source.reliability, level: reliability, estimated: false } } : {}),
-        status: decision.action === "update" ? source.status : TO[decision.action],
-        revision: randomUUID(), updatedAt: at,
-        history: [...source.history, { at, by: owner, action: HISTORY_ACTION[decision.action], note: decision.note || null, changes: Object.keys(changes).length ? changes : null }],
+        status, revision: randomUUID(), updatedAt: at,
+        history: [...source.history, { at, by: owner, action, note: decision.note || null, changes: Object.keys(changes).length ? changes : null }],
       });
       await write(next);
       return next;
     });
   }
 
-  return { list, get, approved, propose, decide };
+  return { list, get, find, approved, collectable, propose, decide };
 }
 export type SourceStore = ReturnType<typeof createSourceStore>;

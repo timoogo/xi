@@ -75,11 +75,16 @@ async function world(t: test.TestContext) {
     { publisher: "Le Quotidien", title: "Le Parlement adopte la réforme des retraites", summary: "Le Parlement a définitivement adopté jeudi la réforme des retraites." },
     { publisher: "Le Journal", title: "Réforme des retraites : vote définitif", summary: "Les parlementaires ont voté jeudi la réforme des retraites." },
   ];
+  // Approved catalogue sources: evaluation only uses articles of the owner's catalogue (trust.ts).
+  const feeds = await Promise.all(items.map(async (item, i) => {
+    const { source } = await sources.propose("alice", { url: `https://${i}.example/rss`, kind: "feed", site: null, publisher: item.publisher, topicIds: [topicId], reliability: { level: "inconnue", reasons: [], estimated: true } }, "alice");
+    return sources.decide("alice", source.id, { action: "approve", revision: source.revision });
+  }));
   /** A collected story (shared by the owner's agents). */
   function story() {
     const ids: string[] = [];
     for (const [i, item] of items.entries()) {
-      recordEntries(db, { owner: "alice", source: { id: `src-${i}-${randomUUID()}`, publisher: item.publisher, ownerGroup: null, topicIds: [topicId] }, entries: [{ url: `https://${i}.example/${randomUUID()}`, guid: null, title: item.title, summary: item.summary, publishedAt: "2026-01-15T09:00:00.000Z", author: null, credits: [], links: [] }], now: clock });
+      recordEntries(db, { owner: "alice", source: { id: feeds[i].id, publisher: item.publisher, ownerGroup: null, topicIds: [topicId] }, entries: [{ url: `https://${i}.example/${randomUUID()}`, guid: null, title: item.title, summary: item.summary, publishedAt: "2026-01-15T09:00:00.000Z", author: null, credits: [], links: [] }], now: clock });
       ids.push((db.prepare("SELECT id FROM watch_item ORDER BY rowid DESC LIMIT 1").get() as { id: string }).id);
     }
     const storyId = (db.prepare("SELECT story_id FROM watch_item WHERE id = ?").get(ids[0]) as { story_id: string }).story_id;

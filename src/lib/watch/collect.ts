@@ -5,8 +5,9 @@ import { discoverFeeds, FeedError, parseFeed, parseJsonApi, type JsonApiMapping,
 import type { JobQueue } from "./jobs";
 import { FetchError, type PoliteFetch } from "./net";
 import { nightWindow } from "./schedule";
-import { estimateReliability, type Source, type SourceStore } from "./sources";
+import { estimateReliability, isCollectable, type Source, type SourceStore } from "./sources";
 import { migrateWatchItems, recordEntries } from "./stories";
+import { trustResolver } from "./trust";
 import type { Handler } from "./worker";
 
 const DAY = 86_400_000;
@@ -47,7 +48,7 @@ export const sourceState = (db: Database.Database, id: string) => db.prepare<[st
 export const runningAgents = (agents: WatchAgent[]) => agents.filter(agent => agent.active && agent.watch.valid && agent.watch.policy.enabled && !agent.watch.policy.paused);
 const agentTopics = (agent: WatchAgent) => [agent.primaryTopicId, ...agent.secondaryTopicIds];
 
-/** Collection jobs for due approved sources used by at least one running agent of their owner. */
+/** Collection jobs for due pending or approved sources used by at least one running agent of their owner. */
 export function planCollection(db: Database.Database, queue: JobQueue, sources: Source[], agents: WatchAgent[], now: number) {
   migrateWatchCollection(db);
   const topicsByOwner = new Map<string, Set<string>>();
@@ -58,7 +59,7 @@ export function planCollection(db: Database.Database, queue: JobQueue, sources: 
   }
   let planned = 0;
   for (const source of sources) {
-    if (source.status !== "approved" || !source.topicIds.some(topic => topicsByOwner.get(source.owner)?.has(topic))) continue;
+    if (!isCollectable(source) || !source.topicIds.some(topic => topicsByOwner.get(source.owner)?.has(topic))) continue;
     const due = sourceState(db, source.id)?.next_fetch_at ?? 0;
     if (due > now) continue;
     if (queue.enqueue({ kind: "collect-source", key: `collect-source:${source.id}:${due}`, payload: { sourceId: source.id, owner: source.owner }, runAfter: now, maxAttempts: 3 }).created) planned++;
@@ -90,7 +91,7 @@ export function collectHandler({ db, sources, fetch, now = Date.now }: { db: Dat
   return async job => {
     const { sourceId, owner } = job.payload as { sourceId: string; owner: string };
     const source = await sources.get(owner, sourceId).catch(() => null);
-    if (!source || source.status !== "approved") return { status: "done", result: { outcome: "skipped", reason: "not-approved" } };
+    if (!source || !isCollectable(source)) return { status: "done", result: { outcome: "skipped", reason: "not-collectable" } };
     const state = sourceState(db, source.id);
     const started = now();
     let outcome: "ok" | "not-modified" | "error" | "robots";
@@ -141,8 +142,10 @@ export function collectHandler({ db, sources, fetch, now = Date.now }: { db: Dat
  * Proposal from a feed or site URL: a feed is used directly, an HTML page is searched for its
  * advertised feeds. The feed must parse and contain entries. Nothing is approved here.
  */
-export async function proposeFromUrl({ fetch, sources, owner, url, topicIds, by, citedBy = 0, note = null, api = null }: {
+export async function proposeFromUrl({ fetch, sources, owner, url, topicIds, by, citedBy = 0, note = null, api = null, revive = false }: {
   fetch: PoliteFetch; sources: SourceStore; owner: string; url: string; topicIds: string[]; by: string; citedBy?: number; note?: string | null; api?: JsonApiMapping | null;
+  /** The owner adding the address by hand: a deleted source comes back (pending). */
+  revive?: boolean;
 }) {
   const read = async (target: string) => {
     const response = await fetch(target, { headers: { Accept: api ? "application/json" : "application/rss+xml, application/atom+xml, text/html;q=0.8, */*;q=0.5" } });
@@ -178,7 +181,7 @@ export async function proposeFromUrl({ fetch, sources, owner, url, topicIds, by,
   return sources.propose(owner, {
     url: feedUrl, kind: api ? "json" : "feed", site: site ?? parsed.site, publisher: parsed.title ?? siteName ?? new URL(feedUrl).hostname,
     topicIds, reliability: estimateReliability({ url: feedUrl, citedBy, entries: parsed.entries }), api, note,
-  }, by);
+  }, by, { revive });
 }
 
 /** Host with its port, without "www.": the port is kept so the proposal targets what was linked. */
@@ -187,9 +190,9 @@ const MAX_PENDING = 20;
 const PER_DAY = 3;
 
 /**
- * Agent-driven discovery: domains linked by at least two approved sources of the agent's topics
- * during the last week, not yet in the owner's catalogue (any status, deleted included), become
- * proposals. At most three a day, none beyond twenty pending proposals.
+ * Agent-driven discovery: domains linked by at least two sources approved for the agent on one of
+ * its topics (trust.ts) during the last week, not yet in the owner's catalogue (any status, deleted
+ * included), become proposals. At most three a day, none beyond twenty pending proposals.
  */
 export function discoverHandler({ db, sources, agents, fetch, now = Date.now }: { db: Database.Database; sources: SourceStore; agents: () => Promise<WatchAgent[]>; fetch: PoliteFetch; now?: () => number }): Handler {
   migrateWatchCollection(db);
@@ -201,7 +204,8 @@ export function discoverHandler({ db, sources, agents, fetch, now = Date.now }: 
     const { sources: catalog } = await sources.list(agent.owner, { includeDeleted: true });
     if (catalog.filter(source => source.status === "proposed").length >= MAX_PENDING) return { status: "done", result: { outcome: "skipped", reason: "too-many-pending" } };
     const known = new Set(catalog.flatMap(source => [host(source.url), source.site && host(source.site)]).filter((value): value is string => !!value));
-    const approved = catalog.filter(source => source.status === "approved" && source.topicIds.some(topic => topics.has(topic)));
+    const trust = await trustResolver(db, sources, agent.owner);
+    const approved = catalog.filter(source => source.topicIds.some(topic => topics.has(topic) && trust.source(source.id, agent.id, topic) === "approved"));
     if (!approved.length) return { status: "done", result: { outcome: "skipped", reason: "no-approved-source" } };
     // An item cites for its original source only: a feed that merely relays it is not a second citation.
     const rows = db.prepare<unknown[], { links: string; source_id: string; url: string }>(`SELECT links, source_id, url FROM watch_item

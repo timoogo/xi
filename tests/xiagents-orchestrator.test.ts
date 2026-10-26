@@ -53,6 +53,34 @@ test("queue: major events first, manual next, aging prevents starvation", () => 
   db.close();
 });
 
+test("queue: a mass re-evaluation never holds back drafting; major events, aging and the inference limit still apply", () => {
+  const db = new Database(":memory:");
+  let clock = at("2026-03-02T10:00:00Z");
+  const queue = createJobQueue(db, () => clock);
+  const limits = [{ kinds: ["evaluate-story", "draft-candidate"], max: 1 }];
+  const kinds = ["evaluate-story", "draft-candidate", "collect-source"];
+  // A backlog of 10 re-evaluations (a bulk relaunch: ordinary priority) queued 30 min before an accepted candidate's draft.
+  for (let i = 0; i < 10; i++) queue.enqueue({ kind: "evaluate-story", key: `bulk-${i}`, payload: null, runAfter: clock - 30 * 60_000 });
+  queue.enqueue({ kind: "draft-candidate", key: "draft", payload: null });
+  // One evaluation is already running: never interrupted, and no second model job beside it.
+  const running = queue.claim(["evaluate-story"], 60_000, limits)!;
+  assert.equal(running.kind, "evaluate-story");
+  assert.equal(queue.claim(kinds, 60_000, limits), null, "the inference limit holds: the draft waits, nothing is preempted");
+  queue.complete(running);
+  assert.equal(queue.claim(kinds, 60_000, limits)!.key, "draft", "next model slot: the draft, before the backlog");
+  // A fresh major event still passes before an ordinary draft.
+  db.exec("UPDATE watch_job SET state = 'done' WHERE state = 'running'");
+  queue.enqueue({ kind: "draft-candidate", key: "draft-2", payload: null });
+  queue.enqueue({ kind: "evaluate-story", key: "major", payload: null, priority: PRIORITY.major });
+  assert.equal(queue.claim(kinds, 60_000)!.key, "major");
+  // Anti-starvation: evaluations waiting well over an hour longer than a draft pass first.
+  queue.enqueue({ kind: "evaluate-story", key: "starving", payload: null, runAfter: clock - 2 * HOUR });
+  assert.equal(queue.claim(kinds, 60_000)!.key, "starving");
+  assert.equal(queue.claim(kinds, 60_000)!.key, "draft-2");
+  clock += 1;
+  db.close();
+});
+
 test("queue: the inference limit is shared by every claimer; other kinds still run", () => {
   const db = new Database(":memory:");
   const queue = createJobQueue(db, () => at("2026-03-02T10:00:00Z"));

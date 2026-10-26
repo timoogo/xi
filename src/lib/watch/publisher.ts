@@ -1,15 +1,20 @@
+import { editorialDecision } from "./events";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { AccountStore } from "../accounts/store";
 import type { WatchAgent } from "../accounts/types";
 import type { PublicationStore } from "../publications/store";
 import { migrateWatchCollection, runningAgents } from "./collect";
+import { splitSourcesSection } from "../publications/markdown";
 import { migrateWatchCandidates, normalizeQuote } from "./evaluate";
+import { checkFormat } from "./format";
+import { agentFormat } from "./format-store";
 import type { JobQueue } from "./jobs";
 import { publicationGate, type GateReason } from "./schedule";
 import { agentSchedule, localSunday, nextPublishOpening, publishOpen, publishWindow } from "../xiagents/schedule";
 import type { SourceStore } from "./sources";
 import { tokens } from "./stories";
+import { establishedUnderTrust, trustResolver } from "./trust";
 import type { Handler } from "./worker";
 
 /**
@@ -62,15 +67,18 @@ const GATE_REASONS: Record<GateReason, string> = {
   "recent-publication": "Publication récente : pas de bilan.", interval: "Intervalle minimal entre publications non écoulé.", "daily-cap": "Plafond de publications sur 24 h atteint.",
 };
 
-type CandidateRow = { story_id: string; story_version: number; status: string; lane: string | null; importance: number | null; novelty_kind: string | null; data: string };
+type CandidateRow = { story_id: string; story_version: number; status: string; lane: string | null; topic_id: string | null; importance: number | null; novelty_kind: string | null; data: string };
 type Attempt = { outcome: Outcome; reason: string; retryAt?: number | null };
 
 export function createPublisher({ db, accounts, sources, publications, settings, now = Date.now }: {
   db: Database.Database; accounts: AccountStore; sources: SourceStore; publications: PublicationStore; settings: PublishSettings; now?: () => number;
 }) {
   migrateWatchDecisions(db);
-  const decide = (agent: WatchAgent, entry: { story?: string; draft?: string; lane?: string; outcome: Outcome; reason: string; visibility?: string; id?: string }) =>
-    db.prepare("INSERT OR IGNORE INTO watch_decision VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(entry.id ?? `${entry.outcome}:${randomUUID()}`, agent.id, agent.owner, entry.story ?? null, entry.draft ?? null, entry.lane ?? null, entry.outcome, entry.reason, entry.visibility ?? null, now());
+  const decide = (agent: WatchAgent, entry: { story?: string; draft?: string; lane?: string; outcome: Outcome; reason: string; visibility?: string; id?: string }) => {
+    const result = db.prepare("INSERT OR IGNORE INTO watch_decision VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(entry.id ?? `${entry.outcome}:${randomUUID()}`, agent.id, agent.owner, entry.story ?? null, entry.draft ?? null, entry.lane ?? null, entry.outcome, entry.reason, entry.visibility ?? null, now());
+    if (result.changes) editorialDecision(entry.outcome, agent.id, entry.story);
+    return result;
+  };
   const setCandidate = (agentId: string, storyId: string, fields: Record<string, unknown>) => {
     const values = { ...fields, updated_at: now() };
     db.prepare(`UPDATE watch_candidate SET ${Object.keys(values).map(key => `${key} = @${key}`).join(", ")} WHERE agent_id = @agent AND story_id = @story`).run({ ...values, agent: agentId, story: storyId });
@@ -101,7 +109,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     const blocked = agentBlock(agent);
     if (blocked || !agent) return { outcome: "skipped", reason: blocked ?? "ΞAgent introuvable." };
     const policy = agent.watch.policy;
-    const row = db.prepare<[string, string], CandidateRow>("SELECT story_id, story_version, status, lane, importance, novelty_kind, data FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, storyId);
+    const row = db.prepare<[string, string], CandidateRow>("SELECT story_id, story_version, status, lane, topic_id, importance, novelty_kind, data FROM watch_candidate WHERE agent_id = ? AND story_id = ?").get(agentId, storyId);
     if (!row || row.status !== "drafted") return { outcome: "skipped", reason: "Aucun brouillon validé pour cette actualité." };
     const data = JSON.parse(row.data) as { draft?: { id: string; revision?: string }; weeklySelected?: boolean };
     const draftId = data.draft?.id;
@@ -116,6 +124,13 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     if (!draft) return abandon("Brouillon introuvable.");
     // Interrupted after writing: recorded now, without re-running checks that would see the publication itself.
     if (draft.status === "published") return recovered(agent, storyId, draftId, lane, draft.visibility);
+    // The agent's current limits, on the draft as it is now: never truncated, held for a new drafting.
+    const limits = agentFormat(db, agent);
+    const shape = limits.ok ? checkFormat(draft.messages.map(message => splitSourcesSection(message.body).prose), limits.format) : [`Limites de publication incohérentes : ${limits.problems.join(" ")}`];
+    if (shape.length) {
+      const reason = `Brouillon hors des limites de publication actuelles : ${shape.slice(0, 2).join(" ")}`;
+      return abandon(reason, { status: "held", reason });
+    }
     if (policy.visibility === "public") {
       if (!agent.watch.publicConfirmedAt) return trace("deferred", "Visibilité publique non confirmée.");
       if (!settings.allowPublic) return trace("deferred", "Publication publique non autorisée par l’opérateur (XI_WATCH_AUTOPUBLISH_PUBLIC).");
@@ -129,20 +144,25 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     if (now() - origin > maxAge) return abandon(`Actualité obsolète (plus de ${Math.round(maxAge / HOUR)} h) : non publiée.`);
     if (story.item_count !== row.story_version) return abandon("Nouvelles informations depuis la rédaction : actualité réévaluée.", { status: "accepted", reason: "Réévaluation après de nouvelles informations." });
 
-    // The draft's sources: each quote still in its article, each article still carried by an approved source.
-    const catalog = new Map((await sources.list(agent.owner, { includeDeleted: true })).sources.map(source => [source.id, source]));
+    // The draft's sources under the current trust of the agent and the retained topic: each quote still
+    // in its article, each article carried by a source not denied there.
+    const trust = await trustResolver(db, sources, agent.owner);
     for (const note of draft.sources) {
       const item = note.url ? db.prepare<[string, string], { id: string; title: string; summary: string }>("SELECT id, title, summary FROM watch_item WHERE owner = ? AND url = ?").get(agent.owner, note.url) : undefined;
       if (!item) return abandon(`Article source expiré : ${note.publisher ?? note.title}.`);
       const text = normalizeQuote(`${item.title}\n${item.summary}`);
       if ((note.claims ?? []).some(quote => !text.includes(normalizeQuote(quote)))) return abandon(`Citation introuvable dans ${note.publisher ?? note.title} : brouillon non publié.`);
-      const carriers = db.prepare<[string], { source_id: string }>("SELECT source_id FROM watch_item_seen WHERE item_id = ?").all(item.id).map(entry => catalog.get(entry.source_id)).filter(source => source?.status === "approved");
-      if (!carriers.length) return abandon(`Source plus approuvée pour ${note.publisher ?? note.title}.`);
-      const healthy = carriers.some(source => ((db.prepare<[string], { consecutive_errors: number }>("SELECT consecutive_errors FROM watch_source_state WHERE source_id = ?").get(source!.id))?.consecutive_errors ?? 0) < SUSTAINED_ERRORS);
+      const carriers = db.prepare<[string], { source_id: string }>("SELECT source_id FROM watch_item_seen WHERE item_id = ?").all(item.id).map(entry => entry.source_id).filter(id => trust.source(id, agentId, row.topic_id) !== "denied");
+      // An explicit denial: the draft cites a source that is no evidence any more; the candidate waits for new material.
+      if (!carriers.length) { const reason = `Source refusée ou retirée pour ${note.publisher ?? note.title} : brouillon non publié.`; return abandon(reason, { status: "held", lane: null, reason }); }
+      const healthy = carriers.some(id => ((db.prepare<[string], { consecutive_errors: number }>("SELECT consecutive_errors FROM watch_source_state WHERE source_id = ?").get(id))?.consecutive_errors ?? 0) < SUSTAINED_ERRORS);
       // Retried at the next window; it does not hold the other candidates of this one.
       if (!healthy) return trace("deferred", `Source indisponible depuis plusieurs collectes : ${note.publisher ?? note.title}.`);
     }
-    if (!(db.prepare("SELECT count(*) AS n FROM watch_claim WHERE agent_id = ? AND story_id = ? AND status IN ('corroborated', 'primary')").get(agentId, storyId) as { n: number }).n) return abandon("Plus aucune affirmation établie.");
+    const claims = db.prepare<[string, string], { status: string; evidence: string }>("SELECT status, evidence FROM watch_claim WHERE agent_id = ? AND story_id = ?").all(agentId, storyId);
+    if (!claims.some(claim => claim.status === "corroborated" || claim.status === "primary")) return abandon("Plus aucune affirmation établie.");
+    // Trust lowered since the evaluation (approval withdrawn, pending sources only): retried at the next window, never published meanwhile.
+    if (!establishedUnderTrust(db, trust, { agentId, topicId: row.topic_id, claims })) return trace("deferred", "Source plus approuvée : aucune affirmation n’est plus établie par une source approuvée dans ce périmètre.");
 
     // No equivalent recent publication; no second alert on one event without a real development.
     if (db.prepare("SELECT 1 FROM watch_decision WHERE agent_id = ? AND story_id = ? AND outcome = 'published' AND at > ?").get(agentId, storyId, now() - 7 * DAY)) return abandon("Actualité déjà publiée cette semaine.");
@@ -237,6 +257,7 @@ export function createPublisher({ db, accounts, sources, publications, settings,
     const { agentId } = job.payload as { agentId: string };
     const agent = (await accounts.watchAgents()).find(item => item.id === agentId);
     if (!agent || !runningAgents([agent]).length) return { status: "done", result: { outcome: "skipped", reason: "not-running" } };
+    if (agent.watch.policy.weeklyReview === false) return { status: "done", result: { outcome: "skipped", reason: "Bilan hebdomadaire désactivé pour ce ΞAgent." } };
     if (!localSunday(agent, now()) || !publishOpen(agent, now())) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["not-weekly-window"] } };
     await publications.ensureIndexed();
     if (publications.agentPublications(agentId).some(p => !p.test && now() - p.publishedAt.getTime() < 7 * DAY)) return { status: "done", result: { outcome: "skipped", reason: GATE_REASONS["recent-publication"] } };

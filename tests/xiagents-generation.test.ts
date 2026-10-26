@@ -1,3 +1,4 @@
+import { DEFAULT_FORMAT } from "../src/lib/watch/format";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -144,7 +145,7 @@ test("real publication: the agent's model drafts a post and a thread, private dr
   assert.equal((await publications.get({ id: "alice" }, thread.draft.id)).type, "thread");
 
   // Confirmation is the draft's own review action: private publication, real (not test) content.
-  await reviewDraft({ db, publications, owner: "alice", agentId, draftId: post.draft.id, input: { action: "approve", revision: draft.revision } });
+  await reviewDraft({ db, publications, owner: "alice", agentId, draftId: post.draft.id, format: DEFAULT_FORMAT, input: { action: "approve", revision: draft.revision } });
   const live = await published();
   assert.equal(live.length, 1);
   assert.equal(live[0].test, false, "real content is never marked as a fixture");
@@ -168,7 +169,7 @@ test("real publication: a model failure is reported as is, never replaced by fix
   // A thread needs two distinct verified claims: refused before any model call, never padded.
   const single = candidate([claims[0]], 0.7, "Archipel des Kerguelen, observatoire austral");
   const counted = fakeModel();
-  await assert.rejects(generate(counted, { format: "thread", storyId: single }), (error: TopicError) => error.status === 422 && /au moins deux affirmations/.test(error.message));
+  await assert.rejects(generate(counted, { format: "thread", storyId: single }), (error: TopicError) => error.status === 422 && /au moins 2 affirmations/.test(error.message));
   assert.equal(counted.requests.length, 0);
 
   // Nothing written: no fixture, no draft, no publication; the information stays available.

@@ -327,18 +327,18 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       const agent = (await accounts.watchAgents()).find(item => item.id === agentId);
       if (!agent) throw new TopicError("ΞAgent introuvable après son enregistrement.");
       const topicSet = new Set(agentTopics());
-      const approved = (await sources.approved()).filter(source => source.owner === deployment.owner && source.topicIds.some(topic => topicSet.has(topic)));
+      const collectable = (await sources.collectable()).filter(source => source.owner === deployment.owner && source.topicIds.some(topic => topicSet.has(topic)));
       const at = now().getTime();
       if (watchOpen(agent, at)) {
         const queue = createJobQueue(db, () => now().getTime());
         let planned = 0;
-        for (const source of approved) if (queue.enqueue({ kind: "collect-source", key: `collect-source:deploy:${deployment.id}:${source.id}`, payload: { sourceId: source.id, owner: deployment.owner, agentId, trigger: "manual" }, runAfter: at, maxAttempts: 3, priority: PRIORITY.manual }).created) planned++;
+        for (const source of collectable) if (queue.enqueue({ kind: "collect-source", key: `collect-source:deploy:${deployment.id}:${source.id}`, payload: { sourceId: source.id, owner: deployment.owner, agentId, trigger: "manual" }, runAfter: at, maxAttempts: 3, priority: PRIORITY.manual }).created) planned++;
         log("info", `Plage de veille ouverte : ${planned} première(s) collecte(s) planifiée(s) pour le prochain passage du worker.`);
       } else {
         const next = nextWatchOpening(agent, at);
         log("info", next === null ? "Calendrier de veille vide : aucune collecte ne sera planifiée." : `Plage de veille fermée : première veille à ${new Date(next).toISOString()}.`);
       }
-      log("info", `${approved.length} source(s) approuvée(s) couvrent les topics du ΞAgent.`);
+      log("info", `${collectable.length} source(s) approuvée(s) ou en attente couvrent les topics du ΞAgent.`);
     },
     async readiness(deployment, { log }) {
       const agentId = deployment.ids.agentId!;
