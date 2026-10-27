@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/publications/markdown-view";
 import type { WatchDiagnostics } from "@/lib/watch/diagnostics";
+import { LANE } from "./labels";
 
 type Draft = WatchDiagnostics["drafts"][number];
 type Act = (task: () => Promise<unknown>, success: string) => Promise<void>;
 const REVIEW = { pending: "Brouillon réel non publié · privé", rejected: "Brouillon rejeté", approved: "Approuvé · publié en privé" } as const;
-const LANE: Record<string, string> = { night: "fenêtre nocturne", immediate: "alerte majeure", weekly: "bilan hebdomadaire" };
 const score = (value: number | null) => (value === null ? "—" : value.toFixed(2));
 
 async function review(agentId: string, draft: Draft, data: Record<string, unknown>) {

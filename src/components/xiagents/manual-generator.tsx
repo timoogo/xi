@@ -32,7 +32,7 @@ export function ManualGenerator({ agentId, revision }: { agentId: string; revisi
     finally { setBusy(false); }
   }
   return <section aria-labelledby="manual-generator" className="space-y-4 border-b p-4">
-    <h2 id="manual-generator" className="text-lg font-bold">Générer des fixtures</h2>
+    <h3 id="manual-generator" className="text-lg font-bold">Générer des fixtures</h3>
     <p className="text-sm text-muted-foreground">Outil de test et de développement : contenu fictif généré localement, sans modèle ni source, marqué « Contenu de test fictif ». Choisissez la visibilité et modifiez les messages avant de publier sous l’identité du ΞAgent. Le marquage de test est conservé automatiquement.</p>
     <fieldset disabled={busy} className="flex flex-wrap items-end gap-3">
       <label className="grid gap-1">Format<select className="rounded-md border bg-background p-2" value={thread ? "thread" : "post"} onChange={event => { setThread(event.target.value === "thread"); invalidate(); }}><option value="post">Post simple</option><option value="thread">Thread</option></select></label>

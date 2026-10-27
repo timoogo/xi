@@ -8,7 +8,7 @@ export const runDuration = (run: RunRecord) => run.finishedAt === null ? "en cou
 export function RunHistory({ agentId, runs, retentionDays }: { agentId: string; runs: RunRecord[]; retentionDays: number }) {
   const last = runs.at(-1);
   return <section aria-labelledby="xiagent-runs" className="space-y-3 border-b p-4">
-    <h2 id="xiagent-runs" className="text-lg font-bold">Historique d’exécution</h2>
+    <h3 id="xiagent-runs" className="text-lg font-bold">Historique d’exécution</h3>
     <p className="text-xs text-muted-foreground">Exécutions des tâches de veille, d’analyse et de publication, et commandes du propriétaire. Journal détaillé conservé {retentionDays} jours ; publications, sources et décisions éditoriales toujours conservées.</p>
     {!runs.length ? <p className="text-sm">Aucune exécution enregistrée.</p> : <div className="relative overflow-x-auto">
       <table className="w-full min-w-[40rem] text-left text-sm">

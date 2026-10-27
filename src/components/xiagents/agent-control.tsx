@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { Profile } from "@/lib/accounts/types";
 import { scheduleSchema, type Pause, type ResolvedSchedule, type Schedule } from "@/lib/xiagents/schedule";
+import { agentMode } from "./labels";
 import { ScheduleForm } from "./schedule/schedule-form";
 
 /**
@@ -47,11 +48,10 @@ export function AgentControl(props: Props) {
     finally { setBusy(false); }
   }
   const control = (data: unknown) => send<{ runId: string; planned?: number; catchUp?: { reason: string } | null }>(`/api/xiagents/${props.agentId}/control`, "POST", data);
-  const mode = !props.active ? "ΞAgent désactivé" : !props.enabled ? "Veille désactivée" : props.paused ? (props.pause?.resumeAt ? `En pause jusqu’au ${when(props.pause.resumeAt)}` : "En pause (durée indéterminée)") : "Automatique";
+  const mode = agentMode(props, when);
   const selected = props.candidates.find(item => item.storyId === story);
 
-  return <section id="xiagent-control" aria-labelledby="xiagent-control-title" className="space-y-4 border-b p-4">
-    <h2 id="xiagent-control-title" className="text-lg font-bold">Pilotage</h2>
+  return <section aria-labelledby="xiagent-control-title" className="space-y-4 border-b p-4">
     <div className="rounded-md border p-3 text-sm" aria-live="polite">
       <p><span className="font-medium">Mode :</span> {mode}</p>
       {props.paused && props.pause && <p className="text-muted-foreground">Depuis le {when(props.pause.since)} · reprise {props.pause.resumeWith === "catch-up" ? "avec rattrapage" : "à partir de ce moment"}{props.pause.resumeAt ? " (programmée)" : ""}.</p>}

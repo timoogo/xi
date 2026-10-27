@@ -99,6 +99,8 @@ test("ΞAgent creation: unavailable AI said as such, manual review, calendars by
   assert.equal(watch.enabled, true); assert.equal(watch.paused, false);
 
   // Controls: automatic → paused → resumed; a manual run never changes the mode.
+  const openSection = async (name: string) => { const toggle = page.getByRole("heading", { name, exact: true }).getByRole("button"); if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click(); };
+  await openSection("Pilotage");
   const control = page.getByRole("region", { name: "Pilotage" });
   await control.locator("p", { hasText: "Mode : Automatique" }).waitFor();
   await control.getByRole("button", { name: "Lancer une veille" }).click();
@@ -108,6 +110,7 @@ test("ΞAgent creation: unavailable AI said as such, manual review, calendars by
   await control.locator("p", { hasText: "Mode : En pause (durée indéterminée)" }).waitFor();
   await control.getByRole("button", { name: "Reprendre maintenant" }).click();
   await control.locator("p", { hasText: "Mode : Automatique" }).waitFor();
+  await openSection("Historique et outils de debug");
   const history = page.getByRole("region", { name: "Historique d’exécution" });
   for (const kind of ["Veille manuelle", "Mise en pause", "Reprise"]) await history.getByRole("cell", { name: kind, exact: true }).first().waitFor();
   await history.getByRole("link", { name: "Détail" }).first().click();

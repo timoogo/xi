@@ -35,8 +35,7 @@ export function AvatarPanel({ agentId, name, initial, current }: { agentId: stri
   return <section aria-labelledby="xiagent-avatar-title" className="space-y-4 border-b p-4">
     <div className="flex items-center gap-3">
       <UserAvatar name={name} bloub={{ ...current, config: saved.config }} size={48} />
-      <div><h2 id="xiagent-avatar-title" className="text-lg font-bold">Avatar</h2>
-        <p className="text-sm text-muted-foreground">État réel : {ACTIVITY_LABELS[current.activity]}. Les quatre états sont communs à tous les ΞAgents ; seules la forme et l’expression se personnalisent.</p></div>
+      <p className="text-sm text-muted-foreground">État réel : {ACTIVITY_LABELS[current.activity]}. Les quatre états sont communs à tous les ΞAgents ; seules la forme et l’expression se personnalisent.</p>
     </div>
     <BloubEditor value={draft} onChange={value => { setDraft(value); setStatus(""); }} name={name} />
     <div className="flex flex-wrap gap-2">

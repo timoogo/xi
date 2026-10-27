@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Bot, Bug, Palette, Rss, Settings2 } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/current-user";
 import { getAccountStore } from "@/lib/accounts/server";
@@ -17,6 +18,10 @@ import { toChoice } from "@/components/llm/format";
 import { getLLMRuntime } from "@/lib/llm/server";
 import { AgentControl } from "@/components/xiagents/agent-control";
 import { RunHistory } from "@/components/xiagents/run-history";
+import { AgentActivity, AgentAttention, AgentStatus } from "@/components/xiagents/agent-overview";
+import { DashboardSection } from "@/components/xiagents/dashboard-section";
+import { agentMode } from "@/components/xiagents/labels";
+import { agentActivity, agentAttention } from "@/lib/xiagents/attention";
 import { globalRetentionDays } from "@/lib/watch/orchestrator";
 import { agentRuns } from "@/lib/xiagents/runs";
 import { agentSchedule, nextPublishOpening, nextWatchOpening, publishOpen, watchOpen } from "@/lib/xiagents/schedule";
@@ -44,32 +49,55 @@ export default async function XiAgentPage({ params, searchParams }: { params: Pr
   const now = Date.now();
   const iso = (value: number | null) => value === null ? null : new Date(value).toISOString();
   const runs = agentRuns(getAppDatabase(), user.id, id, Number(runsBefore) || undefined);
+  const when = (value: string | null) => value ? new Date(value).toLocaleString("fr-FR", { timeZone: "Europe/Paris", dateStyle: "medium", timeStyle: "short" }) : "aucune";
+  const control = agent?.schedule ? { enabled: agent.watch.valid && agent.watch.policy.enabled, paused: agent.watch.policy.paused, active: agent.active, pause: agent.pause ?? null,
+    status: { watchOpen: watchOpen(agent, now), publishOpen: publishOpen(agent, now), nextWatch: iso(nextWatchOpening(agent, now)), nextPublish: iso(nextPublishOpening(agent, now)) } } : null;
+  const mode = control && agentMode(control, when);
+  const status = control && {
+    mode: mode!, tone: control.active && control.enabled ? control.paused ? "paused" as const : "ok" as const : "off" as const,
+    windows: control.enabled && !control.paused ? `Veille ${control.status.watchOpen ? "ouverte" : `fermée · prochaine ouverture : ${when(control.status.nextWatch)}`} · publication ${control.status.publishOpen ? "ouverte" : `fermée · prochaine : ${when(control.status.nextPublish)}`}` : null,
+    control: control.enabled ? { label: control.paused ? "Reprendre…" : "Mettre en pause…" } : null,
+  };
   return <>
-    <PageHeader title={account.name} back={{ href: "/dashboard/xiagents", label: "Retour aux ΞAgents" }} />
-    <section className="space-y-3 border-b p-4">
+    <PageHeader title={account.name} subtitle={`@${account.handle}`} back={{ href: "/dashboard/xiagents", label: "Retour aux ΞAgents" }} />
+    <section aria-label="Identité du ΞAgent" className="space-y-3 border-b p-4">
       <div className="flex items-center gap-3"><UserAvatar name={account.name} bloub={current} size={64} /><div className="min-w-0"><h1 className="break-words text-xl font-bold">{account.name}</h1><p className="break-all text-muted-foreground">@{account.handle}</p></div></div>
       <p className="whitespace-pre-wrap break-words">{account.description}</p>
-      <p className="text-sm">Topics : {topicIds.map(id => topics.find(topic => topic.id === id)?.tag ?? "Topic indisponible").join(" · ") || "Aucun topic associé"}</p>
+      <p className="text-sm"><span className="sr-only">Topics : </span>{topicIds.length ? topicIds.map(id => <span key={id} className="mr-2 text-muted-foreground">#{topics.find(topic => topic.id === id)?.tag ?? "Topic indisponible"}</span>) : <span className="text-muted-foreground">Aucun topic associé</span>}</p>
       <div className="flex flex-wrap gap-4 text-sm">
         <Link href={`/dashboard/profiles/${id}`} className="underline">Voir le profil</Link>
         <a href={`/api/xiagents/${id}/export`} download className="underline">Exporter la configuration (YAML)</a>
         <Link href={`/dashboard/xiagents?duplicate=${id}`} className="underline">Dupliquer (sans historique)</Link>
       </div>
     </section>
-    <AvatarPanel agentId={id} name={account.name} initial={avatar} current={current} />
-    {account.editorial?.active ? <PublicationGenerator agentId={id} candidates={draftableCandidates(getAppDatabase(), id)} drafts={watch.drafts} llm={llmView.resolution} />
-      : <p className="border-b p-4">Complétez et activez ce ΞAgent depuis la liste pour générer des publications.</p>}
-    {agent?.schedule ? <AgentControl agentId={id} enabled={agent.watch.valid && agent.watch.policy.enabled} paused={agent.watch.policy.paused} active={agent.active} pause={agent.pause ?? null}
-      schedule={agent.schedule} profile={agent.profile ?? null} candidates={watch.candidates.map(item => ({ storyId: item.storyId, title: item.title, status: item.status }))}
-      status={{ watchOpen: watchOpen(agent, now), publishOpen: publishOpen(agent, now), nextWatch: iso(nextWatchOpening(agent, now)), nextPublish: iso(nextPublishOpening(agent, now)) }} />
-      : <p className="border-b p-4 text-sm">Complétez la configuration éditoriale de ce ΞAgent pour le piloter.</p>}
-    <AgentLLMPanel agentId={id} initial={llmView} instances={llmInstances.map(toChoice)} defaultInstanceId={llmGlobal.defaultInstanceId} environment={llm.environment()} />
-    <WatchPanel agentId={id} data={watch} topics={topics.map(topic => ({ id: topic.id, tag: topic.tag, name: topic.name }))} agentTopicIds={topicIds} />
-    <RunHistory agentId={id} runs={runs} retentionDays={agent ? agentSchedule(agent).retentionDays ?? globalRetentionDays() : globalRetentionDays()} />
-    {account.editorial?.active && <details className="border-b">
-      <summary className="cursor-pointer p-4 font-semibold">Outils de test et de développement</summary>
-      <ManualGenerator agentId={id} revision={account.editorial.revision} />
-    </details>}
+    <AgentStatus status={status} />
+    <AgentAttention attention={agentAttention(watch)} />
+    <AgentActivity items={agentActivity(watch)} lastFetch={watch.fetchLog[0] ?? null} nextWindow={watch.nextWindow} />
+
+    <DashboardSection id="xiagent-control" title="Pilotage" icon={<Settings2 />}>
+      {agent?.schedule && control ? <AgentControl agentId={id} enabled={control.enabled} paused={control.paused} active={control.active} pause={control.pause}
+        schedule={agent.schedule} profile={agent.profile ?? null} candidates={watch.candidates.map(item => ({ storyId: item.storyId, title: item.title, status: item.status }))} status={control.status} />
+        : <p className="p-4 text-sm">Complétez la configuration éditoriale de ce ΞAgent pour le piloter.</p>}
+    </DashboardSection>
+    <DashboardSection id="xiagent-llm" title="Intelligence artificielle" icon={<Bot />}>
+      <AgentLLMPanel agentId={id} initial={llmView} instances={llmInstances.map(toChoice)} defaultInstanceId={llmGlobal.defaultInstanceId} environment={llm.environment()} />
+    </DashboardSection>
+    <DashboardSection id="xiagent-watch" title="Veille autonome" icon={<Rss />}>
+      <WatchPanel agentId={id} data={watch} topics={topics.map(topic => ({ id: topic.id, tag: topic.tag, name: topic.name }))} agentTopicIds={topicIds} />
+    </DashboardSection>
+    <DashboardSection id="xiagent-avatar" title="Avatar" icon={<Palette />}>
+      <AvatarPanel agentId={id} name={account.name} initial={avatar} current={current} />
+    </DashboardSection>
+    <DashboardSection id="xiagent-debug" title="Historique et outils de debug" icon={<Bug />}>
+      <RunHistory agentId={id} runs={runs} retentionDays={agent ? agentSchedule(agent).retentionDays ?? globalRetentionDays() : globalRetentionDays()} />
+      {account.editorial?.active ? <PublicationGenerator agentId={id} candidates={draftableCandidates(getAppDatabase(), id)} drafts={watch.drafts} llm={llmView.resolution} />
+        : <p className="border-b p-4">Complétez et activez ce ΞAgent depuis la liste pour générer des publications.</p>}
+      {account.editorial?.active && <details className="border-b">
+        <summary className="cursor-pointer p-4 font-semibold">Outils de test et de développement</summary>
+        <ManualGenerator agentId={id} revision={account.editorial.revision} />
+      </details>}
+    </DashboardSection>
+
     <h2 className="border-b p-4 text-lg font-bold">Historique des publications</h2>
     <PublicationFeed showPublicationLinks viewer={user} scope={{ kind: "author", authorId: id }} cursor={typeof cursor === "string" ? cursor : undefined} path={`/dashboard/xiagents/${id}`} label="Publications du ΞAgent" empty={{ title: "Aucune publication", description: "Générez une publication, relisez son brouillon, puis confirmez sa publication." }} />
   </>;

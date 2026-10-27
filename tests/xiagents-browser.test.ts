@@ -34,9 +34,12 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   await page.getByRole("button", { name: "Confirmer la création", exact: true }).click();
   await page.getByText("État : ΞAgent créé", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Gérer @politiks", exact: true }).click();
-  await page.getByRole("heading", { name: "Générer une publication" }).waitFor();
+  await page.getByRole("heading", { name: "Activité autonome" }).waitFor();
+  // Detailed sections are collapsed by default: open one through its heading's disclosure button.
+  const openSection = async (name: string) => { const toggle = page.getByRole("heading", { name, exact: true }).getByRole("button"); if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click(); };
   const agentId = new URL(page.url()).pathname.split("/").at(-1)!;
   // Avatar: test the universal states in the preview only, then customise, save and reload.
+  await openSection("Avatar");
   const panel = page.getByRole("region", { name: "Avatar" });
   // Identity avatars stay neutral; the real state (active agent, watch disabled → sleeping) is only reported.
   const identity = page.locator("section").first().locator("[data-bloub]");
@@ -64,7 +67,9 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.equal((await alice.request.patch(avatarEndpoint, { headers, data: { ...stored, config: { ...stored.config, shape: "carré" } } })).status(), 400);
   assert.match(await readFile(join(app.vaultPath, "generators/politiks/index.md"), "utf8"), /shape: goutte/);
   await page.reload();
+  await openSection("Avatar");
   await panel.getByRole("button", { name: "Goutte", exact: true }).and(page.locator('[aria-pressed="true"]')).waitFor();
+  await openSection("Historique et outils de debug");
   await page.getByRole("heading", { name: "Générer une publication" }).waitFor();
   const catalog = await (await alice.request.get(`${app.origin}/api/accounts`)).json();
   const revision = catalog.accounts.find((account: { id: string }) => account.id === agentId).editorial.revision;
@@ -131,6 +136,7 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.ok(await page.evaluate(() => window.scrollY > 0), "a direct thread position scrolls to the selected message");
   // Markdown editing, final preview with the enforced test label, explicit public confirmation.
   await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
+  await openSection("Historique et outils de debug");
   await page.getByText("Outils de test et de développement", { exact: true }).click();
   await page.getByRole("combobox", { name: /^Format/ }).selectOption("post");
   await page.getByRole("combobox", { name: "Visibilité", exact: true }).selectOption("public");
@@ -160,7 +166,8 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.equal((await bobPage.goto(`${app.origin}/dashboard/publications/${row.id}`))!.status(), 404);
   await bobPage.close();
   // Watch panel: settings, pause, a refused proposal, approval and deletion of a proposed source.
-  await page.goto(`${app.origin}/dashboard/xiagents/${agentId}`);
+  // A link to a section opens it on load.
+  await page.goto(`${app.origin}/dashboard/xiagents/${agentId}#xiagent-watch`);
   const watch = page.getByRole("region", { name: "Veille autonome" });
   await watch.getByText("Désactivée", { exact: true }).waitFor();
   await watch.getByLabel("Veille activée").check();
@@ -175,6 +182,7 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   await watch.getByRole("status").filter({ hasText: "Paramètres de publication enregistrés." }).waitFor();
   await publishing.getByText("post ≤ 260 caractères", { exact: false }).waitFor();
   // Pause lives in the Pilotage section (pause details and resume choice recorded).
+  await openSection("Pilotage");
   const control = page.getByRole("region", { name: "Pilotage" });
   await control.getByRole("button", { name: "Mettre en pause" }).click();
   await control.getByRole("status").filter({ hasText: "Pause indéfinie." }).waitFor();
@@ -199,6 +207,7 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   const ownerId = (await (await alice.request.get(`${app.origin}/api/auth/get-session`)).json()).user.id;
   await createSourceStore({ vault, topics: createTopicStore({ vault, db }) }).propose(ownerId, { url: "https://feeds.example/rss", kind: "feed", site: null, publisher: "Le Quotidien", topicIds: [topic.run.topicId], reliability: { level: "inconnue", reasons: ["Flux servi en HTTPS."], estimated: true } }, `agent:${agentId}`);
   await page.reload();
+  await openSection("Veille autonome");
   await watch.getByText("En attente d’approbation (1)").waitFor();
   const card = watch.getByRole("listitem", { name: "Source Le Quotidien" });
   await card.getByText("proposée par le ΞAgent", { exact: false }).first().waitFor();
@@ -225,6 +234,10 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   migrateWatchCandidates(db);
   db.prepare("INSERT INTO watch_candidate (agent_id, story_id, owner, story_version, status, stage, data, prompt_version, created_at, updated_at) VALUES (?, ?, ?, 1, 'drafted', 'done', ?, 'veille-3.1', 0, 0)").run(agentId, crypto.randomUUID(), ownerId, JSON.stringify({ title: "Réforme des retraites", draft: { id: draftId } }));
   await page.reload();
+  // Paused agent: the draft is a normal wait, not an intervention; its link opens the section and focuses the target.
+  await page.getByRole("link", { name: "1 brouillon en attente de la reprise de la veille" }).click();
+  await page.waitForFunction(() => document.activeElement?.id === "drafts-title");
+  assert.equal(await page.getByRole("heading", { name: "Veille autonome", exact: true }).getByRole("button").getAttribute("aria-expanded"), "true");
   const draftCard = watch.getByRole("listitem", { name: "Brouillon Réforme des retraites" });
   await draftCard.getByText("Brouillon réel non publié · privé", { exact: false }).waitFor();
   await draftCard.getByRole("button", { name: "Modifier" }).click();
@@ -245,6 +258,8 @@ test("ΞAgents browser: creation, preview, confirmation, private agent feed and 
   assert.deepEqual([approvedDraft.status, approvedDraft.visibility], ["published", "private"]);
   assert.match(approvedDraft.messages[0].body, /^Jeudi, le Parlement a \*\*adopté\*\*[\s\S]*## Sources/);
   assert.equal((await bob.request.get(`${app.origin}/api/publications/${draftId}`)).status(), 404);
+  // Three columns kept: navigation, page, discovery panel on the right.
+  assert.equal(await page.getByRole("complementary", { name: "Découverte" }).isVisible(), true);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: "/tmp/xiagents-mobile.png", fullPage: true });

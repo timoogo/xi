@@ -9,17 +9,15 @@ import type { Resolution } from "@/lib/llm/types";
 import { resolutionText } from "@/components/llm/format";
 import { PublicationsSettings } from "./publications-settings";
 import { WatchDrafts } from "./watch-drafts";
+import { CANDIDATE, LANE, OUTCOME } from "./labels";
 
 type Topic = { id: string; tag: string; name: string };
 type SourceView = WatchDiagnostics["sources"][number];
 const selectClass = "rounded-md border bg-background px-3 py-2";
 const date = (value: string | null) => (value ? new Date(value).toLocaleString("fr-FR", { timeZone: "Europe/Paris", dateStyle: "short", timeStyle: "short" }) : "—");
 const STATUS: Record<string, string> = { proposed: "En attente (collectée, insuffisante seule)", approved: "Approuvée", rejected: "Refusée", disabled: "Désactivée", deleted: "Supprimée" };
-const OUTCOME: Record<string, string> = { ok: "Collecte réussie", "not-modified": "Inchangé (304)", error: "Erreur", robots: "Refusé par robots.txt" };
 const JOB: Record<string, string> = { "publication-window": "Fenêtre de publication", "weekly-review": "Bilan hebdomadaire", "collect-source": "Collecte", "discover-sources": "Découverte de sources", "evaluate-story": "Évaluation d’une actualité", "draft-candidate": "Rédaction d’un brouillon", "publish-alert": "Alerte immédiate" };
 const JOB_STATE: Record<string, string> = { pending: "Planifiée", running: "En cours", done: "Terminée", failed: "Échec" };
-const CANDIDATE: Record<string, string> = { evaluating: "En cours d’évaluation", accepted: "Retenu", held: "En attente", rejected: "Rejeté", merged: "Fusionné", drafted: "Brouillon rédigé" };
-const LANE: Record<string, string> = { night: "fenêtre nocturne", immediate: "alerte majeure", weekly: "bilan hebdomadaire" };
 const NOVELTY: Record<string, string> = { new: "nouveau sujet", development: "nouveau développement", duplicate: "déjà traité" };
 const CLAIM_KIND: Record<string, string> = { fact: "Fait", attributed: "Déclaration attribuée", hypothesis: "Hypothèse", interpretation: "Interprétation" };
 const CLAIM_STATUS: Record<string, string> = { corroborated: "corroboré", primary: "source primaire", "single-source": "une seule voix", "pending-trust": "source en attente d’approbation", qualified: "présenté comme tel", contradicted: "contredit", unsupported: "non étayé, écarté" };
@@ -52,8 +50,7 @@ export function WatchPanel({ agentId, data, topics, agentTopicIds }: { agentId: 
   const llm = (data as WatchDiagnostics & { llm?: Resolution }).llm;
   const status = !data.watch.valid ? "Configuration illisible : veille désactivée" : !data.watch.policy.enabled ? "Désactivée" : data.watch.policy.paused ? "En pause" : data.running ? "Active" : "Inactive (ΞAgent désactivé)";
 
-  return <section aria-labelledby="watch-title" className="space-y-6 border-b p-4">
-    <h2 id="watch-title" className="text-lg font-bold">Veille autonome</h2>
+  return <section aria-labelledby="xiagent-watch-title" className="space-y-6 border-b p-4">
     <p className="text-sm">État : <strong>{status}</strong> · Publication automatique : <strong>{data.autoPublish ? "autorisée" : "désactivée"}</strong>{data.nextWindow && <> · Prochaine fenêtre : {date(data.nextWindow)}</>}</p>
     <p className="text-sm">Mode autonome : <strong>{data.watch.policy.autoPublish ? `activé (${data.watch.policy.visibility === "public" ? "public" : "privé"})` : "désactivé"}</strong> · Opérateur : publication automatique {data.autoPublish ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH)"}, publique {data.allowPublic ? "autorisée" : "non autorisée (XI_WATCH_AUTOPUBLISH_PUBLIC)"}{data.watch.publicConfirmedAt && <> · publication publique confirmée le {date(data.watch.publicConfirmedAt)}</>}</p>
     {data.publishBlocks.length > 0 && <p className="text-sm">Aucun brouillon ne peut être publié automatiquement : {data.publishBlocks.join(" ")}</p>}

@@ -59,8 +59,7 @@ export function AgentLLMPanel({ agentId, initial, instances, defaultInstanceId, 
     } finally { setBusy(null); }
   }
 
-  return <section aria-labelledby="agent-llm-title" className="space-y-3 border-b p-4">
-    <h2 id="agent-llm-title" className="text-lg font-bold">Intelligence artificielle</h2>
+  return <section aria-labelledby="xiagent-llm-title" className="space-y-3 border-b p-4">
     <AgentLLMSummary view={view} />
     <div className="flex flex-wrap gap-2">
       <Button type="button" size="sm" variant="outline" disabled={busy !== null || !view.resolution.ok} onClick={() => void runTest()}>{busy === "test" ? "Test en cours…" : "Tester le modèle"}</Button>

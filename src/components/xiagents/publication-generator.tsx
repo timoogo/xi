@@ -44,7 +44,7 @@ export function PublicationGenerator({ agentId, candidates, drafts, llm }: { age
   }
 
   return <section aria-labelledby="publication-generator" className="space-y-4 border-b p-4">
-    <h2 id="publication-generator" className="text-lg font-bold">Générer une publication</h2>
+    <h3 id="publication-generator" className="text-lg font-bold">Générer une publication</h3>
     <p className="text-sm text-muted-foreground">Rédaction réelle à partir des informations collectées et vérifiées par la veille : le modèle de ce ΞAgent rédige uniquement à partir des affirmations vérifiées, Ξ contrôle chaque chiffre, citation et attribution, puis enregistre un brouillon privé. Rien n’est publié sans votre confirmation.</p>
     <p className="text-sm">Modèle : {llm.ok ? <strong>{resolutionText(llm)}</strong> : <strong className="text-destructive"><span aria-hidden="true">⚠ </span>{resolutionText(llm)}</strong>}</p>
     {!candidates.length ? <p className="text-sm">Aucune information vérifiée et retenue à rédiger pour l’instant. Lancez une veille (collecte puis analyse) depuis le pilotage du ΞAgent.</p>
