@@ -26,7 +26,7 @@ const LINK_LENGTH: Record<NodeLevel, number> = { generator: 150, publication: 95
 export const createSimulation = (): Simulation => ({ nodes: new Map(), memory: new Map(), alpha: 0, links: [] });
 
 /** Deterministic jitter from the id, so the same expansion always lands the same way. */
-function hash(id: string) {
+export function hash(id: string) {
   let h = 2166136261;
   for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
   return (h >>> 0) / 4294967296;

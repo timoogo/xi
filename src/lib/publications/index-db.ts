@@ -7,8 +7,8 @@ import type { PublicationMeta } from "./types";
  */
 
 // Bump whenever an index table changes shape: every index table is then dropped and rebuilt from the vault.
-export const INDEX_SCHEMA_VERSION = "6";
-const INDEX_TABLES = ["publication_message", "publication", "graph_generator", "graph_relation", "feed_follow", "feed_managed_agent"];
+export const INDEX_SCHEMA_VERSION = "7";
+const INDEX_TABLES = ["publication_fts", "publication_topic", "publication_message", "publication", "graph_generator", "graph_relation", "feed_follow", "feed_managed_agent"];
 
 /** Drops every derived table (never Better Auth's): the next reconciliation rebuilds them from the vault. */
 export function dropIndexTables(db: Database.Database) {
@@ -84,6 +84,19 @@ export function migratePublicationIndex(db: Database.Database) {
       PRIMARY KEY (publication_id, n)
     );
     CREATE INDEX IF NOT EXISTS message_parent_chronology ON publication_message(reply_to, created_at, publication_id, n);
+    -- Full text of each publication (summary + live messages), normalized by search/text.ts; rowid = publication.rowid.
+    CREATE VIRTUAL TABLE IF NOT EXISTS publication_fts USING fts5(body, tokenize = 'unicode61 remove_diacritics 2');
+    -- Publication ↔ topic associations by immutable topic UUID. 'declared' rows come from the topics/primary_topic
+    -- frontmatter; 'inferred' is reserved for associations whose durable source is outside the publication.
+    CREATE TABLE IF NOT EXISTS publication_topic (
+      publication_id TEXT NOT NULL,
+      topic_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('primary', 'secondary')),
+      origin TEXT NOT NULL CHECK (origin IN ('declared', 'inferred')),
+      score REAL,
+      PRIMARY KEY (publication_id, topic_id)
+    );
+    CREATE INDEX IF NOT EXISTS publication_topic_topic ON publication_topic (topic_id, publication_id);
   `);
 }
 
@@ -103,6 +116,10 @@ export type IndexRow = {
   trashed_at: string | null; created_at: string; updated_at: string; published_at: string | null; score: number | null;
   excerpt: string; generator_id: string | null; test_content: 0 | 1; reply_to?: string | null; revision?: string; index_mtime: number;
 };
+
+export type TopicRow = { topic_id: string; role: "primary" | "secondary" };
+/** Search data derived from the files of one publication, written with its row. */
+export type SearchRow = { text: string; topics: TopicRow[] };
 
 export type MessageRow = { publication_id: string; n: number; file: string; position: number; excerpt: string; reply_to?: string | null; created_at?: string; updated_at?: string; deleted?: number };
 
@@ -127,20 +144,59 @@ export function createIndex(db: Database.Database) {
   const remove = db.prepare<[string]>("DELETE FROM publication WHERE id = ?");
   const messagesOf = db.prepare<[string], MessageRow>("SELECT * FROM publication_message WHERE publication_id = ? ORDER BY position");
   const removeMessages = db.prepare<[string]>("DELETE FROM publication_message WHERE publication_id = ?");
+  const rowidOf = db.prepare<[string], { rowid: number }>("SELECT rowid FROM publication WHERE id = ?");
+  const ftsOf = db.prepare<[number], { body: string }>("SELECT body FROM publication_fts WHERE rowid = ?");
+  const removeFts = db.prepare<[number]>("DELETE FROM publication_fts WHERE rowid = ?");
+  const insertFts = db.prepare<[number, string]>("INSERT INTO publication_fts (rowid, body) VALUES (?, ?)");
+  const topicsOf = db.prepare<[string], TopicRow>("SELECT topic_id, role FROM publication_topic WHERE publication_id = ? AND origin = 'declared' ORDER BY topic_id");
+  const removeTopics = db.prepare<[string]>("DELETE FROM publication_topic WHERE publication_id = ? AND origin = 'declared'");
+  const removeAllTopics = db.prepare<[string]>("DELETE FROM publication_topic WHERE publication_id = ?");
+  const insertTopic = db.prepare<[string, string, string]>("INSERT OR REPLACE INTO publication_topic (publication_id, topic_id, role, origin, score) VALUES (?, ?, ?, 'declared', NULL)");
+  const removeInferred = db.prepare<[string]>("DELETE FROM publication_topic WHERE publication_id = ? AND origin = 'inferred'");
+  // A declared association always wins over an inferred one for the same topic.
+  const insertInferred = db.prepare<[string, string, number]>("INSERT OR IGNORE INTO publication_topic (publication_id, topic_id, role, origin, score) VALUES (?, ?, 'secondary', 'inferred', ?)");
+  const inferredOf = db.prepare<[string], { topic_id: string; score: number }>("SELECT topic_id, score FROM publication_topic WHERE publication_id = ? AND origin = 'inferred' ORDER BY topic_id");
+  /** Projection of the durable discovery record of one publication (topics/discovery.ts); only for indexed publications. */
+  const setInferred = db.transaction((id: string, topics: { topic_id: string; score: number }[]) => {
+    if (!byId.get(id)) return;
+    const wanted = [...topics].sort((a, b) => a.topic_id.localeCompare(b.topic_id));
+    if (JSON.stringify(inferredOf.all(id)) === JSON.stringify(wanted)) return;
+    removeInferred.run(id);
+    for (const topic of wanted) insertInferred.run(id, topic.topic_id, topic.score);
+    bumpIndexGeneration(db);
+  });
+  const sameSearch = (id: string, search: SearchRow) => {
+    const rowid = rowidOf.get(id)?.rowid;
+    return rowid !== undefined && ftsOf.get(rowid)?.body === search.text
+      && JSON.stringify(topicsOf.all(id)) === JSON.stringify([...search.topics].sort((a, b) => a.topic_id.localeCompare(b.topic_id)));
+  };
+  const writeSearch = (id: string, search: SearchRow) => {
+    const { rowid } = rowidOf.get(id)!;
+    removeFts.run(rowid);
+    insertFts.run(rowid, search.text);
+    removeTopics.run(id);
+    for (const topic of search.topics) insertTopic.run(id, topic.topic_id, topic.role);
+  };
   const insertMessage = db.prepare<[MessageRow]>(
     "INSERT INTO publication_message (publication_id, n, file, position, excerpt, reply_to, created_at, updated_at, deleted) VALUES (@publication_id, @n, @file, @position, @excerpt, @reply_to, @created_at, @updated_at, @deleted)");
   // Unchanged rows are not rewritten, so the generation only moves on real changes (trash entries are re-read each time).
-  const write = db.transaction((row: IndexRow, messages: MessageRow[]) => {
+  const write = db.transaction((row: IndexRow, messages: MessageRow[], search: SearchRow) => {
     const existing = byId.get(row.id);
     const normalizedRow = {...row, reply_to: row.reply_to ?? null, revision:row.revision ?? ""};
     const normalizedMessages = messages.map(message => ({reply_to:null,created_at:row.created_at,updated_at:row.created_at,deleted:0,...message}));
-    if (existing && sameRows([existing], [normalizedRow]) && sameRows(messagesOf.all(row.id), normalizedMessages)) return;
+    if (existing && sameRows([existing], [normalizedRow]) && sameRows(messagesOf.all(row.id), normalizedMessages) && sameSearch(row.id, search)) return;
     upsert.run(normalizedRow);
     removeMessages.run(row.id);
     for (const message of messages) insertMessage.run({ reply_to: null, created_at: row.created_at, updated_at: row.created_at, deleted: 0, ...message });
+    writeSearch(row.id, search);
+    // Inferred associations exist only for public content: made private, unpublished or trashed, they go at once.
+    if (row.trashed_at || row.status !== "published" || row.visibility !== "public" || row.test_content) removeInferred.run(row.id);
     bumpIndexGeneration(db);
   });
   const drop = db.transaction((id: string) => {
+    const rowid = rowidOf.get(id)?.rowid;
+    if (rowid !== undefined) removeFts.run(rowid);
+    removeAllTopics.run(id);
     removeMessages.run(id);
     if (remove.run(id).changes) bumpIndexGeneration(db);
   });
@@ -156,7 +212,7 @@ export function createIndex(db: Database.Database) {
     LIMIT @limit`);
   const trash = db.prepare<[string], IndexRow>("SELECT * FROM publication WHERE author_id = ? AND trashed_at IS NOT NULL ORDER BY trashed_at DESC");
   return {
-    upsert: (row: IndexRow, messages: MessageRow[]) => write(row, messages),
+    upsert: (row: IndexRow, messages: MessageRow[], search: SearchRow = { text: "", topics: [] }) => write(row, messages, search),
     get: (id: string) => byId.get(id),
     byAuthor: (authorId: string) => byAuthor.all(authorId),
     all: () => allRows.all(),
@@ -164,6 +220,7 @@ export function createIndex(db: Database.Database) {
     messages: (id: string) => messagesOf.all(id),
     page: (query: PageQuery) => page.all(query),
     trash: (authorId: string) => trash.all(authorId),
+    setInferred: (id: string, topics: { topic_id: string; score: number }[]) => setInferred(id, topics),
   };
 }
 

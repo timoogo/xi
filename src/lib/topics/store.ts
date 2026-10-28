@@ -4,10 +4,10 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { assertWithin, writeAtomic, type Vault } from "../publications/vault";
+import { assertWithin, USER_ID, writeAtomic, type Vault } from "../publications/vault";
 import { deterministicAnalyzer, routeRequest, type TopicAnalyzer } from "./analysis";
 import { locked } from "./lock";
-import { draftSchema, STEP_NAMES, TopicError, topicSchema, type Run, type Topic } from "./types";
+import { draftSchema, personalTopicSchema, STEP_NAMES, tagSchema, TopicError, topicSchema, type PersonalTopic, type Run, type Topic } from "./types";
 
 const encode = (value: unknown) => `---\n${stringify(value)}---\n`;
 const decode = (text: string) => {
@@ -45,14 +45,18 @@ export function validateTopics(topics: Topic[]) {
 export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, beforeStep }: { vault: Vault; db: Database.Database; analyzer?: TopicAnalyzer; beforeStep?: (step: number) => void }) {
   const directory = join(vault.root, "topics");
   const privateDir = join(vault.root, ".xi-topic-runs");
+  // Personal topics: one private folder per owner, outside `topics/` so no shared reader or index ever sees them.
+  const personalDir = join(vault.root, ".xi-personal-topics");
   db.exec(`CREATE TABLE IF NOT EXISTS topic_index (id TEXT PRIMARY KEY, tag TEXT UNIQUE NOT NULL, data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS topic_tag (tag TEXT PRIMARY KEY, topic_id TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS topic_routing (parent_id TEXT NOT NULL, child_id TEXT PRIMARY KEY);`);
   async function prepare() {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await mkdir(privateDir, { recursive: true, mode: 0o700 });
+    await mkdir(personalDir, { recursive: true, mode: 0o700 });
     await assertWithin(vault.root, directory);
     await assertWithin(vault.root, privateDir);
+    await assertWithin(vault.root, personalDir);
   }
   async function read(path: string) { await assertWithin(vault.root, path); return decode(await readFile(path, "utf8")); }
   async function all(): Promise<Topic[]> {
@@ -63,6 +67,27 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       return topic;
     }));
     validateTopics(topics);
+    return topics.sort((a, b) => a.tag.localeCompare(b.tag));
+  }
+  function ownerDir(owner: string) {
+    if (!USER_ID.test(owner)) throw new TopicError("Utilisateur invalide.", 400);
+    return join(personalDir, owner);
+  }
+  /** The owner's personal topics, from Markdown. An invalid or foreign file blocks the read rather than leaking. */
+  async function personal(owner: string): Promise<PersonalTopic[]> {
+    const dir = ownerDir(owner);
+    let names: string[];
+    try { names = (await readdir(dir)).filter(name => /^[0-9a-f-]{36}\.md$/.test(name)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+    const topics = await Promise.all(names.map(async name => {
+      const topic = personalTopicSchema.parse(await read(join(dir, name)));
+      if (`${topic.id}.md` !== name || topic.owner !== owner) throw new TopicError("Topic personnel incohérent.");
+      // Hierarchy and relations are decided at promotion: a personal topic stays a standalone root.
+      if (topic.parentId || topic.relatedIds.length) throw new TopicError("Un topic personnel n’a ni parent ni relation.");
+      return topic;
+    }));
+    const tags = topics.flatMap(topic => [topic.tag, ...topic.aliases]);
+    if (new Set(tags).size !== tags.length || new Set(topics.map(t => t.id)).size !== topics.length) throw new TopicError("Topic personnel dupliqué.", 409);
     return topics.sort((a, b) => a.tag.localeCompare(b.tag));
   }
   const journal = join(directory, ".pending.md");
@@ -310,7 +335,37 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       return { topic, created: true };
     });
   }
-  return { list, reindex: list, propose, proposeParent, confirm, resume, cancel, update, create,
+  /** Shared catalogue and the viewer's own personal topics, read together under the lock. */
+  async function visible(owner: string) {
+    return exclusive(async () => { const shared = await all(); index(shared); return { shared, personal: await personal(owner) }; });
+  }
+  /**
+   * Opens a topic by exact tag for its owner, creating a minimal personal one when none exists. Idempotent by
+   * (owner, tag) and serialized by the writer lock, so concurrent requests return the same UUID. A shared topic
+   * holding the tag (current or former) always wins at creation: no personal duplicate of a shared topic is made.
+   */
+  async function openPersonal(owner: string, rawTag: string): Promise<{ topic: Topic; created: boolean }> {
+    const tag = tagSchema.parse(rawTag);
+    ownerDir(owner);
+    return exclusive(async () => {
+      const shared = (await all()).find(t => t.tag === tag || t.aliases.includes(tag));
+      if (shared) return { topic: shared, created: false };
+      const mine = await personal(owner);
+      const existing = mine.find(t => t.tag === tag || t.aliases.includes(tag));
+      if (existing) return { topic: existing, created: false };
+      const words = tag.slice(tag.lastIndexOf(".") + 1).replace(/-/g, " ");
+      const at = new Date().toISOString();
+      const topic: PersonalTopic = {
+        id: randomUUID(), tag, name: words.charAt(0).toLocaleUpperCase("fr-FR") + words.slice(1), description: "",
+        scope: `Fiche personnelle créée depuis la recherche « #${tag} ». Périmètre à préciser.`, parentId: null, relatedIds: [],
+        aliases: [], owner, createdBy: owner, updatedBy: owner, createdAt: at, updatedAt: at, revision: randomUUID(),
+      };
+      await mkdir(ownerDir(owner), { recursive: true, mode: 0o700 });
+      await writeAtomic(join(ownerDir(owner), `${topic.id}.md`), encode(topic));
+      return { topic, created: true };
+    });
+  }
+  return { list, reindex: list, visible, openPersonal, propose, proposeParent, confirm, resume, cancel, update, create,
     getRun: async (owner: string, id: string) => { await prepare(); return loadRun(owner, id); },
     route: async (intent: string, correction?: { primaryId: string; secondaryIds: string[] }) => {
       return routeRequest(intentSchema.parse(intent), await list(), correction);

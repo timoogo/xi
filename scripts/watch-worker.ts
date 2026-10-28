@@ -5,6 +5,8 @@ import { createAccountStore } from "../src/lib/accounts/store";
 import type { WatchAgent } from "../src/lib/accounts/types";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault, vaultPathFromEnv } from "../src/lib/publications/vault";
+import { createTopicDiscovery, DISCOVERY_JOB } from "../src/lib/topics/discovery";
+import { createTopicRelationStore } from "../src/lib/topics/relations";
 import { createTopicStore } from "../src/lib/topics/store";
 import { TopicError } from "../src/lib/topics/types";
 import { createLLMRuntime } from "../src/lib/llm/server";
@@ -12,7 +14,7 @@ import { agentLLMSettings, bindSafely, shouldPlanInference } from "../src/lib/wa
 import { createPoliteFetch, createSafeFetch } from "../src/lib/watch/net";
 import { watchDiagnostics } from "../src/lib/watch/diagnostics";
 import { createSourceStore } from "../src/lib/watch/sources";
-import { engineHandlers, recordWorker, reevaluate, tick } from "../src/lib/watch/worker";
+import { engineHandlers, recordWorker, reevaluate, tick, type Handler } from "../src/lib/watch/worker";
 
 /**
  * One short, idempotent pass of the watch engine, run by a systemd timer (see docs/watch.md).
@@ -55,7 +57,14 @@ async function main() {
     const llm = (agent: WatchAgent) => runtime.bind(agent.owner, agentLLMSettings(agent));
     // Both flags are off unless the operator sets them; each agent must also enable its autonomous mode.
     const settings = { autoPublish: process.env.XI_WATCH_AUTOPUBLISH === "true", allowPublic: process.env.XI_WATCH_AUTOPUBLISH_PUBLIC === "true" };
-    const handlers = engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now });
+    // Topic discovery: public publications only, the author's (or the ΞAgent owner's) local model, never a cloud one.
+    const discovery = createTopicDiscovery({
+      vault, topics, publications, relations: createTopicRelationStore({ vault, db, topics }), now,
+      llm: owner => bindSafely(() => runtime.bind(owner, null), null),
+      ownerOf: async ({ authorId, authorType }) => authorType === "human" ? authorId : (await accounts.watchAgents()).find(agent => agent.id === authorId)?.owner ?? null,
+      autoAccept: process.env.XI_TOPIC_AUTOACCEPT === "true",
+    });
+    const handlers: Record<string, Handler> = { ...engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now }), [DISCOVERY_JOB]: discovery.handler };
     const inferenceConcurrency = positive(process.env.XI_INFERENCE_CONCURRENCY, 1);
     if (command === "explain") {
       const handle = agentRef.replace(/^@/, "").toLowerCase();
@@ -81,7 +90,7 @@ async function main() {
     }
     const canEvaluate = (agent: WatchAgent) => shouldPlanInference(bindSafely(llm, agent));
     // Leave room before the next timer run; leases cover a pass that overruns anyway.
-    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, canEvaluate, now, observer: event => logger({ ...event, ...(event.event === "worker.start" ? settings : {}) }), deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency })));
+    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, enrichment: discovery, canEvaluate, now, observer: event => logger({ ...event, ...(event.event === "worker.start" ? settings : {}) }), deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency })));
   } finally {
     db.close();
   }

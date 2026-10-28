@@ -100,6 +100,7 @@ export function TopicManager({ owner }: { owner: string }) {
       {!visible.length && <p className="text-sm text-muted-foreground">Aucun topic trouvé.</p>}
     </section>
     {topic && <section aria-labelledby="topic-detail" className="space-y-3 rounded-xl border p-4"><h2 id="topic-detail" tabIndex={-1} className="text-lg font-bold">{topic.name} <span className="text-sm font-normal">{topic.tag}</span></h2>
+      <p className="text-sm"><a className="underline" href={`/dashboard/topics/${topic.tag}`}>Ouvrir la page du topic</a></p>
       <p className="whitespace-pre-wrap">{topic.description}</p><p className="whitespace-pre-wrap"><strong>Scope :</strong> {topic.scope}</p>
       <p className="text-sm">Parent : {topic.parentId ? <button className="underline" onClick={() => show(topic.parentId!)}>{label(topic.parentId)}</button> : "aucun"}</p>
       <div className="text-sm">Enfants : {topics.filter(t => t.parentId === topic.id).map(t => <button key={t.id} className="mr-2 underline" onClick={() => show(t.id)}>{t.tag}</button>)}</div>

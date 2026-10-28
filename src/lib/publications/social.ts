@@ -8,7 +8,12 @@ import type { Viewer } from "./types";
 
 export const PREFERENCES = ["priority", "normal", "less", "hidden"] as const;
 export type Preference = typeof PREFERENCES[number];
-export type SocialSettings = { following: string[]; preferences: Record<string, Preference> };
+/**
+ * `topics`: UUIDs of the topics the user explicitly subscribed to (shared or their own personal ones).
+ * `knowledge`: topics the user explicitly registered as acquired knowledge; reading or searching never adds one.
+ */
+export type SocialSettings = { following: string[]; preferences: Record<string, Preference>; topics: string[]; knowledge: string[] };
+const TOPIC_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** `status` feeds the avatar (appearance + activity inputs); callers derive what they expose from it. */
 export type GeneratorAccount = { id: string; name: string; image: string | null; handle: string; parentId: string | null; description: string; ownerId: string; visibility: string; status: ReturnType<typeof agentStatus> };
 
@@ -48,7 +53,8 @@ export async function readSocial(vault: Vault, viewer: Viewer): Promise<SocialSe
   const following = Array.isArray(raw.following) ? raw.following.filter((id: unknown): id is string => typeof id === "string" && USER_ID.test(id)) : [];
   const preferences: Record<string, Preference> = {};
   for (const [id, pref] of Object.entries(raw.preferences ?? {})) if (USER_ID.test(id) && PREFERENCES.includes(pref as Preference)) preferences[id] = pref as Preference;
-  return { following: [...new Set<string>(following)], preferences };
+  const ids = (value: unknown) => [...new Set<string>(Array.isArray(value) ? value.filter((id: unknown): id is string => typeof id === "string" && TOPIC_ID.test(id)) : [])];
+  return { following: [...new Set<string>(following)], preferences, topics: ids(raw.topics), knowledge: ids(raw.knowledge) };
 }
 
 export async function writeSocial(vault: Vault, viewer: Viewer, settings: SocialSettings) {
@@ -58,7 +64,7 @@ export async function writeSocial(vault: Vault, viewer: Viewer, settings: Social
   await writeAtomic(inside(dir, "feed.md"), `---\n${new Document(settings).toString()}---\n`);
 }
 
-export function effectiveSocial(settings: SocialSettings, generators: GeneratorAccount[]) {
+export function effectiveSocial(settings: Pick<SocialSettings, "following" | "preferences">, generators: GeneratorAccount[]) {
   const following = new Set(settings.following);
   const preferences = { ...settings.preferences };
   for (const g of [...generators].sort((a,b) => a.handle.length - b.handle.length)) {

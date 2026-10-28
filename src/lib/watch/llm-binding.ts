@@ -27,7 +27,7 @@ export function describeLLM(resolved: ResolvedLLM) {
 export const shouldPlanInference = (binding: LLMBinding) => binding.ok || binding.code !== "not-configured";
 
 /** Binding a refused instance URL throws InferenceConfigError: reported as a configuration problem, like any other. */
-export function bindSafely(llm: BindLLM, agent: WatchAgent): LLMBinding {
+export function bindSafely<A>(llm: (agent: A) => LLMBinding, agent: A): LLMBinding {
   try { return llm(agent); }
   catch (error) {
     if (!(error instanceof InferenceConfigError)) throw error;

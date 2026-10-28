@@ -114,12 +114,17 @@ export function hasContent(body: string) {
   return firstLine(body) !== "";
 }
 
-export function excerpt(markdown: string, length = 200) {
-  const text = splitFrontmatter(markdown).body
+/** Readable text of a Markdown note: no frontmatter, link targets or formatting marks. */
+export function plainText(markdown: string) {
+  return splitFrontmatter(markdown).body
     .replace(/!?\[\[([^\]|]*\|)?([^\]]*)\]\]/g, "$2")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[#>*_`~-]+/g, " ")
     .replace(/\s+/g, " ").trim();
+}
+
+export function excerpt(markdown: string, length = 200) {
+  const text = plainText(markdown);
   return text.length > length ? `${text.slice(0, length - 1)}…` : text;
 }
 

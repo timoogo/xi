@@ -29,7 +29,8 @@ export const TRIGGER_LABELS: Record<Trigger, string> = { calendar: "Calendrier",
 export const WATCH_KINDS = ["discover-sources", "evaluate-story", "draft-candidate"] as const;
 export const PUBLISH_KINDS = ["publication-window", "weekly-review", "publish-alert"] as const;
 /** Kinds that call the local model: their concurrency is limited across processes. */
-export const INFERENCE_KINDS = ["evaluate-story", "draft-candidate"] as const;
+/** Jobs that call the local model: they share XI_INFERENCE_CONCURRENCY across processes. */
+export const INFERENCE_KINDS = ["evaluate-story", "draft-candidate", "enrich-publication"] as const;
 
 const jobAgentId = (job: Pick<Job, "payload">) => (job.payload as { agentId?: unknown } | null)?.agentId;
 export const jobAgent = (job: Pick<Job, "payload">) => typeof jobAgentId(job) === "string" ? jobAgentId(job) as string : null;

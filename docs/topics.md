@@ -8,6 +8,8 @@ Une proposition ne publie rien : l’intention, les résultats intermédiaires e
 
 ## Stockage et invariants
 
+Ce document décrit le catalogue commun. Les topics personnels, créés depuis la recherche `#tag` et visibles par leur seul propriétaire, sont décrits dans docs/search.md.
+
 - `topics/<UUID>.md` dans `XI_VAULT_PATH` : source de vérité, frontmatter YAML lisible. Dossiers indépendants de la hiérarchie logique. UUID immuable, tag unique, nom, description, scope, parent UUID nullable, relations UUID, anciens tags, dates, auteurs et révision.
 - `.xi-topic-runs/<UUID>.md` : intentions, propositions, confirmations, étapes et journal privé. Dossier créé en mode 0700, fichiers en 0600. Jamais lu par le feed, les publications ou le graphe. Les sauvegardes du coffre doivent respecter cette confidentialité ; ne pas exporter ce dossier comme contenu public.
 - SQLite : `topic_index`, `topic_tag` (tags actuels et anciens), `topic_routing` (enfants directs). Aucune intention dans ces tables. `npm run topics:reindex` reconstruit ces tables depuis Markdown, sans toucher aux tables d’authentification/publications. Chaque lecture de catalogue réconcilie également l’index.
@@ -56,3 +58,7 @@ Le catalogue est intégralement relu et validé sous verrou : choix adapté à c
 - `npx tsc --noEmit`, `npm run lint`, `npm run build`.
 
 Pour un build isolé : `NEXT_DIST_DIR=.next-topics npm run build`, puis la même variable pour les tests d’authentification et de navigateur.
+
+Relations Topic ↔ Topic durables (provenance, corrections, exclusions) : voir `docs/topic-relations.md`.
+
+Découverte automatique de concepts, associations inférées et relations proposées : voir `docs/topic-discovery.md`.

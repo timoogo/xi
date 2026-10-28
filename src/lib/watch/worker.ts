@@ -193,8 +193,10 @@ export function drainControl(db: Database.Database, accounts: AccountStore, init
  * 4. draining what is due, each job admitted when it starts;
  * 5. purges (finished jobs, collected items, execution logs by retention).
  */
-export async function tick({ db, accounts, sources, handlers, canEvaluate = () => false, now = () => new Date(), deadline, concurrency = 1, inferenceConcurrency = 1, retentionDays = globalRetentionDays(), observer }: {
+export async function tick({ db, accounts, sources, handlers, enrichment, canEvaluate = () => false, now = () => new Date(), deadline, concurrency = 1, inferenceConcurrency = 1, retentionDays = globalRetentionDays(), observer }: {
   db: Database.Database; accounts: AccountStore; sources?: SourceStore; handlers: Record<string, Handler>;
+  /** Topic discovery (topics/discovery.ts): plans enrichment of public publications; its handler is in `handlers`. */
+  enrichment?: { plan(queue: JobQueue, at: number): Promise<number> };
   /** Whether inference tasks are planned for the agent: a bound model, or a configuration problem to report (llm-binding.ts `shouldPlanInference`). */
   canEvaluate?: (agent: WatchAgent) => boolean; now?: () => Date; deadline?: number;
   /** Jobs run at once by this pass, and inference jobs at once across processes. */
@@ -240,6 +242,7 @@ export async function tick({ db, accounts, sources, handlers, canEvaluate = () =
     planned += planDrafting(db, queue, lightly, canEvaluate, clock(), { major: true });
     planned += planDrafting(db, queue, running(), canEvaluate, clock());
   }
+  if (enrichment && handlers["enrich-publication"]) planned += await enrichment.plan(queue, clock());
   if (handlers["publish-alert"]) planned += planAlerts(db, queue, agents.filter(agent => agentSchedule(agent).majorEvents.enabled || publishOpen(agent, clock())), clock());
 
   const control = drainControl(db, accounts, agents, clock);

@@ -1,6 +1,6 @@
 # Graphe de connaissances
 
-Le Markdown du vault est la source de vérité ; SQLite n’en est qu’un index reconstructible (`pnpm graph:reindex`). Les contrats TypeScript partagés sont dans `src/lib/graph/types.ts`.
+Le Markdown du vault est la source de vérité ; SQLite n’en est qu’un index reconstructible (`pnpm graph:reindex`). Les contrats TypeScript partagés sont dans `src/lib/graph/types.ts`. La même page offre un second mode, le réseau des topics : voir [topic-network.md](topic-network.md).
 
 ## Niveaux et identifiants immuables
 
@@ -92,4 +92,4 @@ Chaque extrémité de relation est projetée sur son ancêtre-ou-soi affiché le
 
 ## Index SQLite
 
-Tables dérivées, dans la base Better Auth : `publication` (+ `generator_id`), `publication_message`, `graph_generator`, `graph_relation`, et `xi_index_meta` (version de schéma). Un changement de version supprime puis reconstruit les tables d’index ; `pnpm graph:reindex` force une reconstruction complète. Aucune table d’index ne contient de données irremplaçables.
+Tables dérivées, dans la base Better Auth : `publication` (+ `generator_id`), `publication_message`, `graph_generator`, `graph_relation`, `publication_fts`, `publication_topic` (voir docs/search.md) et `xi_index_meta` (version de schéma). Un changement de version supprime puis reconstruit les tables d’index ; `pnpm graph:reindex` force une reconstruction complète. Aucune table d’index ne contient de données irremplaçables.

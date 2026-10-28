@@ -9,9 +9,10 @@ import { basename, dirname } from "node:path";
 import type Database from "better-sqlite3";
 import { Document, parseDocument } from "yaml";
 import { z } from "zod";
-import { bumpIndexGeneration, indexGeneration, readablePublicationSql, createIndex, type IndexRow, type MessageRow } from "./index-db";
+import { bumpIndexGeneration, indexGeneration, readablePublicationSql, createIndex, type IndexRow, type MessageRow, type SearchRow } from "./index-db";
+import { ftsDocument, ftsQuery } from "../search/text";
 import {
-  excerpt, hasContent, messageEmbedTarget, messageSlug, parseIndex, parseSource, rewriteFolderLinks, serializeIndex,
+  excerpt, hasContent, messageEmbedTarget, plainText, messageSlug, parseIndex, parseSource, rewriteFolderLinks, serializeIndex,
   serializeSource, setMeta, slugify, sourceLinkLine, splitIndexBody, splitFrontmatter, splitSourcesSection, type SourceInput,
 } from "./markdown";
 import { canEdit, canManageTrash, canRead } from "./permissions";
@@ -80,7 +81,13 @@ type Folder = {
 
 type TrashInfo = { id: string; folder: string; originalPath: string; trashedAt: string };
 
-export type FeedScope = { kind: "home"; tab?: "for-you" | "following" } | { kind: "own" } | { kind: "author"; authorId: string } | { kind: "conversation"; publicationId: string };
+/**
+ * `search`: published, readable publications whose text contains every term (ranked by relevance) and/or that
+ * declare every topic of `topicIds` (immutable UUIDs). A crossed topic search is a co-occurrence, not a relation.
+ */
+export type FeedScope = { kind: "home"; tab?: "for-you" | "following" } | { kind: "own" } | { kind: "author"; authorId: string } | { kind: "conversation"; publicationId: string }
+  | { kind: "search"; text?: string; topicIds?: string[]; origin?: "declared" | "inferred" };
+const TOPIC_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export type FeedPage = { items: PublicationSnapshot[]; nextCursor: string | null };
 
 /**
@@ -172,6 +179,19 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     };
   }
 
+  /** Searchable text (summary + live messages) and the topics the publication declares in its frontmatter. */
+  function searchRow(folder: Folder): SearchRow {
+    const raw = folder.doc.toJS() as Record<string, unknown>;
+    const primary = typeof raw.primary_topic === "string" && TOPIC_ID.test(raw.primary_topic) ? raw.primary_topic : null;
+    const declared = Array.isArray(raw.topics) ? raw.topics.filter((id): id is string => typeof id === "string" && TOPIC_ID.test(id)) : [];
+    const topics = [...new Set([...(primary ? [primary] : []), ...declared])].map(topic_id => ({ topic_id, role: topic_id === primary ? "primary" as const : "secondary" as const }));
+    return { text: ftsDocument([folder.summary, ...folder.messages.map(message => message.body)].map(plainText).join("\n")), topics };
+  }
+
+  function indexFolder(folder: Folder, trash?: TrashInfo) {
+    index.upsert(toRow(folder, trash), messageRows(folder), searchRow(folder));
+  }
+
   /** Thread order gives positions; a number used twice (external edit) keeps its first message only, refs stay unambiguous. */
   function messageRows(folder: Folder): MessageRow[] {
     const rows: MessageRow[] = [];
@@ -214,7 +234,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       const existing = index.get(folder.meta.id);
       if (seen.has(folder.meta.id) || (existing && existing.author_id !== userId)) return;
       seen.add(folder.meta.id);
-      index.upsert(toRow(folder, trash), messageRows(folder));
+      indexFolder(folder, trash);
     };
     const live = index.byAuthor(userId).some(row => row.author_type === "ai") || await exists(inside(generatorsDir, userId)) ? inside(generatorsDir, userId) : userDir(userId);
     for (const entry of await listDir(live)) {
@@ -269,7 +289,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     const row = index.all().find(item => relative === item.path || relative.startsWith(item.path + "/"));
     if (row) {
       const folder = await readFolder(fromVaultRelative(vault, row.path));
-      if (folder && owned(folder, row.author_id, row.id)) index.upsert(toRow(folder, row.trashed_at ? {id: row.id, folder: basename(row.path), originalPath: row.original_path!, trashedAt: row.trashed_at} : undefined), messageRows(folder));
+      if (folder && owned(folder, row.author_id, row.id)) indexFolder(folder, row.trashed_at ? {id: row.id, folder: basename(row.path), originalPath: row.original_path!, trashedAt: row.trashed_at} : undefined);
       else await reconcileUser(row.author_id);
     } else {
       // New directories, moves and social settings can change the indexed perimeter.
@@ -321,7 +341,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   async function reindex(dir: string, trash?: TrashInfo) {
     const folder = await readFolder(dir);
     if (!folder) throw invalid("La publication n’a pas pu être relue.");
-    index.upsert(toRow(folder, trash), messageRows(folder));
+    indexFolder(folder, trash);
     return folder;
   }
 
@@ -819,6 +839,13 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       if (typeof parsed?.order === "string" && typeof parsed?.id === "string") after = parsed;
     } catch { /* Legacy or invalid links restart from the first page. */ }
     const clauses = [readablePublicationSql("p")];
+    const match = scope.kind === "search" && scope.text ? ftsQuery(scope.text) : null;
+    const topicIds = scope.kind === "search" ? [...new Set(scope.topicIds ?? [])] : [];
+    if (scope.kind === "search") {
+      // Nothing searchable (empty text, only stop words, malformed ids): no result rather than everything.
+      if ((scope.text && !match) || (!match && !topicIds.length) || topicIds.some(id => !TOPIC_ID.test(id))) return { items: [], nextCursor: null };
+      if (topicIds.length) clauses.push(`(SELECT COUNT(*) FROM publication_topic t WHERE t.publication_id = p.id AND t.topic_id IN (SELECT value FROM json_each(@topics))${scope.origin ? ` AND t.origin = '${scope.origin === "inferred" ? "inferred" : "declared"}'` : ""}) = @topicCount`);
+    }
     if (scope.kind !== "own") clauses.push("p.status = 'published'");
     if (scope.kind === "own") clauses.push("p.author_id = @viewer AND p.author_type = 'human'");
     if (scope.kind === "author") clauses.push("p.author_id = @author");
@@ -834,14 +861,17 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     }
     const preferenceSql = forYou ? "CASE (SELECT value FROM json_each(@preferences) WHERE key=p.author_id) WHEN 'priority' THEN 1 WHEN 'less' THEN -1 ELSE 0 END" : "0";
     const scoreSql = forYou ? "COALESCE(p.score,0)" : "0";
-    const rows = db.prepare<Record<string, string | null>, IndexRow>(`WITH candidates AS (
-      SELECT p.*, ${preferenceSql} AS preference_rank, ${scoreSql} AS score_rank, COALESCE(p.published_at,p.updated_at) AS sort_date
-      FROM publication p WHERE ${clauses.join(" AND ")}), ranked AS (
+    // bm25: lower is more relevant. Outside a text search every row ranks equally.
+    const source = match ? "publication p JOIN (SELECT rowid AS fts_rowid, bm25(publication_fts) AS relevance FROM publication_fts WHERE publication_fts MATCH @match) f ON f.fts_rowid = p.rowid" : "publication p";
+    const rows = db.prepare<Record<string, string | number | null>, IndexRow>(`WITH candidates AS (
+      SELECT p.*, ${match ? "f.relevance" : "0"} AS relevance_rank, ${preferenceSql} AS preference_rank, ${scoreSql} AS score_rank, COALESCE(p.published_at,p.updated_at) AS sort_date
+      FROM ${source} WHERE ${clauses.join(" AND ")}), ranked AS (
       SELECT *, ${forYou ? "ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY score_rank DESC,sort_date DESC,id DESC)" : "0"} AS author_round FROM candidates)
-      SELECT * FROM ranked ORDER BY preference_rank DESC,author_round ASC,score_rank DESC,sort_date DESC,id DESC`).all({
+      SELECT * FROM ranked ORDER BY relevance_rank ASC,preference_rank DESC,author_round ASC,score_rank DESC,sort_date DESC,id DESC`).all({
         viewer: viewer.id, preferences: JSON.stringify(effective.preferences),
         author: scope.kind === "author" ? scope.authorId : null,
         parent: scope.kind === "conversation" ? scope.publicationId + "/%" : null,
+        match, topics: JSON.stringify(topicIds), topicCount: topicIds.length,
       });
     // A changing author rank cannot safely use an old numeric offset. The opaque
     // fingerprint covers only this viewer's ordered feed, never private global activity.
@@ -991,6 +1021,40 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   const replies = (viewer: Viewer, publicationId: string, cursor?: string | null) => page(viewer, { kind: "conversation", publicationId }, cursor);
   const social = (viewer: Viewer) => readSocial(vault, viewer);
   const generators = (viewer: Viewer) => readGenerators(vault, viewer);
+  /**
+   * Explicit topic subscription, persisted with the other social settings. Idempotent. The caller checks that the
+   * viewer may see the topic. Nothing else happens: no agent, no watch, no publication.
+   */
+  /** Adds or removes a topic from one of the viewer's explicit topic lists; idempotent. */
+  async function setTopicMembership(viewer: Viewer, list: "topics" | "knowledge", topicId: string, member: boolean) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(topicId)) throw invalid("Topic invalide.");
+    return withLock(`social:${viewer.id}`, async () => {
+      const settings = await readSocial(vault, viewer);
+      if (settings[list].includes(topicId) === member) return settings;
+      settings[list] = member ? [...settings[list], topicId] : settings[list].filter(id => id !== topicId);
+      await writeSocial(vault, viewer, settings);
+      return settings;
+    });
+  }
+  const setTopicSubscription = (viewer: Viewer, topicId: string, subscribed: boolean) => setTopicMembership(viewer, "topics", topicId, subscribed);
+  /** "Mes connaissances": only this explicit action registers a topic as known. */
+  const setTopicKnowledge = (viewer: Viewer, topicId: string, known: boolean) => setTopicMembership(viewer, "knowledge", topicId, known);
+
+  /**
+   * Topics declared by the readable, real (non-fixture) publications of these ΞAgents: what they actually published,
+   * as opposed to their declared specializations. Counts per agent and topic.
+   */
+  async function agentContributions(viewerId: string, agentIds: string[]) {
+    if (!agentIds.length) return [];
+    await ensureIndexed();
+    // The viewer's own agents: their private publications are readable by their owner.
+    await authorized({ id: viewerId });
+    return db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
+      SELECT p.author_id AS agent_id, t.topic_id, COUNT(*) AS count FROM publication p JOIN publication_topic t ON t.publication_id = p.id AND t.origin = 'declared'
+      WHERE p.author_type = 'ai' AND p.author_id IN (SELECT value FROM json_each(@agents)) AND p.status = 'published' AND p.test_content = 0 AND ${readablePublicationSql("p")}
+      GROUP BY p.author_id, t.topic_id`).all({ viewer: viewerId, agents: JSON.stringify(agentIds) });
+  }
+
   async function setSocial(viewer: Viewer, authorId: string, change: { following?: boolean; preference?: Preference | null }) {
     if (!USER_ID.test(authorId) || (change.preference !== undefined && change.preference !== null && !PREFERENCES.includes(change.preference))) throw invalid("Préférence invalide.");
     return withLock(`social:${viewer.id}`, async () => {
@@ -1018,7 +1082,32 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     }));
   }
 
-  return { refreshAccess: authorized, publishGenerated, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  /** Public, published, non-fixture publications: the only content topic discovery reads (docs/topic-discovery.md). */
+  async function publicPublications() {
+    await ensureIndexed();
+    return index.all().filter(row => !row.trashed_at && row.status === "published" && row.visibility === "public" && !row.test_content)
+      .map(row => ({ id: row.id, revision: row.revision ?? "", authorId: row.author_id, authorType: row.author_type, generatorId: row.generator_id }));
+  }
+  /** The content of one such publication, or null once it is no longer public (trashed, private, fixture). */
+  async function publicContent(id: string) {
+    const row = index.get(id);
+    if (!row || row.trashed_at || row.status !== "published" || row.visibility !== "public" || row.test_content) return null;
+    const folder = await loadLive(id).catch(() => null);
+    if (!folder || folder.meta.visibility !== "public" || folder.meta.status !== "published") return null;
+    return snapshot(folder);
+  }
+  const setInferredTopics = (id: string, topics: { topic_id: string; score: number }[]) => index.setInferred(id, topics);
+  /** Which of these publications the viewer can read now (same rule as every feed); used before showing evidence. */
+  async function readableIds(viewerId: string, ids: string[]) {
+    const wanted = ids.filter(id => PUBLICATION_ID.test(id));
+    if (!wanted.length) return new Set<string>();
+    await ensureIndexed();
+    return new Set(db.prepare<{ viewer: string; ids: string }, { id: string }>(`SELECT p.id FROM publication p
+      WHERE p.id IN (SELECT value FROM json_each(@ids)) AND p.status = 'published' AND ${readablePublicationSql("p")}`)
+      .all({ viewer: viewerId, ids: JSON.stringify(wanted) }).map(row => row.id));
+  }
+
+  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;
