@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One live run per PR (or ref): a new push cancels the obsolete one.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
+  # Always use sharp's prebuilt libvips, never one found on the runner.
+  SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+
+jobs:
+  quality:
+    name: Quality (lint, types)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6 # version from package.json "packageManager"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm exec tsc --noEmit
+
+  tests:
+    name: Tests (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: core
+            suites: publications accounts avatars llm topics
+          - group: graph
+            suites: graph
+          - group: agents
+            suites: xiagents watch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run suites
+        env:
+          SUITES: ${{ matrix.suites }}
+        run: |
+          status=0
+          for suite in $SUITES; do
+            echo "::group::pnpm test:$suite"
+            pnpm "test:$suite" || { status=1; echo "::error::test:$suite failed"; }
+            echo "::endgroup::"
+          done
+          exit $status
+      - name: Tests left the checkout untouched
+        if: ${{ !cancelled() }}
+        run: |
+          git status --porcelain --untracked-files=all | tee /dev/stderr | (! grep -q .)
+          test ! -e data
+
+  build:
+    name: Build and server tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Throwaway build configuration
+        # Prerendering reads the auth and vault configuration. The secret is random per run and
+        # guards nothing; the base and vault live in the runner's temporary directory.
+        run: |
+          mkdir -p "$RUNNER_TEMP/xi-build/vault"
+          {
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=http://localhost:3000"
+            echo "AUTH_DATABASE_PATH=$RUNNER_TEMP/xi-build/auth.sqlite"
+            echo "XI_VAULT_PATH=$RUNNER_TEMP/xi-build/vault"
+          } >> "$GITHUB_ENV"
+      - run: pnpm build
+      # These start `next start` on the build above, each with its own temporary base and vault.
+      - run: pnpm test:auth
+      - run: pnpm test:xiagents:pages
+      - name: Tests left the checkout untouched
+        if: ${{ !cancelled() }}
+        run: |
+          git status --porcelain --untracked-files=all | tee /dev/stderr | (! grep -q .)
+          test ! -e data
+
+  e2e:
+    # Not a required check until these suites prove reliable on GitHub runners.
+    name: Browser E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          chrome-version: stable
+          install-dependencies: true
+      - name: Throwaway build configuration
+        run: |
+          mkdir -p "$RUNNER_TEMP/xi-build/vault"
+          {
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=http://localhost:3000"
+            echo "AUTH_DATABASE_PATH=$RUNNER_TEMP/xi-build/auth.sqlite"
+            echo "XI_VAULT_PATH=$RUNNER_TEMP/xi-build/vault"
+          } >> "$GITHUB_ENV"
+      - run: pnpm build
+      - name: Run browser suites
+        env:
+          XI_E2E_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        # One test file at a time: each starts its own Next.js server and Chrome, and running
+        # them side by side on a small runner pushes slow journeys past their timeouts.
+        run: |
+          "$XI_E2E_CHROME" --version
+          status=0
+          for suite in e2e topics:e2e accounts:e2e avatars:e2e xiagents:e2e; do
+            echo "::group::pnpm test:$suite"
+            pnpm "test:$suite" --test-concurrency=1 || { status=1; echo "::error::test:$suite failed"; }
+            echo "::endgroup::"
+          done
+          exit $status
+      - name: Tests left the checkout untouched
+        if: ${{ !cancelled() }}
+        run: |
+          git status --porcelain --untracked-files=all | tee /dev/stderr | (! grep -q .)
+          test ! -e data
