@@ -28,7 +28,7 @@ const statuses = new Set(["done", "waiting", "retried", "failed", "lost", "inter
 const stages = new Set<string>(INFERENCE_STAGES);
 const errorKinds = new Set(["timeout", "network", "truncated", "invalid-json", "schema", "invalid-response", "server", "config", "other"]);
 const errorTypes = new Set(["InferenceUnavailableError", "InferenceConfigError", "InferenceOutputError", "FetchError", "Error", "TypeError", "RangeError", "SyntaxError", "AbortError"]);
-const kinds = new Set(["collect-source", "discover-sources", "evaluate-story", "draft-candidate", "publication-window", "weekly-review", "publish-alert"]);
+const kinds = new Set(["collect-source", "discover-sources", "evaluate-story", "draft-candidate", "publication-window", "weekly-review", "publish-alert", "editorial-diffusion"]);
 
 /** One JSON line per event on stderr: immediately visible in a terminal and journalctl. */
 export function createWatchLogger(level = process.env.XI_WATCH_LOG_LEVEL, write: (line: string) => void = line => { process.stderr.write(line); }): WatchObserver {

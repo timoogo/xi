@@ -4,6 +4,7 @@ import { getTopicStore } from "../topics/server";
 import type { InferenceStatus } from "./diagnostics";
 import { createLocalInference, inferenceConfigFromEnv } from "./inference";
 import { createPoliteFetch, createSafeFetch, type PoliteFetch } from "./net";
+import { publishSettingsFromEnv } from "./publisher";
 import { createSourceStore, type SourceStore } from "./sources";
 
 type WatchServices = { sources: SourceStore; fetch: PoliteFetch };
@@ -25,9 +26,9 @@ export function getWatchServices() {
 }
 
 /** Automatic publication stays off until the engine's tests are complete. */
-export const autoPublishEnabled = () => process.env.XI_WATCH_AUTOPUBLISH === "true";
+export const autoPublishEnabled = () => publishSettingsFromEnv().autoPublish;
 /** Public automatic publication needs this second operator flag, on top of the agent's confirmation. */
-export const publicPublishingEnabled = () => autoPublishEnabled() && process.env.XI_WATCH_AUTOPUBLISH_PUBLIC === "true";
+export const publicPublishingEnabled = () => publishSettingsFromEnv().allowPublic;
 
 /** What the web page can say about the worker's local inference (same environment file). */
 export function inferenceStatus(): InferenceStatus {

@@ -145,9 +145,15 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
       .run({ id: job.id, token: job.leaseToken, result: JSON.stringify(result), at: now() }).changes === 1;
   }
   /** Not a failure (e.g. inference unavailable): back to pending without consuming an attempt. */
-  function wait(job: Job, until: number, reason: string) {
-    return db.prepare(`UPDATE watch_job SET state = 'pending', attempts = attempts - 1, run_after = @until, last_error = @reason, lease_token = NULL, lease_until = NULL, updated_at = @at ${held}`)
-      .run({ id: job.id, token: job.leaseToken, until, reason: reason.slice(0, 500), at: now() }).changes === 1;
+  /**
+   * Back to pending until `until`. `ready`, checked in the same write transaction: when it already
+   * holds (the awaited event happened while the job was still running), the job is due at once.
+   * Whoever wakes the job updates it in a transaction too, so the event is never missed in between.
+   */
+  function wait(job: Job, until: number, reason: string, ready?: () => boolean) {
+    const write = () => db.prepare(`UPDATE watch_job SET state = 'pending', attempts = attempts - 1, run_after = @until, last_error = @reason, lease_token = NULL, lease_until = NULL, updated_at = @at ${held}`)
+      .run({ id: job.id, token: job.leaseToken, until: ready?.() ? now() : until, reason: reason.slice(0, 500), at: now() }).changes === 1;
+    return ready ? db.transaction(write).immediate() : write();
   }
   /** A permanent error (invalid data, refused configuration) is final at once: never retried in a loop. */
   function fail(job: Job, error: unknown, { permanent = false } = {}) {

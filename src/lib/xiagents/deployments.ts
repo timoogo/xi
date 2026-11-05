@@ -11,13 +11,14 @@ import { agentLLMSettings, describeLLM } from "../watch/llm-binding";
 import { assertWithin, inside, listDir, writeAtomic, type Vault } from "../publications/vault";
 import { locked } from "../topics/lock";
 import type { TopicStore } from "../topics/store";
-import { draftSchema, TopicError } from "../topics/types";
+import { draftSchema, TopicError, type Topic } from "../topics/types";
 import { proposeFromUrl } from "../watch/collect";
 import { createJobQueue, PRIORITY } from "../watch/jobs";
 import type { PoliteFetch } from "../watch/net";
 import type { SourceStore } from "../watch/sources";
 import { canonicalUrl } from "../watch/stories";
-import { parentTagProblem } from "./draft";
+import { limitsSchema, parentTagProblem } from "./draft";
+import { EDIT_SECTIONS, type EditSection } from "./edit";
 import { scheduleSchema, nextWatchOpening, watchOpen } from "./schedule";
 
 /**
@@ -57,6 +58,8 @@ export const agentSpecSchema = z.object({
   bloub: bloubConfigSchema,
   /** Autonomous publication of validated drafts (private); operator flags still apply. */
   autoPublish: z.boolean(),
+  /** Publication ceilings (absent in records made before them: the policy defaults). */
+  limits: limitsSchema.optional(),
 }).strict();
 export const deploymentSpecSchema = z.object({
   target: z.enum(["agent", "topic"]),
@@ -78,6 +81,49 @@ export const deploymentSpecSchema = z.object({
   }
 });
 export type DeploymentSpec = z.infer<typeof deploymentSpecSchema>;
+
+const proposalSchema = z.object({ generatedBy: z.enum(["ai", "rules", "yaml", "manual"]), model: z.string().max(200).nullable() }).strict();
+const revision = z.uuid().nullable();
+/**
+ * Changes to an existing ΞAgent or topic (edit.ts builds it from the preview). Each changed section
+ * is written by its store setter, only if it is unchanged since `base` (or already as wanted, when
+ * an interrupted deployment resumes): never a blind overwrite. Publication visibility, the pause
+ * and the watch switch are not part of it; public publication keeps its own confirmation.
+ */
+export const editSpecSchema = z.object({
+  target: z.literal("edit"),
+  agentId: z.uuid().nullable(),
+  topic: z.object({ id: z.uuid(), revision: z.uuid(), draft: draftSchema }).strict().nullable(),
+  newTopics: z.array(z.object({ key: z.string().regex(/^[a-z0-9-]{1,40}$/), draft: draftSchema }).strict()).max(10),
+  base: z.object({ revisions: z.object({ editorial: revision, schedule: revision, watch: revision, avatar: revision, llm: revision }).strict(), profile: profileSchema }).strict().nullable(),
+  changes: z.object({
+    identity: agentSpecSchema.pick({ handle: true, name: true, description: true, primary: true, secondary: true, presetId: true, presetVersion: true, settings: true }).strict().optional(),
+    profile: profileSchema.optional(),
+    sources: z.array(sourceSpecSchema).max(50).optional(),
+    schedule: scheduleSchema.optional(),
+    llm: agentLLMConfigSchema.optional(),
+    bloub: bloubConfigSchema.optional(),
+    publication: limitsSchema.extend({ autoPublish: z.boolean() }).strict().optional(),
+  }).strict(),
+  proposal: proposalSchema,
+}).strict().superRefine((spec, context) => {
+  const keys = spec.newTopics.map(topic => topic.key);
+  if (new Set(keys).size !== keys.length) context.addIssue({ code: "custom", message: "Topics nouveaux dupliqués." });
+  if (!spec.agentId === !spec.topic) context.addIssue({ code: "custom", message: "Un ΞAgent ou un topic à modifier est attendu." });
+  if (spec.agentId && !spec.base) context.addIssue({ code: "custom", message: "Révisions de référence manquantes." });
+  if (spec.topic && (Object.keys(spec.changes).length || spec.newTopics.length)) context.addIssue({ code: "custom", message: "Seul le topic est modifié." });
+  if (spec.agentId && !Object.keys(spec.changes).length) context.addIssue({ code: "custom", message: "Aucune modification à appliquer." });
+  const identity = spec.changes.identity;
+  const refs = identity ? [identity.primary, ...identity.secondary] : [];
+  const ids = refs.map(ref => ref.type === "existing" ? ref.id : `new:${ref.key}`);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "Topics du ΞAgent dupliqués." });
+  if (refs.some(ref => ref.type === "new" && !keys.includes(ref.key)) || keys.some(key => !refs.some(ref => ref.type === "new" && ref.key === key))) context.addIssue({ code: "custom", message: "Topic nouveau inconnu ou inutilisé." });
+  const urls = (spec.changes.sources ?? []).map(source => canonicalUrl(source.url).key);
+  if (new Set(urls).size !== urls.length) context.addIssue({ code: "custom", message: "Sources dupliquées." });
+});
+export type EditSpec = z.infer<typeof editSpecSchema>;
+export type AnySpec = DeploymentSpec | EditSpec;
+const parseSpec = (input: unknown): AnySpec => (input as { target?: unknown } | null)?.target === "edit" ? editSpecSchema.parse(input) : deploymentSpecSchema.parse(input);
 /** The agent's model selection; a legacy `modelRef` without an explicit choice becomes a model override. */
 export function agentLLM(agent: Pick<z.infer<typeof agentSpecSchema>, "modelRef" | "llm">): AgentLLMConfig {
   const llm = agent.llm ?? INHERIT_LLM;
@@ -88,8 +134,8 @@ export type StepStatus = "pending" | "running" | "completed" | "failed";
 export type StepLog = { at: string; level: "info" | "warn" | "error"; message: string };
 export type DeploymentStep = { key: StepKey; name: string; status: StepStatus; startedAt: string | null; finishedAt: string | null; logs: StepLog[]; error: string | null };
 export type Deployment = {
-  id: string; owner: string; target: DeploymentSpec["target"]; state: "pending" | "running" | "failed" | "completed";
-  createdAt: string; updatedAt: string; attempts: number; spec: DeploymentSpec;
+  id: string; owner: string; target: AnySpec["target"]; state: "pending" | "running" | "failed" | "completed";
+  createdAt: string; updatedAt: string; attempts: number; spec: AnySpec;
   ids: { agentId: string | null; topics: Record<string, string> };
   steps: DeploymentStep[];
 };
@@ -103,10 +149,13 @@ const STEPS = {
   monitoring: "Initialisation de la surveillance",
   readiness: "Vérifications de disponibilité",
   activation: "Activation du mode automatique",
+  publication: "Enregistrement des règles de publication",
 } as const;
 export type StepKey = keyof typeof STEPS;
 const AGENT_STEPS: StepKey[] = ["validate", "check", "topics", "identity", "sources", "calendars", "monitoring", "readiness", "activation"];
 const TOPIC_STEPS: StepKey[] = ["validate", "check", "topics"];
+const EDIT_STEPS: StepKey[] = ["validate", "check", "topics", "identity", "sources", "calendars", "publication"];
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
 const decode = (text: string) => { const match = /^---\n([\s\S]*?)\n---\n/.exec(text); if (!match) throw new TopicError("Déploiement illisible."); return parse(match[1]); };
@@ -157,10 +206,8 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
     return locked(dir, task);
   }
 
-  /** Problems found without writing anything (shown before the deployment is created). */
-  async function preflight(owner: string, spec: DeploymentSpec, ids?: Deployment["ids"]) {
+  function newTopicProblems(spec: AnySpec, catalog: Topic[], ids?: Deployment["ids"]) {
     const problems: string[] = [];
-    const catalog = await topics.list();
     for (const topic of spec.newTopics) {
       const allocated = ids?.topics[topic.key];
       const clash = catalog.find(t => (t.tag === topic.draft.tag || t.aliases.includes(topic.draft.tag)) && t.id !== allocated);
@@ -168,22 +215,92 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       if (topic.draft.parentId && !catalog.some(t => t.id === topic.draft.parentId)) problems.push(`Parent introuvable pour le topic « ${topic.draft.name} ».`);
       else { const problem = parentTagProblem(topic.draft, catalog); if (problem) problems.push(problem); }
     }
-    if (spec.agent) {
-      const agent = spec.agent;
-      for (const ref of [agent.primary, ...agent.secondary]) if (ref.type === "existing" && !catalog.some(t => t.id === ref.id)) problems.push("Un topic sélectionné n’existe plus : rechargez le catalogue.");
-      if (!await accounts.handleAvailable(agent.handle, ids?.agentId ?? null)) problems.push(`Le handle @${agent.handle} est déjà réservé.`);
-      if (!(await accounts.listPresets(owner)).some(p => p.id === agent.presetId && p.version === agent.presetVersion)) problems.push("Version de preset introuvable.");
-      // Only the owner's own instances: another owner's id is as unknown as a deleted one.
-      const instanceId = agentLLM(agent).instanceId;
-      if (instanceId && llm && !llm.owns(owner, instanceId)) problems.push("L’instance d’intelligence artificielle choisie n’existe plus : choisissez-en une autre ou la configuration globale.");
-    }
     return problems;
   }
+  /** Problems found without writing anything (shown before the deployment is created). */
+  async function preflight(owner: string, spec: AnySpec, ids?: Deployment["ids"]) {
+    if (spec.target === "edit") return (await editPreflight(owner, spec, ids)).problems;
+    const catalog = await topics.list();
+    const problems = newTopicProblems(spec, catalog, ids);
+    if (spec.agent) problems.push(...await agentProblems(owner, spec.agent, ids?.agentId ?? null, catalog, agentLLM(spec.agent).instanceId));
+    return problems;
+  }
+  async function agentProblems(owner: string, agent: Pick<z.infer<typeof agentSpecSchema>, "primary" | "secondary" | "handle" | "presetId" | "presetVersion">, agentId: string | null, catalog: Topic[], instanceId: string | null) {
+    const problems: string[] = [];
+    for (const ref of [agent.primary, ...agent.secondary]) if (ref.type === "existing" && !catalog.some(t => t.id === ref.id)) problems.push("Un topic sélectionné n’existe plus : rechargez le catalogue.");
+    if (!await accounts.handleAvailable(agent.handle, agentId)) problems.push(`Le handle @${agent.handle} est déjà réservé.`);
+    if (!(await accounts.listPresets(owner)).some(p => p.id === agent.presetId && p.version === agent.presetVersion)) problems.push("Version de preset introuvable.");
+    // Only the owner's own instances: another owner's id is as unknown as a deleted one.
+    if (instanceId && llm && !llm.owns(owner, instanceId)) problems.push("L’instance d’intelligence artificielle choisie n’existe plus : choisissez-en une autre ou la configuration globale.");
+    return problems;
+  }
+
+  type SectionState = { label: string; stale: boolean; done: boolean };
+  const editRef = (ids: Deployment["ids"] | undefined) => (ref: TopicRef) => ref.type === "existing" ? ref.id : ids?.topics[ref.key] ?? null;
+  /**
+   * Each section an edit changes, as it is now: changed since the preview (`stale`: never
+   * overwritten) or already as wanted (`done`: written by an interrupted attempt, or by hand).
+   */
+  async function editState(owner: string, spec: EditSpec, ids?: Deployment["ids"]) {
+    const state: Partial<Record<EditSection | "topic", SectionState>> = {};
+    const put = (section: EditSection | "topic", stale: boolean, done: boolean) => { state[section] = { label: section === "topic" ? "Topic" : EDIT_SECTIONS[section].label, stale: stale && !done, done }; };
+    if (spec.topic) {
+      const topic = (await topics.list()).find(item => item.id === spec.topic!.id);
+      if (!topic) throw new TopicError("Topic introuvable.", 404);
+      if (topic.createdBy !== owner) throw new TopicError("Seul le créateur peut modifier ce topic.", 403);
+      const wanted = spec.topic.draft;
+      put("topic", topic.revision !== spec.topic.revision, same([topic.tag, topic.name, topic.description, topic.scope, topic.parentId, topic.relatedIds], [wanted.tag, wanted.name, wanted.description, wanted.scope, wanted.parentId, wanted.relatedIds]));
+    }
+    if (!spec.agentId) return state;
+    const agentId = spec.agentId, base = spec.base!, changes = spec.changes;
+    const account = await accounts.getOwned(owner, agentId);
+    if (changes.identity) {
+      const resolve = editRef(ids);
+      const wanted = { ...changes.identity, primary: resolve(changes.identity.primary), secondary: changes.identity.secondary.map(resolve) };
+      const editorial = account.editorial;
+      const current = editorial && { handle: account.handle, name: account.name, description: account.description, primary: editorial.primaryTopicId, secondary: editorial.secondaryTopicIds, presetId: editorial.presetId, presetVersion: editorial.presetVersion, settings: editorial.settings };
+      put("identity", (editorial?.revision ?? null) !== base.revisions.editorial, same(current, wanted));
+    }
+    if (changes.profile) {
+      const profile = await accounts.profile(owner, agentId);
+      const current = { perimeter: profile?.perimeter ?? "", charter: profile?.charter ?? "" };
+      put("profile", !same(current, base.profile), same(current, changes.profile));
+    }
+    if (changes.sources) put("sources", false, false);
+    if (changes.schedule) {
+      const schedule = await accounts.schedule(owner, agentId);
+      put("schedule", schedule.revision !== base.revisions.schedule, schedule.explicit && schedule.valid && same(scheduleSchema.strip().parse(schedule), scheduleSchema.parse(changes.schedule)));
+    }
+    if (changes.llm) { const current = await accounts.llm(owner, agentId); put("llm", current.revision !== base.revisions.llm, same(current.config, changes.llm)); }
+    if (changes.bloub) { const current = await accounts.avatar(owner, agentId); put("bloub", current.revision !== base.revisions.avatar, same(current.config, changes.bloub)); }
+    if (changes.publication) {
+      const { policy, revision: current } = await accounts.watchPolicy(owner, agentId);
+      const wanted = changes.publication;
+      put("publication", current !== base.revisions.watch, policy.autoPublish === wanted.autoPublish && policy.maxPerDay === wanted.maxPerDay && policy.minIntervalMinutes === wanted.minIntervalMinutes);
+    }
+    return state;
+  }
+  /** Problems (422) and sections changed since the preview (409), without writing anything. */
+  async function editPreflight(owner: string, spec: EditSpec, ids?: Deployment["ids"]) {
+    const catalog = await topics.list();
+    const problems = newTopicProblems(spec, catalog, ids);
+    const state = await editState(owner, spec, ids);
+    if (spec.topic && (spec.topic.draft.tag !== catalog.find(t => t.id === spec.topic!.id)?.tag)) problems.push("L’étiquette d’un topic ne se modifie pas ici.");
+    const identity = spec.changes.identity;
+    if (spec.agentId && (identity || spec.changes.llm)) {
+      const account = await accounts.getOwned(owner, spec.agentId);
+      if (identity && !account.editorial) problems.push("Ce ΞAgent n’a pas encore de configuration éditoriale : configurez-le depuis sa page.");
+      problems.push(...await agentProblems(owner, identity ?? { primary: { type: "existing", id: account.editorial?.primaryTopicId ?? randomUUID() }, secondary: [], handle: account.handle, presetId: account.editorial?.presetId ?? "", presetVersion: account.editorial?.presetVersion ?? 1 }, spec.agentId, catalog, spec.changes.llm?.instanceId ?? null));
+    }
+    const stale = Object.values(state).filter(section => section.stale).map(section => section.label);
+    return { problems: [...new Set(problems)], stale };
+  }
+  const staleError = (stale: string[]) => new TopicError(`Configuration modifiée depuis l’aperçu (${stale.join(", ")}) : revoyez les différences avant d’appliquer.`, 409);
 
   /** Idempotent: the same id and configuration return the existing deployment. */
   async function create(owner: string, id: string, input: unknown) {
     z.uuid().parse(id);
-    const spec = deploymentSpecSchema.parse(input);
+    const spec = parseSpec(input);
     await prepare();
     return exclusive(id, async () => {
       try {
@@ -192,13 +309,19 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
         return existing;
       } catch (error) { if (!(error instanceof TopicError && error.status === 404)) throw error; }
       if ((await listDir(directory)).some(entry => entry.name === `${id}.md`)) throw new TopicError("Identifiant de déploiement indisponible.", 409);
-      const problems = await preflight(owner, spec);
-      if (problems.length) throw new TopicError(problems.join(" "), 422);
+      if (spec.target === "edit") {
+        const { problems, stale } = await editPreflight(owner, spec);
+        if (problems.length) throw new TopicError(problems.join(" "), 422);
+        if (stale.length) throw staleError(stale);
+      } else {
+        const problems = await preflight(owner, spec);
+        if (problems.length) throw new TopicError(problems.join(" "), 422);
+      }
       const at = now().toISOString();
       const deployment: Deployment = {
         id, owner, target: spec.target, state: "pending", createdAt: at, updatedAt: at, attempts: 0, spec,
-        ids: { agentId: spec.agent ? randomUUID() : null, topics: Object.fromEntries(spec.newTopics.map(topic => [topic.key, randomUUID()])) },
-        steps: (spec.target === "agent" ? AGENT_STEPS : TOPIC_STEPS).map(key => ({ key, name: STEPS[key], status: "pending", startedAt: null, finishedAt: null, logs: [], error: null })),
+        ids: { agentId: spec.target === "edit" ? spec.agentId : spec.agent ? randomUUID() : null, topics: Object.fromEntries(spec.newTopics.map(topic => [topic.key, randomUUID()])) },
+        steps: (spec.target === "agent" ? AGENT_STEPS : spec.target === "edit" ? EDIT_STEPS : TOPIC_STEPS).map(key => ({ key, name: STEPS[key], status: "pending", startedAt: null, finishedAt: null, logs: [], error: null })),
       };
       await save(deployment);
       return deployment;
@@ -227,7 +350,9 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       deployment.state = "running"; deployment.attempts++;
       await save(deployment);
       const resolveRef = (ref: TopicRef) => ref.type === "existing" ? ref.id : deployment.ids.topics[ref.key];
-      const agentTopics = () => deployment.spec.agent ? [deployment.spec.agent.primary, ...deployment.spec.agent.secondary].map(resolveRef) : [];
+      const spec = deployment.spec;
+      const agentTopics = () => spec.target !== "edit" && spec.agent ? [spec.agent.primary, ...spec.agent.secondary].map(resolveRef) : [];
+      const table = spec.target === "edit" ? editOperations : operations;
       for (const step of deployment.steps) {
         if (step.status === "completed") continue;
         const log = (level: StepLog["level"], text: string) => { step.logs.push({ at: now().toISOString(), level, message: text.slice(0, 1_000) }); };
@@ -235,7 +360,9 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
         log("info", deployment.attempts > 1 ? `Reprise (tentative ${deployment.attempts}).` : "Démarrage.");
         await save(deployment);
         try {
-          await operations[step.key](deployment, { log, resolveRef, agentTopics });
+          const operation = table[step.key];
+          if (!operation) throw new TopicError("Étape inconnue.");
+          await operation(deployment, { log, resolveRef, agentTopics });
           step.status = "completed"; step.finishedAt = now().toISOString();
           await save(deployment);
         } catch (error) {
@@ -253,54 +380,25 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
   }
 
   type Context = { log: (level: StepLog["level"], text: string) => void; resolveRef: (ref: TopicRef) => string; agentTopics: () => string[] };
-  const operations: Record<StepKey, (deployment: Deployment, context: Context) => Promise<void>> = {
-    async validate(deployment, { log }) {
-      const spec = deploymentSpecSchema.parse(deployment.spec);
-      log("info", `Configuration valide : ${spec.newTopics.length} topic(s) à créer${spec.agent ? `, ΞAgent @${spec.agent.handle}, ${spec.agent.sources.filter(s => s.status === "approved").length} source(s) approuvée(s), ${spec.agent.sources.filter(s => s.status === "excluded").length} exclue(s), fuseau ${spec.agent.schedule.timeZone}` : ""}.`);
-      log("info", { ai: `Proposition initiale générée par le modèle local ${spec.proposal.model ?? ""}, vérifiée et modifiée par le propriétaire.`, rules: "Proposition initiale déduite des mots-clés (règles locales, sans IA), vérifiée par le propriétaire.", yaml: "Configuration importée depuis un fichier YAML, vérifiée par le propriétaire.", manual: "Configuration saisie manuellement." }[spec.proposal.generatedBy]);
-    },
-    async check(deployment, { log }) {
-      const problems = await preflight(deployment.owner, deployment.spec, deployment.ids);
-      if (problems.length) throw new TopicError(problems.join(" "), 409);
-      const catalog = await topics.list();
-      for (const ref of deployment.spec.agent ? [deployment.spec.agent.primary, ...deployment.spec.agent.secondary] : []) {
-        if (ref.type === "existing") log("info", `Topic existant réutilisé : ${catalog.find(t => t.id === ref.id)?.tag}.`);
-      }
-      if (deployment.spec.agent) log("info", `Handle @${deployment.spec.agent.handle} disponible.`);
-    },
-    async topics(deployment, { log }) {
-      for (const topic of deployment.spec.newTopics) {
-        const { topic: saved, created } = await topics.create(deployment.owner, deployment.ids.topics[topic.key], topic.draft);
-        log("info", `${created ? "Topic créé" : "Topic déjà créé par une tentative précédente"} : ${saved.tag} (${saved.id}).`);
-      }
-      if (!deployment.spec.newTopics.length) log("info", "Aucun nouveau topic : uniquement des topics existants.");
-    },
-    async identity(deployment, { log, agentTopics }) {
-      const agent = deployment.spec.agent!;
-      const [primaryTopicId, ...secondaryTopicIds] = agentTopics();
-      const { account, created } = await accounts.createAgent(deployment.owner, deployment.ids.agentId!, {
-        draft: { handle: agent.handle, name: agent.name, description: agent.description, primaryTopicId, secondaryTopicIds, presetId: agent.presetId, presetVersion: agent.presetVersion, settings: agent.settings, active: true, modelRef: null, validationMode: "human" },
-        profile: agent.profile, bloub: agent.bloub, llm: agentLLM(agent),
-      });
-      log("info", `${created ? "ΞAgent enregistré" : "ΞAgent déjà enregistré, éléments manquants complétés"} : @${account.handle} (${account.id}). Veille désactivée jusqu’à l’activation.`);
-    },
-    async sources(deployment, { log, agentTopics }) {
-      const agent = deployment.spec.agent!;
-      const topicIds = agentTopics();
+  type Operation = (deployment: Deployment, context: Context) => Promise<void>;
+  /** Only creations reach these: an edit has its own table (`editOperations`). */
+  const creation = (deployment: Deployment) => { if (deployment.spec.target === "edit") throw new TopicError("Étape de création appliquée à une modification."); return deployment.spec; };
+  /** Approved sources are proposed then approved for the owner (the existing approval flow); excluded ones are rejected. */
+  async function applySources(owner: string, list: SourceSpec[], handle: string, topicIds: string[], log: Context["log"]) {
       let failed = 0;
-      for (const spec of agent.sources) {
+      for (const spec of list) {
         const host = new URL(spec.url).hostname;
         try {
           if (spec.status === "approved") {
-            const { source, created } = await proposeFromUrl({ fetch, sources, owner: deployment.owner, url: spec.url, topicIds, by: deployment.owner, note: `${spec.origin === "ai" ? "Suggérée par le modèle local, approuvée explicitement" : "Ajoutée et approuvée"} par le propriétaire lors du déploiement. ${spec.rationale}`.trim() });
+            const { source, created } = await proposeFromUrl({ fetch, sources, owner: owner, url: spec.url, topicIds, by: owner, note: `${spec.origin === "ai" ? "Suggérée par le modèle local, approuvée explicitement" : "Ajoutée et approuvée"} par le propriétaire lors du déploiement. ${spec.rationale}`.trim() });
             let current = source;
-            if (["proposed", "rejected", "disabled"].includes(current.status)) current = await sources.decide(deployment.owner, current.id, { action: "approve", revision: current.revision, note: "Approuvée par le propriétaire lors du déploiement du ΞAgent." });
+            if (["proposed", "rejected", "disabled"].includes(current.status)) current = await sources.decide(owner, current.id, { action: "approve", revision: current.revision, note: "Approuvée par le propriétaire lors du déploiement du ΞAgent." });
             const missing = topicIds.filter(topic => !current.topicIds.includes(topic));
-            if (missing.length) current = await sources.decide(deployment.owner, current.id, { action: "update", revision: current.revision, edits: { topicIds: [...current.topicIds, ...missing].slice(0, 30) }, note: `Associée au ΞAgent @${agent.handle}.` });
+            if (missing.length) current = await sources.decide(owner, current.id, { action: "update", revision: current.revision, edits: { topicIds: [...current.topicIds, ...missing].slice(0, 30) }, note: `Associée au ΞAgent @${handle}.` });
             log("info", `${created ? "Source ajoutée" : "Source déjà présente"} et approuvée : ${current.publisher} — ${current.url} (fiabilité estimée : ${current.reliability.level}).`);
           } else {
-            const { source } = await sources.propose(deployment.owner, { url: spec.url, kind: "feed", site: `${new URL(spec.url).origin}/`, publisher: host, topicIds, reliability: { level: "inconnue", reasons: ["Exclue par le propriétaire."], estimated: true }, note: `Exclue lors du déploiement de @${agent.handle}.` }, deployment.owner);
-            if (source.status === "proposed") { await sources.decide(deployment.owner, source.id, { action: "reject", revision: source.revision, note: "Exclue par le propriétaire : jamais collectée ni reproposée." }); log("info", `Source exclue : ${host}.`); }
+            const { source } = await sources.propose(owner, { url: spec.url, kind: "feed", site: `${new URL(spec.url).origin}/`, publisher: host, topicIds, reliability: { level: "inconnue", reasons: ["Exclue par le propriétaire."], estimated: true }, note: `Exclue lors du déploiement de @${handle}.` }, owner);
+            if (source.status === "proposed") { await sources.decide(owner, source.id, { action: "reject", revision: source.revision, note: "Exclue par le propriétaire : jamais collectée ni reproposée." }); log("info", `Source exclue : ${host}.`); }
             else if (source.status === "approved") log("warn", `${host} est déjà approuvée pour vos autres ΞAgents : non modifiée.`);
             else log("info", `Source déjà exclue ou désactivée : ${host}.`);
           }
@@ -310,12 +408,49 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
           log("error", `Source non ajoutée (${host}) : ${error.message}`);
         }
       }
-      if (!agent.sources.length) log("warn", "Aucune source : la veille ne collectera rien tant qu’aucune source n’est approuvée.");
+      if (!list.length) log("warn", "Aucune source : la veille ne collectera rien tant qu’aucune source n’est approuvée.");
       if (failed) log("warn", `${failed} source(s) non ajoutée(s). Vous pourrez les proposer de nouveau depuis la page du ΞAgent.`);
+  }
+
+  const operations: Partial<Record<StepKey, Operation>> = {
+    async validate(deployment, { log }) {
+      const spec = deploymentSpecSchema.parse(deployment.spec);
+      log("info", `Configuration valide : ${spec.newTopics.length} topic(s) à créer${spec.agent ? `, ΞAgent @${spec.agent.handle}, ${spec.agent.sources.filter(s => s.status === "approved").length} source(s) approuvée(s), ${spec.agent.sources.filter(s => s.status === "excluded").length} exclue(s), fuseau ${spec.agent.schedule.timeZone}` : ""}.`);
+      log("info", { ai: `Proposition initiale générée par le modèle local ${spec.proposal.model ?? ""}, vérifiée et modifiée par le propriétaire.`, rules: "Proposition initiale déduite des mots-clés (règles locales, sans IA), vérifiée par le propriétaire.", yaml: "Configuration importée depuis un fichier YAML, vérifiée par le propriétaire.", manual: "Configuration saisie manuellement." }[spec.proposal.generatedBy]);
+    },
+    async check(deployment, { log }) {
+      const problems = await preflight(deployment.owner, deployment.spec, deployment.ids);
+      if (problems.length) throw new TopicError(problems.join(" "), 409);
+      const catalog = await topics.list();
+      const agent = creation(deployment).agent;
+      for (const ref of agent ? [agent.primary, ...agent.secondary] : []) {
+        if (ref.type === "existing") log("info", `Topic existant réutilisé : ${catalog.find(t => t.id === ref.id)?.tag}.`);
+      }
+      if (agent) log("info", `Handle @${agent.handle} disponible.`);
+    },
+    async topics(deployment, { log }) {
+      for (const topic of deployment.spec.newTopics) {
+        const { topic: saved, created } = await topics.create(deployment.owner, deployment.ids.topics[topic.key], topic.draft);
+        log("info", `${created ? "Topic créé" : "Topic déjà créé par une tentative précédente"} : ${saved.tag} (${saved.id}).`);
+      }
+      if (!deployment.spec.newTopics.length) log("info", "Aucun nouveau topic : uniquement des topics existants.");
+    },
+    async identity(deployment, { log, agentTopics }) {
+      const agent = creation(deployment).agent!;
+      const [primaryTopicId, ...secondaryTopicIds] = agentTopics();
+      const { account, created } = await accounts.createAgent(deployment.owner, deployment.ids.agentId!, {
+        draft: { handle: agent.handle, name: agent.name, description: agent.description, primaryTopicId, secondaryTopicIds, presetId: agent.presetId, presetVersion: agent.presetVersion, settings: agent.settings, active: true, modelRef: null, validationMode: "human" },
+        profile: agent.profile, bloub: agent.bloub, llm: agentLLM(agent),
+      });
+      log("info", `${created ? "ΞAgent enregistré" : "ΞAgent déjà enregistré, éléments manquants complétés"} : @${account.handle} (${account.id}). Veille désactivée jusqu’à l’activation.`);
+    },
+    async sources(deployment, { log, agentTopics }) {
+      const agent = creation(deployment).agent!;
+      await applySources(deployment.owner, agent.sources, agent.handle, agentTopics(), log);
     },
     async calendars(deployment, { log }) {
       const agentId = deployment.ids.agentId!;
-      const wanted = deployment.spec.agent!.schedule;
+      const wanted = creation(deployment).agent!.schedule;
       const current = await accounts.schedule(deployment.owner, agentId);
       const same = current.explicit && current.valid && JSON.stringify(scheduleSchema.strip().parse(current)) === JSON.stringify(scheduleSchema.parse(wanted));
       if (!same) await accounts.setSchedule(deployment.owner, agentId, { revision: current.revision, schedule: wanted });
@@ -359,14 +494,92 @@ export function createDeployments({ vault, db, accounts, topics, sources, fetch,
       if (facts.workerLastTickAt === null) log("warn", "Aucun passage du worker enregistré : installez le timer xi-watch (docs/watch.md).");
       else if (now().getTime() - facts.workerLastTickAt > 30 * 60_000) log("warn", `Dernier passage du worker : ${new Date(facts.workerLastTickAt).toISOString()} (plus de 30 min).`);
       else log("info", `Worker actif (dernier passage ${new Date(facts.workerLastTickAt).toISOString()}).`);
-      if (deployment.spec.agent!.autoPublish && !facts.autoPublish) log("warn", "Publication autonome demandée, mais non autorisée par l’opérateur (XI_WATCH_AUTOPUBLISH) : les brouillons attendront.");
+      if (creation(deployment).agent!.autoPublish && !facts.autoPublish) log("warn", "Publication autonome demandée, mais non autorisée par l’opérateur (XI_WATCH_AUTOPUBLISH) : les brouillons attendront.");
     },
     async activation(deployment, { log }) {
       const agentId = deployment.ids.agentId!;
       const current = await accounts.watchPolicy(deployment.owner, agentId);
-      const policy = { ...DEFAULT_WATCH_POLICY, ...current.policy, enabled: true, paused: false, autoPublish: deployment.spec.agent!.autoPublish };
+      const policy = { ...DEFAULT_WATCH_POLICY, ...current.policy, ...creation(deployment).agent!.limits, enabled: true, paused: false, autoPublish: creation(deployment).agent!.autoPublish };
       if (JSON.stringify(policy) !== JSON.stringify(current.policy) || current.revision === null) await accounts.setWatchPolicy(deployment.owner, agentId, { revision: current.revision, policy });
       log("info", `Mode automatique activé : veille selon les calendriers${policy.autoPublish ? ", publication autonome privée des brouillons validés" : ", publication autonome désactivée"}.`);
+    },
+  };
+
+  const edit = (deployment: Deployment) => deployment.spec as EditSpec;
+  /**
+   * One changed section: skipped when already as wanted, refused (409) when changed since the
+   * preview, otherwise written by its store setter at the preview's revision (which the store
+   * checks again under its own lock).
+   */
+  async function guarded(deployment: Deployment, section: EditSection | "topic", log: Context["log"], write: () => Promise<unknown>) {
+    const state = (await editState(deployment.owner, edit(deployment), deployment.ids))[section];
+    if (!state) return;
+    if (state.done) { log("info", `${state.label} : déjà à jour, rien à écrire.`); return; }
+    if (state.stale) throw staleError([state.label]);
+    await write();
+    log("info", `${state.label} : enregistré.`);
+  }
+  const editOperations: Partial<Record<StepKey, Operation>> = {
+    async validate(deployment, { log }) {
+      const spec = editSpecSchema.parse(deployment.spec);
+      const sections = (Object.keys(spec.changes) as EditSection[]).map(section => EDIT_SECTIONS[section].label);
+      log("info", spec.topic ? `Modification du topic ${spec.topic.draft.tag} : nom, périmètre et description.` : `Modification du ΞAgent : ${sections.join(", ")}${spec.newTopics.length ? `, ${spec.newTopics.length} topic(s) à créer` : ""}.`);
+      log("info", spec.proposal.generatedBy === "ai" ? `Propositions de Konstruktor (modèle local ${spec.proposal.model ?? ""}) validées par le propriétaire.` : "Modifications saisies par le propriétaire.");
+    },
+    async check(deployment, { log }) {
+      const { problems, stale } = await editPreflight(deployment.owner, edit(deployment), deployment.ids);
+      if (problems.length) throw new TopicError(problems.join(" "), 409);
+      if (stale.length) throw staleError(stale);
+      log("info", "Révisions vérifiées : rien n’a changé depuis l’aperçu.");
+    },
+    async topics(deployment, context) {
+      if (deployment.spec.newTopics.length) await operations.topics!(deployment, context);
+      const topic = edit(deployment).topic;
+      if (topic) await guarded(deployment, "topic", context.log, () => topics.update(deployment.owner, topic.id, topic.revision, topic.draft, true));
+      else if (!deployment.spec.newTopics.length) context.log("info", "Aucun topic à créer ni à modifier.");
+    },
+    async identity(deployment, { log, resolveRef }) {
+      const { agentId, base, changes } = edit(deployment);
+      if (!agentId || !base) return;
+      const owner = deployment.owner;
+      if (changes.identity) {
+        const identity = changes.identity;
+        await guarded(deployment, "identity", log, async () => {
+          const editorial = (await accounts.getOwned(owner, agentId)).editorial!;
+          await accounts.update(owner, agentId, base.revisions.editorial, {
+            handle: identity.handle, name: identity.name, description: identity.description, primaryTopicId: resolveRef(identity.primary), secondaryTopicIds: identity.secondary.map(resolveRef),
+            presetId: identity.presetId, presetVersion: identity.presetVersion, settings: identity.settings, active: editorial.active, modelRef: editorial.modelRef, validationMode: "human",
+          });
+        });
+      }
+      if (changes.profile) await guarded(deployment, "profile", log, () => accounts.setProfile(owner, agentId, changes.profile));
+      if (changes.llm) await guarded(deployment, "llm", log, () => accounts.setLLM(owner, agentId, { revision: base.revisions.llm, config: changes.llm }));
+      if (changes.bloub) await guarded(deployment, "bloub", log, () => accounts.setAvatar(owner, agentId, { revision: base.revisions.avatar, config: changes.bloub }));
+      if (!changes.identity && !changes.profile && !changes.llm && !changes.bloub) log("info", "Identité, charte, modèle et avatar inchangés.");
+    },
+    async sources(deployment, { log }) {
+      const { agentId, changes } = edit(deployment);
+      if (!agentId || !changes.sources) { log("info", "Aucune nouvelle source."); return; }
+      const account = await accounts.getOwned(deployment.owner, agentId);
+      const topicIds = account.editorial ? [account.editorial.primaryTopicId, ...account.editorial.secondaryTopicIds] : [];
+      await applySources(deployment.owner, changes.sources, account.handle, topicIds, log);
+    },
+    async calendars(deployment, { log }) {
+      const { agentId, base, changes } = edit(deployment);
+      if (!agentId || !base || !changes.schedule) { log("info", "Calendriers inchangés."); return; }
+      const schedule = changes.schedule;
+      await guarded(deployment, "schedule", log, () => accounts.setSchedule(deployment.owner, agentId, { revision: base.revisions.schedule, schedule }));
+    },
+    async publication(deployment, { log }) {
+      const { agentId, base, changes } = edit(deployment);
+      if (!agentId || !base || !changes.publication) { log("info", "Règles de publication inchangées."); return; }
+      const wanted = changes.publication;
+      await guarded(deployment, "publication", log, async () => {
+        const current = await accounts.watchPolicy(deployment.owner, agentId);
+        // Only these three keys: the watch switch, the pause and the visibility (with its public confirmation) stay as they are.
+        await accounts.setWatchPolicy(deployment.owner, agentId, { revision: base.revisions.watch, policy: { ...DEFAULT_WATCH_POLICY, ...current.policy, autoPublish: wanted.autoPublish, maxPerDay: wanted.maxPerDay, minIntervalMinutes: wanted.minIntervalMinutes } });
+      });
+      if (wanted.autoPublish && !readiness().autoPublish) log("warn", "Publication autonome demandée, mais non autorisée par l’opérateur (XI_WATCH_AUTOPUBLISH) : les brouillons attendront votre relecture.");
     },
   };
 

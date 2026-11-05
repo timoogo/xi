@@ -278,3 +278,33 @@ test("feed pages: newest publication first, keyset cursor, scopes and permission
   assert.ok(!(await store.page(bob, { kind: "own" })).items.some((item) => item.id === draft));
   assert.ok(ids.length === 5);
 });
+
+test("an external publication written while a reconciliation runs is indexed by its invalidation (no stale scan reused)", async t => {
+  const root = await mkdtemp(join(tmpdir(), "xi-publications-race-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vault = await openVault(root);
+  const server = createPublicationStore({ vault, db: new Database(":memory:") });
+  // Another process (Obsidian, a script) writes into the same vault.
+  const external = createPublicationStore({ vault, db: new Database(":memory:") });
+  // Existing publications keep the scan busy long enough to overlap the external write.
+  const other = { id: "bobBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" };
+  for (let i = 0; i < 40; i++) {
+    const existing = await external.create(other);
+    const editable = await external.getEditable(other, existing);
+    const done = await external.save(other, existing, { baseRevision: editable.revision, summary: "", visibility: "public", messages: [{ key: "one", file: null, body: `Publication ${i}` }] });
+    assert.ok(done.ok);
+    await external.publish(other, existing, done.snapshot.revision);
+  }
+  // A full scan is in flight (first request, periodic reconciliation)...
+  const scanning = server.ensureIndexed();
+  // ...when the publication appears, and the watcher reports its new directory.
+  const id = await external.create(alice);
+  const draft = await external.getEditable(alice, id);
+  const saved = await external.save(alice, id, { baseRevision: draft.revision, summary: "", visibility: "public", messages: [{ key: "one", file: null, body: "Écrite pendant la réconciliation" }] });
+  assert.ok(saved.ok);
+  await external.publish(alice, id, saved.snapshot.revision);
+  const base = join(vault.postsDir, "_users", alice.id);
+  await server.invalidatePath(join(base, (await readdir(base))[0]));
+  await scanning;
+  assert.equal((await server.get(alice, id)).status, "published", "indexed without waiting for the next periodic reconciliation");
+});

@@ -67,7 +67,7 @@ function prompt(description: string, catalog: Topic[]) {
 const httpUrl = (value: string) => {
   try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && url.hostname.includes(".") ? url : null; } catch { return null; }
 };
-const toTag = (value: string, fallback: string) => {
+export const toTag = (value: string, fallback: string) => {
   const cleaned = value.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").split(".").map(part => part.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "")).filter(Boolean).map(part => /^[a-z]/.test(part) ? part : `t-${part}`).join(".");
   return tagSchema.safeParse(cleaned).success ? cleaned : slug(fallback).replace(/^([^a-z])/, "t-$1");
 };

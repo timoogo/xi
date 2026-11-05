@@ -18,6 +18,13 @@ const STATUS: Record<StepStatus, { label: string; mark: string; className: strin
   failed: { label: "Échec", mark: "✕", className: "text-destructive" },
 };
 const STATE_LABEL: Record<Deployment["state"], string> = { pending: "En attente", running: "En cours", completed: "Déployé", failed: "Échec" };
+/** Name shown for a deployment: the agent created, the topic created, or what an edit changes. */
+export function deploymentTitle(deployment: Deployment) {
+  const spec = deployment.spec;
+  if (spec.target === "edit") return spec.topic ? `Modification du topic ${spec.topic.draft.name}` : `Modification de ${spec.changes.identity ? `@${spec.changes.identity.handle}` : "ΞAgent"}`;
+  return spec.agent ? `${spec.agent.name} @${spec.agent.handle}` : `Topic ${spec.newTopics[0]?.draft.name}`;
+}
+const KIND: Record<Deployment["target"], string> = { agent: "Déploiement d’un ΞAgent", topic: "Création d’un topic", edit: "Modification validée" };
 const time = (value: string | null) => value ? new Date(value).toLocaleTimeString("fr-FR") : "";
 const duration = (from: string | null, to: string | null) => from && to ? `${((Date.parse(to) - Date.parse(from)) / 1000).toFixed(1).replace(".", ",")} s` : "";
 
@@ -58,16 +65,15 @@ export function DeploymentView({ initial }: { initial: Deployment }) {
     return () => clearInterval(timer);
   }, [live, id]);
 
-  const agent = deployment.spec.agent;
   const done = deployment.steps.filter(step => step.status === "completed").length;
   return <div className="space-y-4 p-4 pb-24">
     <section className="space-y-1 rounded-xl border p-4">
-      <p className="text-sm text-muted-foreground">{deployment.target === "agent" ? "Déploiement d’un ΞAgent" : "Création d’un topic"} · créé le {new Date(deployment.createdAt).toLocaleString("fr-FR")} · tentative {deployment.attempts || 1}</p>
-      <h2 className="text-xl font-bold">{agent ? `${agent.name} @${agent.handle}` : deployment.spec.newTopics[0]?.draft.name}</h2>
+      <p className="text-sm text-muted-foreground">{KIND[deployment.target]} · créé le {new Date(deployment.createdAt).toLocaleString("fr-FR")} · tentative {deployment.attempts || 1}</p>
+      <h2 className="text-xl font-bold">{deploymentTitle(deployment)}</h2>
       <p aria-live="polite" className={cn("font-medium", deployment.state === "failed" && "text-destructive")}>{STATE_LABEL[deployment.state]} — {done}/{deployment.steps.length} étapes terminées</p>
       <div className="flex flex-wrap gap-3 pt-2">
         {deployment.state === "completed" && deployment.ids.agentId && <Link className="underline" href={`/dashboard/xiagents/${deployment.ids.agentId}`}>Ouvrir la page du ΞAgent</Link>}
-        {deployment.state === "completed" && !agent && <Link className="underline" href="/dashboard/topics">Voir les topics</Link>}
+        {deployment.state === "completed" && !deployment.ids.agentId && <Link className="underline" href="/dashboard/topics">Voir les topics</Link>}
         {deployment.state === "failed" && <Button disabled={running} onClick={() => void run()}>{running ? "Reprise…" : "Reprendre le déploiement"}</Button>}
         <Link className="text-sm underline" href="/dashboard/xiagents/deployments">Historique des déploiements</Link>
       </div>

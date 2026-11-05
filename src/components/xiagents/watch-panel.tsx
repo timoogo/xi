@@ -16,7 +16,7 @@ type SourceView = WatchDiagnostics["sources"][number];
 const selectClass = "rounded-md border bg-background px-3 py-2";
 const date = (value: string | null) => (value ? new Date(value).toLocaleString("fr-FR", { timeZone: "Europe/Paris", dateStyle: "short", timeStyle: "short" }) : "—");
 const STATUS: Record<string, string> = { proposed: "En attente (collectée, insuffisante seule)", approved: "Approuvée", rejected: "Refusée", disabled: "Désactivée", deleted: "Supprimée" };
-const JOB: Record<string, string> = { "publication-window": "Fenêtre de publication", "weekly-review": "Bilan hebdomadaire", "collect-source": "Collecte", "discover-sources": "Découverte de sources", "evaluate-story": "Évaluation d’une actualité", "draft-candidate": "Rédaction d’un brouillon", "publish-alert": "Alerte immédiate" };
+const JOB: Record<string, string> = { "publication-window": "Fenêtre de publication", "editorial-diffusion": "Diffusion de la queue éditoriale", "weekly-review": "Bilan hebdomadaire", "collect-source": "Collecte", "discover-sources": "Découverte de sources", "evaluate-story": "Évaluation d’une actualité", "draft-candidate": "Rédaction d’un brouillon", "publish-alert": "Alerte immédiate" };
 const JOB_STATE: Record<string, string> = { pending: "Planifiée", running: "En cours", done: "Terminée", failed: "Échec" };
 const NOVELTY: Record<string, string> = { new: "nouveau sujet", development: "nouveau développement", duplicate: "déjà traité" };
 const CLAIM_KIND: Record<string, string> = { fact: "Fait", attributed: "Déclaration attribuée", hypothesis: "Hypothèse", interpretation: "Interprétation" };

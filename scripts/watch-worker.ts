@@ -14,7 +14,15 @@ import { agentLLMSettings, bindSafely, shouldPlanInference } from "../src/lib/wa
 import { createPoliteFetch, createSafeFetch } from "../src/lib/watch/net";
 import { watchDiagnostics } from "../src/lib/watch/diagnostics";
 import { createSourceStore } from "../src/lib/watch/sources";
+import { createArbitration } from "../src/lib/arbiter/arbitration";
+import { publishSettingsFromEnv } from "../src/lib/watch/publisher";
 import { engineHandlers, recordWorker, reevaluate, tick, type Handler } from "../src/lib/watch/worker";
+import { inferenceConcurrency as inferenceConcurrencyFromEnv, SYSTEM_TASK_KIND } from "../src/lib/watch/orchestrator";
+import { modelChoices } from "../src/lib/konstruktor/context";
+import { planReviews } from "../src/lib/konstruktor/suggestions";
+import { createSystemAgentStore } from "../src/lib/system-agents/store";
+import type { JobQueue } from "../src/lib/watch/jobs";
+import { systemTaskHandler } from "../src/lib/system-agents/tasks";
 
 /**
  * One short, idempotent pass of the watch engine, run by a systemd timer (see docs/watch.md).
@@ -56,7 +64,8 @@ async function main() {
     const runtime = createLLMRuntime({ db });
     const llm = (agent: WatchAgent) => runtime.bind(agent.owner, agentLLMSettings(agent));
     // Both flags are off unless the operator sets them; each agent must also enable its autonomous mode.
-    const settings = { autoPublish: process.env.XI_WATCH_AUTOPUBLISH === "true", allowPublic: process.env.XI_WATCH_AUTOPUBLISH_PUBLIC === "true" };
+    // Diffusion: the common editorial queue and its central diffuser, unless the operator rolls back to per-agent windows.
+    const settings = publishSettingsFromEnv();
     // Topic discovery: public publications only, the author's (or the ΞAgent owner's) local model, never a cloud one.
     const discovery = createTopicDiscovery({
       vault, topics, publications, relations: createTopicRelationStore({ vault, db, topics }), now,
@@ -64,8 +73,16 @@ async function main() {
       ownerOf: async ({ authorId, authorType }) => authorType === "human" ? authorId : (await accounts.watchAgents()).find(agent => agent.id === authorId)?.owner ?? null,
       autoAccept: process.env.XI_TOPIC_AUTOACCEPT === "true",
     });
-    const handlers: Record<string, Handler> = { ...engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now }), [DISCOVERY_JOB]: discovery.handler };
-    const inferenceConcurrency = positive(process.env.XI_INFERENCE_CONCURRENCY, 1);
+    // System agents' tasks: started by the web server; a pass resumes those it could not finish.
+    const systemAgents = createSystemAgentStore({ vault, db });
+    const systemServices = { db, accounts, topics, sources, models: (owner: string) => modelChoices(runtime.store, owner) };
+    // Konstruktor's proactive reviews: rules each pass, a review job only when a finding changed.
+    const reviews = { plan: (queue: JobQueue, at: number) => planReviews({ queue, systemAgents, services: systemServices, now: at }) };
+    const systemTasks = systemTaskHandler({ store: systemAgents, services: systemServices, llm: owner => bindSafely(user => runtime.bind(user, null), owner) });
+    // @arbitre decides priority publications outside the publish calendar; a decision never publishes by itself.
+    const arbitration = createArbitration({ db, systemAgents, now: () => now().getTime() });
+    const handlers: Record<string, Handler> = { ...engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, arbitration, now }), [DISCOVERY_JOB]: discovery.handler, [SYSTEM_TASK_KIND]: systemTasks };
+    const inferenceConcurrency = inferenceConcurrencyFromEnv();
     if (command === "explain") {
       const handle = agentRef.replace(/^@/, "").toLowerCase();
       const agent = (await accounts.watchAgents()).find(item => item.id === agentRef || item.handle.toLowerCase() === handle);
@@ -90,7 +107,7 @@ async function main() {
     }
     const canEvaluate = (agent: WatchAgent) => shouldPlanInference(bindSafely(llm, agent));
     // Leave room before the next timer run; leases cover a pass that overruns anyway.
-    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, enrichment: discovery, canEvaluate, now, observer: event => logger({ ...event, ...(event.event === "worker.start" ? settings : {}) }), deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency })));
+    console.log(JSON.stringify(await tick({ db, accounts, sources, handlers, enrichment: discovery, reviews, canEvaluate, now, observer: event => logger({ ...event, ...(event.event === "worker.start" ? settings : {}) }), deadline: Date.now() + 8 * 60_000, concurrency: positive(process.env.XI_WATCH_CONCURRENCY, 2), inferenceConcurrency })));
   } finally {
     db.close();
   }

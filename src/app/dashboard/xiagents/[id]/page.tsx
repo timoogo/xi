@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/current-user";
 import { getAccountStore } from "@/lib/accounts/server";
 import { getTopicStore } from "@/lib/topics/server";
 import { TopicError } from "@/lib/topics/types";
+import { KonstruktorPanel } from "@/components/konstruktor/konstruktor-panel";
 import { PageHeader } from "@/components/page-header";
 import { UserAvatar } from "@/components/user-avatar";
 import { AvatarPanel } from "@/components/xiagents/avatar-panel";
@@ -70,6 +71,7 @@ export default async function XiAgentPage({ params, searchParams }: { params: Pr
         <Link href={`/dashboard/xiagents?duplicate=${id}`} className="underline">Dupliquer (sans historique)</Link>
       </div>
     </section>
+    <KonstruktorPanel target={{ type: "agent", id: account.id }} intro={`Faites évoluer @${account.handle} : description, périmètre, charte ou topics.`} />
     <AgentStatus status={status} />
     <AgentAttention attention={agentAttention(watch)} />
     <AgentActivity items={agentActivity(watch)} lastFetch={watch.fetchLog[0] ?? null} nextWindow={watch.nextWindow} />

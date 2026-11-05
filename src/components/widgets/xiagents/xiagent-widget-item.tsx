@@ -4,14 +4,14 @@ import { Pin } from "lucide-react";
 import Link from "next/link";
 import { BloubAvatar } from "@/components/bloub/bloub-avatar";
 import { ACTIVITY_LABELS } from "@/components/bloub/labels";
-import type { XiAgentSummary } from "@/lib/xiagents/summary";
+import { xiAgentHref, type XiAgentSummary } from "@/lib/xiagents/summary";
 
-/** One agent: real activity (unlike identity avatars), link to its page, pin toggle. */
+/** One agent: real activity (unlike identity avatars), link to its page (or its card for a system agent), pin toggle. */
 export function XiAgentWidgetItem({ agent, pending, onTogglePin }: { agent: XiAgentSummary; pending: boolean; onTogglePin: (agent: XiAgentSummary) => void }) {
   const pinned = agent.pinnedAt !== null;
   const { config, activity } = agent.bloub;
   return <li className="flex items-center gap-1" data-agent-id={agent.id} data-pinned={pinned}>
-    <Link href={`/dashboard/xiagents/${agent.id}`} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 hover:bg-muted/60">
+    <Link href={xiAgentHref(agent)} className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-2 py-2 hover:bg-muted/60">
       <BloubAvatar config={config} activity={activity} size={40} label={`Avatar Bloub de ${agent.name}`} aria-hidden="true" />
       <span className="min-w-0">
         <span className="block truncate text-[15px] font-bold">{agent.name}</span>

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
+import { deploymentTitle } from "@/components/xiagents/deployment-view";
 import { getCurrentUser } from "@/lib/current-user";
 import { getDeployments } from "@/lib/xiagents/services";
 export const metadata = { title: "Ξ | Déploiements" };
@@ -12,7 +13,7 @@ export default async function DeploymentsPage() {
     <div className="p-4 pb-24">
       {!deployments.length ? <p>Aucun déploiement.</p> : <ul className="divide-y rounded-xl border">
         {deployments.map(item => <li key={item.id}><Link href={`/dashboard/xiagents/deployments/${item.id}`} className="flex flex-wrap items-center gap-2 p-3 hover:bg-muted">
-          <span className="font-medium">{item.spec.agent ? `${item.spec.agent.name} @${item.spec.agent.handle}` : `Topic ${item.spec.newTopics[0]?.draft.name}`}</span>
+          <span className="font-medium">{deploymentTitle(item)}</span>
           <span className={item.state === "failed" ? "text-destructive" : "text-muted-foreground"}>{LABEL[item.state]}</span>
           <span className="ml-auto text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("fr-FR")} · {item.steps.filter(step => step.status === "completed").length}/{item.steps.length} étapes</span>
         </Link></li>)}

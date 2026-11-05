@@ -12,6 +12,7 @@ import type { TopicStore } from "../topics/store";
 import { bloubConfigSchema } from "../bloub/config";
 import { readAgentBloub, type AgentBloubSettings } from "../xiagents/avatar";
 import { agentPins, migrateAgentPins, setAgentPin } from "../xiagents/pins";
+import { isReservedHandle } from "../system-agents/registry";
 import { agentLLMConfigSchema, INHERIT_LLM, storedAgentLLMSchema, type AgentLLMSettings } from "../llm/types";
 import { pauseSchema, readSchedule, scheduleSchema, type Pause, type ResolvedSchedule } from "../xiagents/schedule";
 import { ACCOUNT_STEPS, BUILTIN_PRESETS, DEFAULT_WATCH_POLICY, accountDraftSchema, editorialSchema, presetSchema, profileSchema, settingsSchema, storedWatchPolicySchema, watchPolicySchema, type Account, type AccountDraft, type AccountRun, type Preset, type Profile, type WatchAgent, type WatchSettings } from "./types";
@@ -106,6 +107,8 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
   async function save(owner: string, id: string, draft: AccountDraft, existing?: Entry) {
     await validate(draft, owner);
     const entries = await all();
+    // A legacy generator that already holds a system handle keeps it; nobody else may take one.
+    if (draft.handle !== existing?.account.handle && isReservedHandle(draft.handle)) throw new TopicError("Handle réservé à un ΞAgent système.", 409);
     if (entries.some(e => e.account.handle === draft.handle && e.account.id !== id)) throw new TopicError("Handle déjà réservé.", 409);
     // Even an empty directory may belong to another legacy generator; never overwrite its files.
     if (draft.handle !== existing?.account.handle && (await listDir(directory)).some(e => e.name === draft.handle)) throw new TopicError("Dossier du handle déjà réservé.", 409);
@@ -154,7 +157,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
         await step(run, 0, async () => { if (!topic) throw new TopicError("Topic introuvable."); return topic.id; });
         await step(run, 1, async () => ({ topicId: topic!.id, revision: topic!.revision, scope: topic!.scope }));
         let handle = topic!.tag;
-        await step(run, 2, async () => { const entries = await all(); const dirs = await listDir(directory); let suffix = 2; while (entries.some(e => e.account.handle === handle) || dirs.some(d => d.name === handle)) handle = `${topic!.tag.slice(0, 168)}-${suffix++}`; return handle; });
+        await step(run, 2, async () => { const entries = await all(); const dirs = await listDir(directory); let suffix = 2; while (entries.some(e => e.account.handle === handle) || dirs.some(d => d.name === handle) || isReservedHandle(handle)) handle = `${topic!.tag.slice(0, 168)}-${suffix++}`; return handle; });
         await step(run, 3, async () => { const preset = BUILTIN_PRESETS[0]; run.draft = { handle, name: topic!.name, description: topic!.description, primaryTopicId: topic!.id, secondaryTopicIds: [], presetId: preset.id, presetVersion: preset.version, settings: preset.settings, active: true, modelRef: null, validationMode: "human" }; return "Proposition déterministe, sans modèle IA."; });
         await event(run, 4, "waiting", "Choisissez un preset et ajustez ses paramètres.");
         run.state = "waiting"; await event(run, 5, "waiting", "Confirmation humaine obligatoire.");
@@ -181,6 +184,8 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
       const run = await loadRun(owner, id);
       if (run.confirmed) { if (JSON.stringify(draft) !== JSON.stringify(run.draft)) throw new TopicError("Confirmation différente de celle déjà enregistrée.", 409); return run.state === "completed" ? run : execute(run); }
       if (run.state !== "waiting") throw new TopicError("Proposition incomplète : reprenez le parcours.", 409);
+      // Refused before the confirmation is recorded, so the owner can confirm another handle.
+      if (isReservedHandle(draft.handle)) throw new TopicError("Handle réservé à un ΞAgent système.", 409);
       await validate(draft, owner);
       run.draft = draft; run.confirmed = true;
       await event(run, 4, "completed", { presetId: draft.presetId, version: draft.presetVersion });
@@ -415,6 +420,7 @@ export function createAccountStore({ vault, db, topics, beforeStep }: { vault: V
     return exclusive(async () => {
       const owner = (await all()).find(e => e.account.handle === wanted);
       if (owner) return owner.account.id === exceptId;
+      if (isReservedHandle(wanted)) return false;
       return !(await listDir(directory)).some(e => e.name === wanted);
     });
   }

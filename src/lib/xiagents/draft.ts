@@ -1,4 +1,5 @@
-import { accountDraftSchema, profileSchema, type Preset, type Settings } from "../accounts/types";
+import { z } from "zod";
+import { accountDraftSchema, DEFAULT_WATCH_POLICY, profileSchema, watchPolicySchema, type Preset, type Settings } from "../accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../bloub/config";
 import type { BloubConfig } from "../bloub/types";
 import { inferenceOptionsSchema, INHERIT_LLM_DRAFT, modelNameSchema, type AgentLLMDraft } from "../llm/types";
@@ -15,8 +16,8 @@ import { defaultSchedule, scheduleSchema, type Schedule } from "./schedule";
  * Provenance is kept per field: a suggestion (`applySuggestion`) never overwrites a field the
  * owner edited (`editDraft` marks it `manual`), so a late AI enrichment cannot undo manual choices.
  */
-export type Origin = "manual" | "rules" | "ai" | "yaml" | "default";
-export const DRAFT_FIELDS = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "sources", "schedule", "bloub"] as const;
+export type Origin = "manual" | "rules" | "ai" | "yaml" | "default" | "existing";
+export const DRAFT_FIELDS = ["name", "handle", "about", "topics", "perimeter", "charter", "presetKey", "settings", "llm", "autoPublish", "limits", "sources", "schedule", "bloub"] as const;
 export type DraftField = (typeof DRAFT_FIELDS)[number];
 
 /**
@@ -28,6 +29,10 @@ export type TopicPick = { type: "existing"; id: string; reason?: string } | { ty
 /** `undecided` sources are never deployed; imported or suggested sources always start undecided. */
 export type SourceRow = { url: string; domain: string; type: string; rationale: string; origin: "ai" | "user" | "yaml"; status: "approved" | "excluded" | "undecided" };
 export type Target = "agent" | "topic";
+/** Publication ceilings of the watch policy (`maxPerDay`, `minIntervalMinutes`); the other policy keys keep their own editors. */
+export const limitsSchema = z.object({ maxPerDay: watchPolicySchema.shape.maxPerDay, minIntervalMinutes: watchPolicySchema.shape.minIntervalMinutes }).strict();
+export type PublicationLimits = z.infer<typeof limitsSchema>;
+export const DEFAULT_LIMITS: PublicationLimits = { maxPerDay: DEFAULT_WATCH_POLICY.maxPerDay, minIntervalMinutes: DEFAULT_WATCH_POLICY.minIntervalMinutes };
 
 export type AgentDraft = {
   target: Target;
@@ -38,7 +43,7 @@ export type AgentDraft = {
   topics: TopicPick[];
   perimeter: string; charter: string;
   /** `<presetId>:<version>`. */
-  presetKey: string; settings: Settings | null; autoPublish: boolean;
+  presetKey: string; settings: Settings | null; autoPublish: boolean; limits: PublicationLimits;
   /** Model selection (docs/llm.md): inherit by default; an unresolved YAML instance key blocks the deployment. */
   llm: AgentLLMDraft;
   sources: SourceRow[]; schedule: Schedule; bloub: BloubConfig;
@@ -62,9 +67,9 @@ export function newDraft({ presets, timeZone, bloub = DEFAULT_BLOUB_CONFIG, targ
   const preset = presets[0];
   return {
     target, description: "", name: "", handle: "", about: "", topics: [], perimeter: "", charter: "",
-    presetKey: preset ? presetKey(preset) : "", settings: preset?.settings ?? null, llm: INHERIT_LLM_DRAFT, autoPublish: false,
+    presetKey: preset ? presetKey(preset) : "", settings: preset?.settings ?? null, llm: INHERIT_LLM_DRAFT, autoPublish: false, limits: DEFAULT_LIMITS,
     sources: [], schedule: defaultSchedule(timeZone), bloub,
-    provenance: { presetKey: "default", settings: "default", schedule: "default", bloub: "default" }, model: null,
+    provenance: { presetKey: "default", settings: "default", limits: "default", schedule: "default", bloub: "default" }, model: null,
   };
 }
 
@@ -150,6 +155,7 @@ export function draftIssues(draft: AgentDraft, catalog: Topic[], presets?: Prese
   else if (draft.llm.instanceId && instances && !instances.some(instance => instance.id === draft.llm.instanceId)) add("advanced", "Instance d’intelligence artificielle introuvable : choisissez-en une autre ou la configuration globale.", "llm");
   if (draft.llm.model.trim() && fails(modelNameSchema.safeParse(draft.llm.model))) add("advanced", "Nom de modèle trop long (200 caractères au plus).", "llm");
   if (fails(inferenceOptionsSchema.safeParse(draft.llm.options))) add("advanced", "Paramètres d’inférence invalides (température 0–2, limite 16–32 768 jetons, contexte 512–262 144, délai 5–600 s).", "llm");
+  if (fails(limitsSchema.safeParse(draft.limits))) add("advanced", "Limites de publication invalides (1 à 24 par jour, intervalle de 15 min à 7 jours).", "limits");
   if (draft.sources.length > 50) add("sources", "50 sources au plus.", "sources");
   if (fails(scheduleSchema.safeParse(draft.schedule))) add("schedule", "Calendriers invalides.", "schedule");
   return issues;
@@ -176,7 +182,7 @@ export function draftToSpec(draft: AgentDraft) {
       llm: { instanceId: draft.llm.instanceId, model: draft.llm.model.trim() || null, options: draft.llm.options },
       profile: { perimeter: draft.perimeter.trim(), charter: draft.charter.trim() },
       sources: draft.sources.filter(source => source.status !== "undecided").map(source => ({ url: source.url, status: source.status, origin: source.origin === "ai" ? "ai" as const : "user" as const, type: source.type.slice(0, 80), rationale: source.rationale.slice(0, 500) })),
-      schedule: draft.schedule, bloub: draft.bloub, autoPublish: draft.autoPublish,
+      schedule: draft.schedule, bloub: draft.bloub, autoPublish: draft.autoPublish, limits: draft.limits,
     },
   };
 }

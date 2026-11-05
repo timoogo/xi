@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Compass, FileText, House, Info, LogOut, Monitor, Moon, MoreHorizontal, Network, ScrollText, Settings, ShieldCheck, Sun, UserRound, type LucideIcon } from "lucide-react";
+import { Bell, CalendarRange, Compass, FileText, House, Info, Lightbulb, LogOut, Monitor, Moon, MoreHorizontal, Network, ScrollText, Settings, ShieldCheck, Sun, UserRound, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -30,7 +30,9 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Graphe", icon: Network, href: "/dashboard/graph" },
   { label: "Gestion des topics", icon: Compass, href: "/dashboard/topics" },
   { label: "ΞAgents", icon: UserRound, href: "/dashboard/xiagents" },
+  { label: "Supervision", icon: CalendarRange, href: "/dashboard/supervision" },
   { label: "Sources", icon: ShieldCheck, href: "/dashboard/sources" },
+  { label: "Propositions", icon: Lightbulb, href: "/dashboard/konstruktor" },
 ];
 const SECONDARY_ITEMS: NavItem[] = [
   { label: "Paramètres du compte", icon: Settings, href: "/dashboard/settings" },

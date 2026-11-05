@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { XiAgentSummary } from "@/lib/xiagents/summary";
+import type { XiAgentCategory, XiAgentSummary } from "@/lib/xiagents/summary";
 
 export const XIAGENTS_REFRESH_MS = 15_000;
+type Lists = Record<XiAgentCategory, XiAgentSummary[] | null>;
 
 async function request(url: string, init?: RequestInit): Promise<XiAgentSummary[]> {
   const response = await fetch(url, { cache: "no-store", ...init });
@@ -13,23 +14,27 @@ async function request(url: string, init?: RequestInit): Promise<XiAgentSummary[
 }
 
 /**
- * The viewer's ΞAgents, refreshed periodically from the server (which computes the
- * activity). No request is made while the tab is hidden or the widget is not
- * rendered (e.g. a sidebar hidden on small screens); returning to the tab refreshes
- * at once. Pins are optimistic and the server's answer wins.
+ * The ΞAgents of the selected category, refreshed periodically from the server (which computes the
+ * activity). Each category keeps its own list: switching back shows it at once, then refreshes; a
+ * category never loaded is fetched when selected. No request is made while the tab is hidden or the
+ * widget is not rendered (e.g. a sidebar hidden on small screens); returning to the tab refreshes at
+ * once. Pins are optimistic and the server's answer wins.
  */
-export function useXiAgents(initial: XiAgentSummary[] | null, ref: RefObject<Element | null>) {
-  const [agents, setAgents] = useState(initial);
+export function useXiAgents(initial: Lists, category: XiAgentCategory, ref: RefObject<Element | null>) {
+  const [lists, setLists] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   // Bumped on each pin change: a poll started before it must not undo the optimistic state.
   const mutation = useRef(0);
+  const loaded = useRef(lists);
+  loaded.current = lists;
+  const setList = (of: XiAgentCategory, next: XiAgentSummary[]) => setLists(current => ({ ...current, [of]: next }));
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (of: XiAgentCategory) => {
     const seen = mutation.current;
     try {
-      const next = await request("/api/xiagents");
-      if (seen === mutation.current) { setAgents(next); setError(null); }
+      const next = await request(`/api/xiagents?category=${of}`);
+      if (seen === mutation.current) { setList(of, next); setError(null); }
     } catch { setError("États non actualisés."); }
   }, []);
 
@@ -38,31 +43,33 @@ export function useXiAgents(initial: XiAgentSummary[] | null, ref: RefObject<Ele
     const tick = () => {
       if (inFlight || document.hidden || ref.current?.checkVisibility?.() === false) return;
       inFlight = true;
-      void refresh().finally(() => { inFlight = false; });
+      void refresh(category).finally(() => { inFlight = false; });
     };
     const onVisibility = () => { if (!document.hidden) tick(); };
-    if (initial === null) tick();
+    setError(null);
+    if (loaded.current[category] === null) tick();
     const timer = setInterval(tick, XIAGENTS_REFRESH_MS);
     document.addEventListener("visibilitychange", onVisibility);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [initial, ref, refresh]);
+  }, [category, ref, refresh]);
 
   const togglePin = useCallback(async (agent: XiAgentSummary) => {
     const pinned = agent.pinnedAt === null;
     const id = ++mutation.current;
+    const of = agent.category;
     setPending(set => new Set(set).add(agent.id));
-    setAgents(list => list?.map(item => item.id === agent.id ? { ...item, pinnedAt: pinned ? Date.now() : null } : item) ?? list);
+    setLists(current => ({ ...current, [of]: current[of]?.map(item => item.id === agent.id ? { ...item, pinnedAt: pinned ? Date.now() : null } : item) ?? current[of] }));
     try {
       const next = await request(`/api/xiagents/${encodeURIComponent(agent.id)}/pin`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned }) });
-      if (id === mutation.current) setAgents(next);
+      if (id === mutation.current) setList(of, next);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Épingle non enregistrée.");
-      if (id === mutation.current) await refresh();
+      if (id === mutation.current) await refresh(of);
     } finally {
       setPending(set => { const copy = new Set(set); copy.delete(agent.id); return copy; });
     }
   }, [refresh]);
 
-  return { agents, error, pending, togglePin };
+  return { agents: lists[category], error, pending, togglePin };
 }

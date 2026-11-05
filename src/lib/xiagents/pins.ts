@@ -2,7 +2,8 @@ import type Database from "better-sqlite3";
 
 /**
  * Per-user pinned ΞAgents, a display preference only: pinning never changes an
- * agent's activation or watch. Callers check that the user owns the agent; rows
+ * agent's activation or watch. Callers check that the user owns the agent (or that it is a
+ * system agent, listed for every user); rows
  * for agents that no longer exist are ignored by readers.
  */
 export function migrateAgentPins(db: Database.Database) {

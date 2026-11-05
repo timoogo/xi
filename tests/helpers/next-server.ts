@@ -2,19 +2,30 @@ import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
+import { parseEnv, promisify } from "node:util";
 
 const require = createRequire(import.meta.url);
 const exec = promisify(execFile);
 
-/** A production `next start` of the current build, on a free port, with a temporary SQLite base and vault. */
-export async function createTestServer() {
+/** Files Next loads in production; a variable already set, even empty, wins over them. */
+const PROJECT_ENV_FILES = [".env", ".env.production", ".env.local", ".env.production.local"];
+async function projectEnvKeys() {
+  const files = await Promise.all(PROJECT_ENV_FILES.map(file => readFile(file, "utf8").catch(() => "")));
+  return [...new Set(files.flatMap(content => Object.keys(parseEnv(content))))];
+}
+
+/**
+ * A production `next start` of the current build, on a free port, with a temporary SQLite base and
+ * vault. The developer's local configuration (.env.local: model server, automatic publication…)
+ * never leaks in: each variable of the project's env files is blanked unless set below or in `overrides`.
+ */
+export async function createTestServer(overrides: Record<string, string> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "xi-test-"));
   const databasePath = join(directory, "auth.sqlite");
   const vaultPath = join(directory, "vault");
@@ -27,7 +38,8 @@ export async function createTestServer() {
   const port = address.port;
   await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
   const origin = `http://127.0.0.1:${port}`;
-  const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "production", BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), BETTER_AUTH_URL: origin, AUTH_DATABASE_PATH: databasePath, XI_VAULT_PATH: vaultPath };
+  const blank = Object.fromEntries((await projectEnvKeys()).map(key => [key, ""]));
+  const env: NodeJS.ProcessEnv = { ...process.env, ...blank, ...overrides, NODE_ENV: "production", BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), BETTER_AUTH_URL: origin, AUTH_DATABASE_PATH: databasePath, XI_VAULT_PATH: vaultPath };
   let server: ChildProcess | undefined;
   let output = "";
 

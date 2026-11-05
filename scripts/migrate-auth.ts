@@ -1,20 +1,18 @@
-import { migrateAvatarPreferences } from "../src/lib/avatar-preferences";
 import { getMigrations } from "better-auth/db/migration";
 import { createAuth } from "../src/lib/auth";
-import { migratePublicationIndex } from "../src/lib/publications/index-db";
-import { migrateWatchJobs } from "../src/lib/watch/jobs";
-import { migrateOrchestrator } from "../src/lib/watch/orchestrator";
+import { migrateSchemas } from "../src/lib/maintenance/migration-check";
+import { instanceOwner } from "../src/lib/system-agents/owner";
 
 async function main() {
   const { auth, database } = createAuth();
   try {
     const migrations = await getMigrations(auth.options);
     await migrations.runMigrations();
-    migrateAvatarPreferences(database);
-    migratePublicationIndex(database);
-    migrateWatchJobs(database);
-    migrateOrchestrator(database);
-    console.log("SQLite authentication, publication index and watch queue schemas are up to date.");
+    // Every application schema up front (expand only, idempotent); services still migrate lazily.
+    migrateSchemas(database);
+    // Records the instance owner (first account) if none is recorded yet; never replaces one.
+    instanceOwner(database);
+    console.log("SQLite authentication and application schemas are up to date.");
   } finally {
     database.close();
   }

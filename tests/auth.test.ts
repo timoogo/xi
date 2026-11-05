@@ -157,7 +157,8 @@ test("real Next.js authentication with temporary SQLite and process restart", { 
       }
       if (path === "/dashboard/notifications") assert.ok(firstHtml.includes("Les notifications ne sont pas encore disponibles"));
       if (path === "/dashboard/communites") assert.ok(firstHtml.includes("Les communautés ne sont pas encore disponibles"));
-      if (path === "/dashboard/explore") assert.ok(firstHtml.includes("L’exploration arrive bientôt"));
+      // Explore became the real topic search (fe095b9): its header, never demo content.
+      if (path === "/dashboard/explore") assert.ok(firstHtml.includes("Explorer"));
     }
     for (const path of ["/", "/auth/login", "/auth/register"]) {
       const publicPage = await fetch(`${origin}${path}`);

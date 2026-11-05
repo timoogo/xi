@@ -27,10 +27,25 @@ export type Trigger = "calendar" | "manual" | "catch-up" | "major-event";
 export const TRIGGER_LABELS: Record<Trigger, string> = { calendar: "Calendrier", manual: "Manuel", "catch-up": "Rattrapage", "major-event": "Événement majeur" };
 /** Monitoring tasks follow the watch calendar; publication tasks check the publish calendar themselves. */
 export const WATCH_KINDS = ["discover-sources", "evaluate-story", "draft-candidate"] as const;
-export const PUBLISH_KINDS = ["publication-window", "weekly-review", "publish-alert"] as const;
-/** Kinds that call the local model: their concurrency is limited across processes. */
+/** The central diffuser of the editorial queue (publisher.ts `diffuse`): one job at a time across processes. */
+export const DIFFUSION_KIND = "editorial-diffusion";
+export const PUBLISH_KINDS = ["publication-window", "weekly-review", "publish-alert", DIFFUSION_KIND] as const;
+/**
+ * Tasks of the system ΞAgents (system-agents/tasks.ts): one kind, dispatched by the payload. Never
+ * bound to an editorial calendar; at most SYSTEM_CONCURRENCY run at once across processes, so they
+ * can never take every inference slot from editorial work (aging does the rest, see jobs.ts).
+ */
+export const SYSTEM_TASK_KIND = "system-task";
+export const SYSTEM_CONCURRENCY = 1;
 /** Jobs that call the local model: they share XI_INFERENCE_CONCURRENCY across processes. */
-export const INFERENCE_KINDS = ["evaluate-story", "draft-candidate", "enrich-publication"] as const;
+export const INFERENCE_KINDS = ["evaluate-story", "draft-candidate", "enrich-publication", SYSTEM_TASK_KIND] as const;
+/** Concurrency limits of every drain: the local model, and the system agents' share of it. */
+export const drainLimits = (inferenceConcurrency: number) => [{ kinds: INFERENCE_KINDS, max: inferenceConcurrency }, { kinds: [SYSTEM_TASK_KIND], max: SYSTEM_CONCURRENCY }, { kinds: [DIFFUSION_KIND], max: 1 }];
+/** XI_INFERENCE_CONCURRENCY (1–16, default 1): inference jobs at once, across the worker and the web server. */
+export const inferenceConcurrency = (env: Record<string, string | undefined> = process.env) => {
+  const value = Number(env.XI_INFERENCE_CONCURRENCY);
+  return Number.isInteger(value) && value >= 1 && value <= 16 ? value : 1;
+};
 
 const jobAgentId = (job: Pick<Job, "payload">) => (job.payload as { agentId?: unknown } | null)?.agentId;
 export const jobAgent = (job: Pick<Job, "payload">) => typeof jobAgentId(job) === "string" ? jobAgentId(job) as string : null;
@@ -58,6 +73,7 @@ export function migrateOrchestrator(db: Database.Database) {
       logs TEXT NOT NULL DEFAULT '[]'
     );
     CREATE INDEX IF NOT EXISTS xiagent_run_agent ON xiagent_run (owner, agent_id, started_at);
+    CREATE INDEX IF NOT EXISTS xiagent_run_owner ON xiagent_run (owner, started_at);
     CREATE TABLE IF NOT EXISTS xiagent_grant (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -202,6 +218,11 @@ export function listRuns(db: Database.Database, owner: string, { agentId, limit 
   const rows = db.prepare<unknown[], RunRow>(`SELECT * FROM xiagent_run WHERE owner = ? ${agentId ? "AND (agent_id = ? OR agent_id IS NULL)" : ""} AND started_at < ? ORDER BY started_at DESC LIMIT ?`)
     .all(...[owner, ...(agentId ? [agentId] : []), before ?? Number.MAX_SAFE_INTEGER, Math.min(limit, 200)]);
   return rows.map(toRun);
+}
+/** The attempts of one job, for the owner only (oldest first). */
+export function jobRuns(db: Database.Database, owner: string, jobId: string) {
+  migrateOrchestrator(db);
+  return db.prepare<[string, string], RunRow>("SELECT * FROM xiagent_run WHERE job_id = ? AND owner = ? ORDER BY started_at, attempt").all(jobId, owner).map(toRun);
 }
 export function getRun(db: Database.Database, owner: string, id: string) {
   migrateOrchestrator(db);

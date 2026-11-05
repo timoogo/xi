@@ -3,6 +3,7 @@ import { test } from "node:test";
 import Database from "better-sqlite3";
 import { chromium, type Browser } from "playwright-core";
 import { createTestServer } from "./helpers/next-server";
+import { hydrated } from "./helpers/hydration";
 import { openVault } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
 import { createSourceStore } from "../src/lib/watch/sources";
@@ -47,6 +48,7 @@ test("sources browser: trust list by ΞAgent, global decisions never overwritten
 
   // Default: every ΞAgent, the selector is the global decision.
   await page.getByRole("columnheader", { name: "Niveau de confiance" }).waitFor();
+  await hydrated(page.getByLabel("ΞAgent", { exact: true }));
   assert.equal(await page.getByLabel("ΞAgent", { exact: true }).inputValue(), "");
   assert.equal(await level("Le Quotidien").inputValue(), "approved");
   assert.equal(await origin("Le Quotidien"), "Globale");

@@ -1,7 +1,8 @@
 import type { AccountStore } from "../accounts/store";
 import type { TopicStore } from "../topics/store";
 import type { SourceStore } from "../watch/sources";
-import type { AgentDraft, SourceRow, TopicPick } from "./draft";
+import { DRAFT_FIELDS, type AgentDraft, type SourceRow, type TopicPick } from "./draft";
+import type { EditBase } from "./edit";
 import { defaultSchedule, scheduleSchema } from "./schedule";
 
 /**
@@ -41,9 +42,30 @@ export async function exportAgentDraft({ owner, agentId, accounts, topics, sourc
     // Instance kept by id here; draftToYaml exports its portable key, never the id or URL.
     llm: { instanceId: llm.config.instanceId, unresolvedKey: null, model: llm.config.model ?? (llm.legacy ? editorial?.modelRef ?? "" : ""), options: llm.config.options },
     autoPublish: watch.policy.autoPublish,
+    limits: { maxPerDay: watch.policy.maxPerDay, minIntervalMinutes: watch.policy.minIntervalMinutes },
     sources: sourcesByDomain,
     schedule: schedule.explicit && schedule.valid ? scheduleSchema.strip().parse(schedule) : defaultSchedule(schedule.timeZone),
     bloub: avatar.config,
     provenance: {}, model: null,
+  };
+}
+
+/**
+ * The agent's current configuration as a draft whose every field is marked `existing`, with the
+ * revisions it was read at: the base of Konstruktor's preview and of an edit deployment (edit.ts),
+ * which refuses to write a section changed since (409).
+ */
+export async function exportAgentConfiguration(deps: { owner: string; agentId: string; accounts: AccountStore; topics: TopicStore; sources: SourceStore }): Promise<{ draft: AgentDraft; base: EditBase }> {
+  const { owner, agentId, accounts } = deps;
+  const draft = await exportAgentDraft(deps);
+  const [account, schedule, watch, avatar, llm, profile] = await Promise.all([
+    accounts.getOwned(owner, agentId), accounts.schedule(owner, agentId), accounts.watchPolicy(owner, agentId), accounts.avatar(owner, agentId), accounts.llm(owner, agentId), accounts.profile(owner, agentId),
+  ]);
+  return {
+    draft: { ...draft, provenance: Object.fromEntries(DRAFT_FIELDS.map(field => [field, "existing"])) },
+    base: {
+      agentId, profile: { perimeter: profile?.perimeter ?? "", charter: profile?.charter ?? "" },
+      revisions: { editorial: account.editorial?.revision ?? null, schedule: schedule.revision, watch: watch.revision, avatar: avatar.revision, llm: llm.revision },
+    },
   };
 }

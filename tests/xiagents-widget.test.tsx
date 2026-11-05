@@ -9,16 +9,16 @@ import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/a
 import { XiAgentsWidget, widgetAgents } from "../src/components/widgets/xiagents";
 import { DEFAULT_BLOUB_CONFIG } from "../src/lib/bloub/config";
 import { BLOUB_ACTIVITIES, type BloubActivity } from "../src/lib/bloub/types";
-import type { XiAgentSummary } from "../src/lib/xiagents/summary";
+import { parseCategory, xiAgentHref, xiAgentsHref, type XiAgentCategory, type XiAgentSummary } from "../src/lib/xiagents/summary";
 import { openVault } from "../src/lib/publications/vault";
 import { createAccountStore } from "../src/lib/accounts/store";
 import { createTopicStore } from "../src/lib/topics/store";
 
 const agent = (n: number, pinnedAt: number | null = null, activity: BloubActivity = "idle"): XiAgentSummary =>
-  ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, name: `Agent ${String.fromCharCode(64 + n)}`, handle: `agent${n}`, pinnedAt, bloub: { config: DEFAULT_BLOUB_CONFIG, activity } });
+  ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, name: `Agent ${String.fromCharCode(64 + n)}`, handle: `agent${n}`, category: "editorial", pinnedAt, bloub: { config: DEFAULT_BLOUB_CONFIG, activity } });
 const names = (list: XiAgentSummary[]) => list.map(a => a.name);
 const router = { push() {}, replace() {}, refresh() {}, prefetch() {}, back() {}, forward() {} } as unknown as AppRouterInstance;
-const render = (initial: XiAgentSummary[] | null) => renderToStaticMarkup(<AppRouterContext.Provider value={router}><XiAgentsWidget initial={initial} /></AppRouterContext.Provider>);
+const render = (initial: XiAgentSummary[] | null, system: XiAgentSummary[] | null = null, category: XiAgentCategory = "editorial") => renderToStaticMarkup(<AppRouterContext.Provider value={router}><XiAgentsWidget initial={initial} initialSystem={system} initialCategory={category} /></AppRouterContext.Provider>);
 
 test("widget selection: five by default, pinned first, every pinned agent kept, stable order", () => {
   const eight = Array.from({ length: 8 }, (_, i) => agent(i + 1));
@@ -57,6 +57,27 @@ test("widget rendering: real activities, links, pin toggles, see-all and empty s
   const empty = render([]);
   assert.match(empty, /aucun ΞAgent/); assert.match(empty, />Créer un ΞAgent</); assert.doesNotMatch(empty, /<li/);
   assert.match(render(null), /Chargement des ΞAgents/);
+});
+
+test("widget categories: selector, system agents linked to their card, see-all keeps the category", () => {
+  const system = (n: number, pinnedAt: number | null = null): XiAgentSummary => ({ ...agent(n, pinnedAt), handle: `system${n}`, category: "system" });
+  const editorial = render([agent(1)], [system(2)]);
+  assert.match(editorial, /aria-label="Catégorie de ΞAgents"/);
+  assert.ok(editorial.includes("Agents éditoriaux") && editorial.includes("Agent A") && !editorial.includes("Agent B"), "only the selected category");
+  const seven = Array.from({ length: 7 }, (_, i) => system(i + 1, i === 6 ? 1 : null));
+  const html = render(null, seven, "system");
+  assert.ok(html.includes("Agents systèmes"));
+  assert.equal((html.match(/<li/g) ?? []).length, 5, "five at most, also for system agents");
+  assert.ok(html.indexOf("Agent G") < html.indexOf("Agent A"), "pinned system agent first");
+  assert.match(html, /href="\/dashboard\/xiagents\?category=system#agent-system7"/);
+  assert.match(html, /href="\/dashboard\/xiagents\?category=system"[^>]*>Voir tous</);
+  assert.match(render(null, [], "system"), /Aucun agent système disponible/);
+  assert.doesNotMatch(render(null, [], "system"), /Créer un ΞAgent/);
+  assert.match(render([agent(1)], null, "system"), /Chargement des ΞAgents/, "a category never loaded is fetched");
+
+  assert.deepEqual([undefined, null, "", "editorial", "system", "autre", "System"].map(parseCategory), ["editorial", "editorial", "editorial", "editorial", "system", null, null]);
+  assert.equal(xiAgentsHref("editorial"), "/dashboard/xiagents");
+  assert.equal(xiAgentHref(agent(1)), `/dashboard/xiagents/${agent(1).id}`);
 });
 
 test("pins: owner-only, persisted per user, idempotent, independent of activation", async t => {

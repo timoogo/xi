@@ -5,7 +5,7 @@ import type { BloubConfig } from "../bloub/types";
 import { draftSchema, tagSchema, TopicError, type Draft, type Topic } from "../topics/types";
 import { DAY_MINUTES, formatTime, isoDateSchema, parseTime, timeRangeSchema, type Calendar, type TimeRange } from "./calendar";
 import { INHERIT_LLM_DRAFT, instanceKeySchema, LLM_PROVIDER_TYPES, modelNameSchema, type AgentLLMDraft, type InferenceOptions } from "../llm/types";
-import { newTopicKey, presetKey, type AgentDraft, type DraftPatch, type SourceRow, type Target, type TopicPick } from "./draft";
+import { DEFAULT_LIMITS, newTopicKey, presetKey, type AgentDraft, type DraftPatch, type SourceRow, type Target, type TopicPick } from "./draft";
 import { defaultSchedule, scheduleSchema, type Schedule } from "./schedule";
 
 /**
@@ -434,8 +434,13 @@ export function parseAgentYaml(text: string, { catalog, presets, instances = [] 
   if (sources) patch.sources = sources;
   const schedule = readSchedule(r, own(data, "schedule"));
   if (schedule) patch.schedule = schedule;
-  const publication = r.section(own(data, "publication"), "publication", ["autoPublish"]);
-  if (publication) { const value = r.boolean(own(publication, "autoPublish"), "publication.autoPublish"); if (value !== undefined) patch.autoPublish = value; }
+  const publication = r.section(own(data, "publication"), "publication", ["autoPublish", "maxPerDay", "minIntervalMinutes"]);
+  if (publication) {
+    const value = r.boolean(own(publication, "autoPublish"), "publication.autoPublish"); if (value !== undefined) patch.autoPublish = value;
+    const maxPerDay = r.integer(own(publication, "maxPerDay"), "publication.maxPerDay", 1, 24);
+    const minIntervalMinutes = r.integer(own(publication, "minIntervalMinutes"), "publication.minIntervalMinutes", 15, 10_080);
+    if (maxPerDay !== undefined || minIntervalMinutes !== undefined) patch.limits = { ...DEFAULT_LIMITS, ...(maxPerDay !== undefined ? { maxPerDay } : {}), ...(minIntervalMinutes !== undefined ? { minIntervalMinutes } : {}) };
+  }
   const bloub = readAppearance(r, own(data, "appearance"));
   if (bloub) patch.bloub = bloub;
   return { ok: true, target, patch, issues: r.issues };
@@ -506,7 +511,7 @@ export function draftToYaml(draft: AgentDraft, catalog: Topic[], instances: read
       timeZone: schedule.timeZone, watch: calendarToYaml(schedule.watch), publish: calendarToYaml(schedule.publish),
       graceMinutes: schedule.graceMinutes, catchUpHours: schedule.catchUpHours, majorEvents: schedule.majorEvents.enabled, retentionDays: schedule.retentionDays,
     };
-    data.publication = { autoPublish: draft.autoPublish };
+    data.publication = { autoPublish: draft.autoPublish, maxPerDay: draft.limits.maxPerDay, minIntervalMinutes: draft.limits.minIntervalMinutes };
     data.appearance = { shape: draft.bloub.shape, expression: draft.bloub.expression, color: draft.bloub.color };
   }
   const doc = new Document(data, { version: "1.2" });

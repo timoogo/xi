@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import sharp from "sharp";
 import { chromium, type Browser } from "playwright-core";
 import { createTestServer } from "./helpers/next-server";
+import { hydrated } from "./helpers/hydration";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault } from "../src/lib/publications/vault";
 
@@ -56,6 +57,7 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   assert.notEqual(await preview.getAttribute("data-seed"), original.seed);
   assert.deepEqual(preference(), original);
   await page.reload(); assert.equal(await preview.getAttribute("data-seed"), original.seed);
+  await hydrated(page.getByRole("button", { name: "Régénérer" }));
   await page.getByRole("button", { name: "Régénérer" }).click();
   const chosen = await preview.getAttribute("data-seed");
   await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
@@ -79,6 +81,7 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   assert.equal((await patch(alice, { ...preference(), seed: preference(other.id).seed })).status(), 409);
   assert.equal((await patch(alice, { ...preference(), mode: "photo" })).status(), 400);
   const picker = page.getByLabel("Choisir une photo de profil");
+  await hydrated(picker);
   await picker.setInputFiles({ name: "portrait.png", mimeType: "image/png", buffer: png });
   await page.getByRole("status").filter({ hasText: "Photo de profil enregistrée." }).waitFor();
   const first = (await session(alice)).image as string;
@@ -139,6 +142,7 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   assert.equal((await session(alice)).image, first);
   assert.equal((await alice.request.get(app.origin + first)).status(), 200);
   await page.goto(`${app.origin}/dashboard/settings`);
+  await hydrated(page.getByRole("button", { name: "Modifier la photo" }));
   await page.getByRole("button", { name: "Modifier la photo" }).focus();
   const chooser = page.waitForEvent("filechooser");
   await page.keyboard.press("Enter");
@@ -162,6 +166,7 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: "/tmp/xi-avatar-settings-mobile.png" });
+  await hydrated(page.getByRole("button", { name: "Supprimer la photo" }));
   await page.getByRole("button", { name: "Supprimer la photo" }).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("status").filter({ hasText: "Photo de profil supprimée." }).waitFor();

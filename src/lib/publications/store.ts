@@ -292,7 +292,10 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       if (folder && owned(folder, row.author_id, row.id)) indexFolder(folder, row.trashed_at ? {id: row.id, folder: basename(row.path), originalPath: row.original_path!, trashedAt: row.trashed_at} : undefined);
       else await reconcileUser(row.author_id);
     } else {
-      // New directories, moves and social settings can change the indexed perimeter.
+      // New directories, moves and social settings can change the indexed perimeter. A scan already
+      // running may have listed the directories before this change: let it end, then scan again
+      // (joining it would mark the index fresh for a minute without the change).
+      await indexing?.catch(() => undefined);
       indexedAt = 0;
       await ensureIndexed();
       bumpIndexGeneration(db);

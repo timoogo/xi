@@ -104,20 +104,26 @@ export type PlannedJob = { kind: "publication-window" | "weekly-review"; key: st
 /**
  * Jobs an agent needs for its coming publication window. Keys are per agent and window: re-planning
  * is idempotent. Agents without an explicit schedule keep the legacy night window and keys.
+ * `queue`: the central diffuser publishes; only the Sunday selection remains, at the window's
+ * opening, with no per-agent slot. Otherwise (legacy diffusion) the per-agent window job at its slot.
  */
-export function planAgentJobs(agent: { id: string; active: boolean; watch: { valid: boolean; policy: WatchPolicy }; schedule?: ResolvedSchedule }, now: Date): PlannedJob[] {
+export function planAgentJobs(agent: { id: string; active: boolean; watch: { valid: boolean; policy: WatchPolicy }; schedule?: ResolvedSchedule }, now: Date, { queue = false } = {}): PlannedJob[] {
   if (!agent.active || !agent.watch.valid || !agent.watch.policy.enabled || agent.watch.policy.paused) return [];
-  if (agent.schedule?.explicit) return planScheduled(agent.id, agent.schedule, now);
+  const jobs = agent.schedule?.explicit ? planScheduled(agent.id, agent.schedule, now, queue) : planLegacy(agent.id, now, queue);
+  return queue ? jobs.filter(job => job.kind === "weekly-review") : jobs;
+}
+
+function planLegacy(agentId: string, now: Date, queue: boolean): PlannedJob[] {
   const window = nightWindow(now);
-  const slot = agentSlot(agent.id, window);
-  const payload = { agentId: agent.id, date: window.date };
-  const jobs: PlannedJob[] = [{ kind: "publication-window", key: `publication-window:${agent.id}:${window.date}`, runAfter: slot, payload }];
-  if (window.sunday) jobs.push({ kind: "weekly-review", key: `weekly-review:${agent.id}:${window.date}`, runAfter: new Date(slot.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
+  const slot = queue ? window.start : agentSlot(agentId, window);
+  const payload = { agentId: agentId, date: window.date };
+  const jobs: PlannedJob[] = [{ kind: "publication-window", key: `publication-window:${agentId}:${window.date}`, runAfter: slot, payload }];
+  if (window.sunday) jobs.push({ kind: "weekly-review", key: `weekly-review:${agentId}:${window.date}`, runAfter: queue ? slot : new Date(slot.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
   return jobs;
 }
 
 /** The current or next publish interval within 36 h; agents spread over its first 80 % (150 min at most). */
-function planScheduled(agentId: string, schedule: ResolvedSchedule, now: Date): PlannedJob[] {
+function planScheduled(agentId: string, schedule: ResolvedSchedule, now: Date, queue = false): PlannedJob[] {
   const at = now.getTime();
   const start = nextOpening(schedule.publish, schedule.timeZone, at, 2);
   if (start === null || start > at + 36 * 3_600_000) return [];
@@ -125,12 +131,12 @@ function planScheduled(agentId: string, schedule: ResolvedSchedule, now: Date): 
   if (!span) return [];
   const opening = span.start;
   const spread = Math.max(1, Math.min(SLOT_SPREAD_MINUTES, Math.floor((span.end - opening) / 60_000 * 0.8)));
-  const offset = parseInt(createHash("sha256").update(agentId).digest("hex").slice(0, 8), 16) % spread;
+  const offset = queue ? 0 : parseInt(createHash("sha256").update(agentId).digest("hex").slice(0, 8), 16) % spread;
   const date = localDate(opening, schedule.timeZone);
   const window = `${date}@${formatTime(localMinutes(opening, schedule.timeZone))}`;
   const runAfter = new Date(opening + offset * 60_000);
   const payload = { agentId, date };
   const jobs: PlannedJob[] = [{ kind: "publication-window", key: `publication-window:${agentId}:${window}`, runAfter, payload }];
-  if (new Date(`${date}T12:00:00Z`).getUTCDay() === 0) jobs.push({ kind: "weekly-review", key: `weekly-review:${agentId}:${window}`, runAfter: new Date(runAfter.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
+  if (new Date(`${date}T12:00:00Z`).getUTCDay() === 0) jobs.push({ kind: "weekly-review", key: `weekly-review:${agentId}:${window}`, runAfter: queue ? runAfter : new Date(runAfter.getTime() + WEEKLY_OFFSET_MINUTES * 60_000), payload });
   return jobs;
 }

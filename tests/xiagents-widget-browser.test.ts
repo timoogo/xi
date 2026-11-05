@@ -83,5 +83,29 @@ test("ΞAgents widget: real activity, refresh, reduced motion, pins persisted pe
   // Each row opens the agent's page.
   await row.getByRole("link").click();
   await page.waitForURL(`${app.origin}/dashboard/xiagents/${agentId}`);
+
+  // Category selector (Base Select): system agents in the widget, kept while navigating, carried by « Voir tous ».
+  const bobWidget = bobPage.locator('[data-widget="xiagents"]');
+  await bobWidget.getByRole("combobox", { name: "Catégorie de ΞAgents" }).click();
+  await bobPage.getByRole("option", { name: "Agents systèmes" }).click();
+  await bobWidget.getByText("Konstruktor").waitFor();
+  await bobWidget.getByText("Arbitre prioritaire").waitFor();
+  assert.equal(await bobWidget.locator("li[data-agent-id]").count(), 2, "each system agent once");
+  assert.equal(await bobWidget.getByRole("link", { name: "Voir tous" }).getAttribute("href"), "/dashboard/xiagents?category=system");
+  await bobWidget.getByRole("link", { name: "Voir tous" }).click();
+  await bobPage.waitForURL(`${app.origin}/dashboard/xiagents?category=system`);
+  await bobPage.locator("#agent-konstruktor").waitFor();
+  assert.equal(await bobWidget.getAttribute("data-category"), "system", "the widget keeps its category across navigation");
+  // Bob's choice survives a reload (rendered by the server, no flash); Alice keeps her own default.
+  await bobPage.reload();
+  await bobWidget.getByText("Konstruktor").waitFor();
+  assert.equal(await bobWidget.getAttribute("data-category"), "system", "kept after a reload");
+  await page.reload();
+  assert.equal(await page.locator('[data-widget="xiagents"]').getAttribute("data-category"), "editorial", "never imposed on another user");
+  // The page's selector navigates through the URL.
+  await bobPage.locator("#main-content header").getByRole("combobox", { name: "Catégorie de ΞAgents" }).click();
+  await bobPage.getByRole("option", { name: "Agents éditoriaux" }).click();
+  await bobPage.waitForURL(`${app.origin}/dashboard/xiagents`);
+  await bobPage.getByRole("heading", { name: "Mes ΞAgents" }).waitFor();
   assert.deepEqual(errors, []);
 });

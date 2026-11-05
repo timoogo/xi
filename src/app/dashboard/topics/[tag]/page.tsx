@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { KonstruktorPanel } from "@/components/konstruktor/konstruktor-panel";
 import { PageHeader } from "@/components/page-header";
 import { PublicationFeed } from "@/components/publications/publication-feed";
 import { AgentItem, ResultSection, TopicItem } from "@/components/search/result-items";
@@ -107,6 +108,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
         </li>))}</ul>
         : <p className="px-3 text-sm text-muted-foreground">Aucune association inférée.</p>}
     </ResultSection>
+    <KonstruktorPanel target={{ type: "topic", id: topic.id }} intro={`Affinez le topic #${topic.tag} : nom, périmètre ou description.`} />
     <h2 className="border-b px-4 pt-3 pb-2 text-lg font-bold">Publications déclarées</h2>
     <PublicationFeed viewer={viewer} scope={{ kind: "search", topicIds: [topic.id], origin: "declared" }} cursor={cursor} path={topicHref(topic.tag)} label={`Publications déclarées sur ${topic.name}`}
       empty={{ title: "Aucune publication", description: "Aucune publication accessible ne déclare encore ce topic." }} />

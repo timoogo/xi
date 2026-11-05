@@ -1,9 +1,13 @@
 import { diagnoseError, emitIndexSlow, editorialDecision, emit, observeBinding, taskScope, type WatchObserver } from "./events";
+import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { ArbitrationService } from "../arbiter/arbitration";
+import { hasReady, syncEditorialQueue } from "./queue";
 import type { AccountStore } from "../accounts/store";
 import type { PublicationStore } from "../publications/store";
 import { createJobQueue, retryDelay, PRIORITY, type ConcurrencyLimit, type Job, type JobQueue } from "./jobs";
-import { activeGrants, admit, catchUp, classifyError, finishRun, globalRetentionDays, INFERENCE_KINDS, jobAgent, jobTrigger, OUTAGE_MS, purgeRuns, startRun, type Admission } from "./orchestrator";
+import { DIFFUSION_KIND, SYSTEM_TASK_KIND } from "./orchestrator";
+import { activeGrants, admit, catchUp, classifyError, drainLimits, finishRun, globalRetentionDays, INFERENCE_KINDS, jobAgent, jobTrigger, OUTAGE_MS, purgeRuns, startRun, type Admission } from "./orchestrator";
 import { agentSchedule, publishOpen, watchOpen } from "../xiagents/schedule";
 export { PRIORITY };
 import { collectHandler, discoverHandler, planCollection, planDiscovery } from "./collect";
@@ -20,7 +24,8 @@ import { createPublisher, planAlerts, purgeDecisions, type PublishSettings } fro
 import { TopicError } from "../topics/types";
 import { control as ownerCommand } from "../xiagents/control";
 
-export type HandlerResult = { status: "done"; result?: unknown } | { status: "wait"; until: Date; reason: string };
+/** `ready` (wait): the awaited event, rechecked atomically with the wait so a wake-up during the run is never lost. */
+export type HandlerResult = { status: "done"; result?: unknown } | { status: "wait"; until: Date; reason: string; ready?: () => boolean };
 export type Handler = (job: Job) => Promise<HandlerResult>;
 const SLOW_INDEX_MS = 2_000;
 export type DrainSummary = { done: number; waiting: number; retried: number; failed: number; lost: number; interrupted: number; deferred: number };
@@ -88,7 +93,7 @@ export async function drainJobs({ queue, handlers, leaseMs = 5 * 60_000, maxJobs
           work.catch(() => {});
           const result = await Promise.race([work, interrupted]);
           if (result.status === "done" && ["evaluate-story", "draft-candidate"].includes(job.kind)) editorialDecision((result.result as { outcome?: string } | undefined)?.outcome ?? "");
-          if (result.status === "wait") { applied = queue.wait(job, result.until.getTime(), result.reason); outcome = "waiting"; record("waiting", { log: result.reason }); }
+          if (result.status === "wait") { applied = queue.wait(job, result.until.getTime(), result.reason, result.ready); outcome = "waiting"; record("waiting", { log: result.reason }); }
           else { applied = queue.complete(job, result.result ?? null); outcome = "done"; record("done", { result: result.result ?? null, log: "Terminée." }); }
         } catch (error) {
           if (error instanceof Interrupted) {
@@ -129,10 +134,17 @@ export async function drainJobs({ queue, handlers, leaseMs = 5 * 60_000, maxJobs
   return summary;
 }
 
-/** Night window, weekly review and alerts (see publisher.ts); kept as one entry point for tests and the worker. */
+/**
+ * Publication handlers (see publisher.ts); kept as one entry point for tests and the worker. With
+ * `diffusion: "queue"` the central diffuser is included, and its presence is what makes a pass plan it
+ * instead of per-agent window jobs (one setting, one publishing path).
+ */
 export function windowHandlers(options: Parameters<typeof createPublisher>[0]): Record<string, Handler> {
   const { handlers } = createPublisher(options);
-  return { "publication-window": measured(options.publications, handlers["publication-window"]), "weekly-review": handlers["weekly-review"], "publish-alert": handlers["publish-alert"] };
+  return {
+    "publication-window": measured(options.publications, handlers["publication-window"]), "weekly-review": handlers["weekly-review"], "publish-alert": handlers["publish-alert"],
+    ...(options.settings.diffusion === "queue" ? { [DIFFUSION_KIND]: handlers[DIFFUSION_KIND] } : {}),
+  };
 }
 
 /** The full index reread stays for now; its duration is kept to spot slowdowns as the vault grows. */
@@ -152,14 +164,14 @@ function measured(publications: PublicationStore, handler: Handler): Handler {
  * agent to its resolved model (agent → owner's global configuration → explicit problem, never a
  * fallback to another instance or model; see llm-binding.ts and docs/llm.md).
  */
-export function engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, now }: {
+export function engineHandlers({ db, accounts, topics, publications, sources, fetch, llm, settings, arbitration, now }: {
   db: Database.Database; accounts: AccountStore; topics: TopicStore; publications: PublicationStore; sources: SourceStore; fetch: PoliteFetch;
-  llm: BindLLM; settings: PublishSettings; now: () => Date;
+  llm: BindLLM; settings: PublishSettings; arbitration?: ArbitrationService; now: () => Date;
 }): Record<string, Handler> {
   const clock = () => now().getTime();
   const observedLLM: BindLLM = agent => observeBinding(llm(agent));
   return {
-    ...windowHandlers({ db, accounts, sources, publications, settings, now: clock }),
+    ...windowHandlers({ db, accounts, sources, publications, settings, arbitration, now: clock }),
     "collect-source": collectHandler({ db, sources, fetch, now: clock }),
     "discover-sources": discoverHandler({ db, sources, agents: () => accounts.watchAgents(), fetch, now: clock }),
     "evaluate-story": evaluateHandler({ db, accounts, topics, publications, sources, llm: observedLLM, now: clock }),
@@ -190,13 +202,16 @@ export function drainControl(db: Database.Database, accounts: AccountStore, init
  *    publish calendar; collection, discovery, evaluation and drafting for agents inside their watch
  *    calendar or a grant; light off-hours detection for agents allowing major events (collection,
  *    then only stories already carried by several independent voices, at high priority);
- * 4. draining what is due, each job admitted when it starts;
+ * 4. draining what is due, each job admitted when it starts (system agents' tasks included: the web
+ *    server starts them at once, a pass resumes those interrupted by a crash or a busy model);
  * 5. purges (finished jobs, collected items, execution logs by retention).
  */
-export async function tick({ db, accounts, sources, handlers, enrichment, canEvaluate = () => false, now = () => new Date(), deadline, concurrency = 1, inferenceConcurrency = 1, retentionDays = globalRetentionDays(), observer }: {
+export async function tick({ db, accounts, sources, handlers, enrichment, reviews, canEvaluate = () => false, now = () => new Date(), deadline, concurrency = 1, inferenceConcurrency = 1, retentionDays = globalRetentionDays(), observer }: {
   db: Database.Database; accounts: AccountStore; sources?: SourceStore; handlers: Record<string, Handler>;
   /** Topic discovery (topics/discovery.ts): plans enrichment of public publications; its handler is in `handlers`. */
   enrichment?: { plan(queue: JobQueue, at: number): Promise<number> };
+  /** Konstruktor's proactive reviews (konstruktor/suggestions.ts), drained as system tasks; never a configuration change. */
+  reviews?: { plan(queue: JobQueue, at: number): Promise<number> };
   /** Whether inference tasks are planned for the agent: a bound model, or a configuration problem to report (llm-binding.ts `shouldPlanInference`). */
   canEvaluate?: (agent: WatchAgent) => boolean; now?: () => Date; deadline?: number;
   /** Jobs run at once by this pass, and inference jobs at once across processes. */
@@ -225,8 +240,9 @@ export async function tick({ db, accounts, sources, handlers, enrichment, canEva
   const lightly = running().filter(agent => !watching.includes(agent) && agentSchedule(agent).majorEvents.enabled);
 
   let planned = 0;
+  const diffusion = !!handlers[DIFFUSION_KIND];
   for (const agent of agents) {
-    for (const job of planAgentJobs(agent, now())) {
+    for (const job of planAgentJobs(agent, now(), { queue: diffusion })) {
       if (handlers[job.kind] && queue.enqueue({ kind: job.kind, key: job.key, payload: job.payload, runAfter: job.runAfter.getTime(), maxAttempts: 3 }).created) planned++;
     }
   }
@@ -243,10 +259,23 @@ export async function tick({ db, accounts, sources, handlers, enrichment, canEva
     planned += planDrafting(db, queue, running(), canEvaluate, clock());
   }
   if (enrichment && handlers["enrich-publication"]) planned += await enrichment.plan(queue, clock());
+  if (reviews && handlers[SYSTEM_TASK_KIND]) {
+    // A failed review planning never stops the editorial pass.
+    try { planned += await reviews.plan(queue, clock()); } catch (error) { emit(observer, { event: "worker.error", level: "warn", kind: "konstruktor-review", status: error instanceof Error ? error.name : "unknown" }); }
+  }
   if (handlers["publish-alert"]) planned += planAlerts(db, queue, agents.filter(agent => agentSchedule(agent).majorEvents.enabled || publishOpen(agent, clock())), clock());
+  // The editorial queue follows the candidates in both modes (a rollback and a return find it current);
+  // the diffuser is planned only while something is ready and none is already planned.
+  if (handlers["publication-window"] || diffusion) {
+    syncEditorialQueue(db, clock());
+    if (diffusion && hasReady(db) && !db.prepare("SELECT 1 FROM watch_job WHERE kind = ? AND state IN ('pending', 'running')").get(DIFFUSION_KIND)
+      && queue.enqueue({ kind: DIFFUSION_KIND, key: `${DIFFUSION_KIND}:${clock()}:${randomUUID()}`, payload: { trigger: "calendar" }, runAfter: clock(), maxAttempts: 3 }).created) planned++;
+  }
 
   const control = drainControl(db, accounts, agents, clock);
-  const drained = await drainJobs({ queue, handlers, deadline, clock, concurrency, limits: [{ kinds: INFERENCE_KINDS, max: inferenceConcurrency }], control, observer });
+  const drained = await drainJobs({ queue, handlers, deadline, clock, concurrency, limits: drainLimits(inferenceConcurrency), control, observer });
+  // What this pass published or withdrew (alerts, windows) leaves the queue now, not at the next pass.
+  if (handlers["publication-window"] || diffusion) syncEditorialQueue(db, clock());
   const purged = queue.purge(30 * 86_400_000);
   const purgedItems = sources ? purgeItems(db, clock()) + purgeCandidates(db, clock()) + purgeDecisions(db, clock()) : 0;
   const purgedRuns = purgeRuns(db, agents, clock(), retentionDays);
