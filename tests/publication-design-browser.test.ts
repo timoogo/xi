@@ -72,7 +72,10 @@ test("publication design: connected threads, mobile, media privacy and still ide
   const media = card.getByRole("button", { name: /Afficher l’image/ });
   const before = await media.locator("..").boundingBox();
   await media.click();
-  await card.getByRole("img", { name: "Illustration", exact: true }).waitFor();
+  // The <img> is in the DOM before the browser requests it (next/image is lazy). decode() settles once
+  // its bytes, which the route serves only after counting the request, are decoded; it rejects if the
+  // image fails to load, so a missing request still fails here.
+  await card.getByRole("img", { name: "Illustration", exact: true }).evaluate(image => (image as HTMLImageElement).decode());
   assert.equal(mediaRequests, 1);
   const after = await card.getByRole("img", { name: "Illustration", exact: true }).locator("..").boundingBox();
   assert.equal(before?.height, after?.height);
