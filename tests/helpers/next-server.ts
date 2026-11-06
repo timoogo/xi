@@ -43,22 +43,32 @@ export async function createTestServer(overrides: Record<string, string> = {}) {
   let server: ChildProcess | undefined;
   let output = "";
 
+  /**
+   * A graceful `next start` shutdown waits for open responses (ended within ~6 s: SSE streams close on
+   * SIGTERM, idle keep-alive sockets after 5 s). Past that, report what held it instead of hanging
+   * until the test's own timeout.
+   */
   async function stop() {
-    if (server && server.exitCode === null) {
-      const exited = once(server, "exit");
-      server.kill("SIGTERM");
-      await exited;
-    }
+    const child = server;
     server = undefined;
+    if (!child || child.exitCode !== null) return;
+    const exited = once(child, "exit");
+    child.kill("SIGTERM");
+    const graceful = await Promise.race([exited.then(() => true), delay(15_000, false, { ref: false })]);
+    if (graceful) return;
+    child.kill("SIGKILL");
+    await exited;
+    throw new Error(`next start did not exit within 15 s of SIGTERM (an open connection held its graceful shutdown):\n${output}`);
   }
   async function migrate() {
     await exec(process.execPath, ["--import", "tsx", "scripts/migrate-auth.ts"], { env });
   }
   async function start() {
-    output = "";
+    // Kept across restarts, so a failure after one still shows the previous process's last lines.
+    output = (output + "\n--- next start ---\n").slice(-10_000);
     server = spawn(process.execPath, [require.resolve("next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(port)], { env, stdio: ["ignore", "pipe", "pipe"] });
-    server.stdout?.on("data", (data) => { output = (output + data).slice(-5000); });
-    server.stderr?.on("data", (data) => { output = (output + data).slice(-5000); });
+    server.stdout?.on("data", (data) => { output = (output + data).slice(-10_000); });
+    server.stderr?.on("data", (data) => { output = (output + data).slice(-10_000); });
     for (let attempt = 0; attempt < 100; attempt++) {
       if (server.exitCode !== null) throw new Error(`Next.js exited: ${output}`);
       try {
@@ -70,8 +80,7 @@ export async function createTestServer(overrides: Record<string, string> = {}) {
     throw new Error(`Next.js did not start: ${output}`);
   }
   async function dispose() {
-    await stop();
-    await rm(directory, { recursive: true, force: true });
+    try { await stop(); } finally { await rm(directory, { recursive: true, force: true }); }
   }
   return { origin, databasePath, vaultPath, migrate, start, stop, dispose, output: () => output };
 }
