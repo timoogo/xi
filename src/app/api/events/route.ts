@@ -54,7 +54,10 @@ export async function GET(request: Request) {
       abort = close;
       streams.add(close);
       request.signal.addEventListener("abort", abort, { once: true });
-      if (request.signal.aborted) return close();
+      // A request admitted before SIGTERM may reach this point after the shutdown hook closed the
+      // open streams: registering it now would hold the graceful shutdown forever. start() runs
+      // synchronously, so no signal handler can run between this check and the registration above.
+      if (request.signal.aborted || shutdown.xiEventStreams?.closing) return close();
       send("retry: 1500\n\n");
       // A state reconciliation on every connect also recovers all missed events,
       // including across restart or a cursor older than any retained journal.
