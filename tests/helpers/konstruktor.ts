@@ -53,7 +53,8 @@ export async function setup(t: TestContext, llm: (owner: string) => LLMBinding, 
   const vault = await openVault(join(root, "vault"));
   const db = new Database(join(root, "app.sqlite"));
   db.pragma("journal_mode = WAL");
-  const clock = { at: Date.parse("2026-10-28T10:00:00Z") };
+  // Real time: stores without an injected clock (topics) stamp createdAt with it.
+  const clock = { at: Date.now() };
   const now = () => clock.at;
   const topics = createTopicStore({ vault, db });
   const accounts = createAccountStore({ vault, db, topics });

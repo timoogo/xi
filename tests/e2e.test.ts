@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { diagnoseOnFailure } from "./helpers/diagnostics";
 import { createTestServer } from "./helpers/next-server";
 
 // Real browser journeys against the production build (`pnpm build` first) in a local Chrome.
@@ -13,6 +14,7 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
   await app.migrate();
   await app.start();
   const browser: Browser = await chromium.launch({ executablePath, headless: true });
+  diagnoseOnFailure(t, app, () => browser);
   // node:test runs after hooks in registration order: close the browser's live connections first.
   t.after(async () => { await browser.close(); await app.dispose(); });
   const errors: string[] = [];
@@ -29,6 +31,9 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
     await page.waitForURL(`${app.origin}/dashboard`);
     return page;
   }
+  // The whole toast, shown once the server has moved the folder: a substring would also match the
+  // confirmation dialog ("La publication sera déplacée dans votre corbeille privée.").
+  const trashToast = (page: Page) => page.getByText("Déplacée dans votre corbeille, visible par vous uniquement.", { exact: true }).waitFor();
   const userDir = async () => {
     const users = join(app.vaultPath, "posts", "_users");
     return join(users, (await readdir(users))[0]);
@@ -88,8 +93,9 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
     await author.getByRole("menuitem", { name: "Supprimer", exact: true }).click();
     await author.getByRole("dialog").getByRole("button", { name: "Supprimer", exact: true }).click();
     await author.getByRole("button", { name: "Mettre à la corbeille" }).click();
-    await author.getByText("Déplacée dans votre corbeille").waitFor();
-    await author.getByRole("article", { name: "Publication de Browser Author" }).filter({ hasText: "Premier message" }).waitFor({ state: "detached" });
+    await trashToast(author);
+    // includeHidden: while the modal dialog is open the feed is aria-hidden, which is not removal.
+    await author.getByRole("article", { name: "Publication de Browser Author", includeHidden: true }).filter({ hasText: "Premier message" }).waitFor({ state: "detached" });
     const trashed = join(app.vaultPath, "posts", ".trash", folder.split("/").at(-2)!, id);
     assert.deepEqual((await readdir(trashed)).sort(), [folder.split("/").at(-1)!, "trash.json"]);
     await reader.goto(`${app.origin}/dashboard`);
@@ -112,7 +118,7 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
     await author.getByRole("dialog").getByRole("button", { name: "Supprimer", exact: true }).click();
     await author.getByRole("button", { name: "Mettre à la corbeille" }).click();
     await author.waitForURL(`${app.origin}/dashboard/publications`);
-    await author.getByText("Déplacée dans votre corbeille").waitFor();
+    await trashToast(author);
     // Something else now occupies the original folder (for example created in Obsidian).
     await mkdir(folder);
     await writeFile(join(folder, "autre.md"), "Ne pas toucher");
@@ -135,7 +141,7 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
     await author.getByRole("button", { name: "Supprimer" }).click();
     await author.getByRole("button", { name: "Mettre à la corbeille" }).click();
     await author.waitForURL(`${app.origin}/dashboard/publications`);
-    await author.getByText("Déplacée dans votre corbeille").waitFor();
+    await trashToast(author);
     const trashed = join(app.vaultPath, "posts", ".trash", (await userDir()).split("/").at(-1)!, secret);
     const [name] = (await readdir(trashed)).filter((entry) => entry.startsWith("post_"));
     assert.match(await readFile(join(trashed, name, "index.md"), "utf8"), /Note privée modifiée/);

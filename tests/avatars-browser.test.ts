@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import sharp from "sharp";
 import { chromium, type Browser } from "playwright-core";
 import { createTestServer } from "./helpers/next-server";
+import { diagnoseOnFailure } from "./helpers/diagnostics";
 import { hydrated } from "./helpers/hydration";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault } from "../src/lib/publications/vault";
@@ -13,6 +15,7 @@ import { openVault } from "../src/lib/publications/vault";
 test("avatars: secure local uploads, settings, all human surfaces, replacement, concurrency and removal", { timeout: 120_000 }, async t => {
   const app = await createTestServer();
   const resources: { browser?: Browser } = {};
+  diagnoseOnFailure(t, app, () => resources.browser);
   t.after(async () => { await resources.browser?.close(); await app.dispose(); });
   await app.migrate(); await app.start();
   const browser = resources.browser = await chromium.launch({ executablePath: process.env.XI_E2E_CHROME ?? "/usr/bin/google-chrome-stable", headless: true });
@@ -123,8 +126,17 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
     ] });
     assert.ok(saved.ok); await store.publish(author, id, saved.snapshot.revision); return id;
   }
+  // The server learns of these direct vault writes through its file watcher, asynchronously, as it
+  // would of an Obsidian edit: wait until it serves both before browsing them.
+  async function indexed(publication: string) {
+    for (let attempt = 0; (await bob.request.get(`${app.origin}/dashboard/publications/${publication}`)).status() !== 200; attempt++) {
+      assert.ok(attempt < 100, `the server did not index publication ${publication} within 10 s`);
+      await delay(100);
+    }
+  }
   const id = await publish(user);
-  await publish(other, `${id}/1`);
+  const reply = await publish(other, `${id}/1`);
+  await indexed(id); await indexed(reply);
   const bobResult = await upload(bob, jpeg, "image/jpeg"); assert.equal(bobResult.status(), 200);
   const bobImage = (await bobResult.json()).image as string;
   for (const path of ["/dashboard", "/dashboard/profile", `/dashboard/profiles/${user.id}`, `/dashboard/publications/${id}`]) {
@@ -141,10 +153,12 @@ test("avatars: secure local uploads, settings, all human surfaces, replacement, 
   await app.stop(); await app.start();
   assert.equal((await session(alice)).image, first);
   assert.equal((await alice.request.get(app.origin + first)).status(), 200);
+  // Listen before navigating: Playwright enables file chooser interception asynchronously, and a
+  // single key press sent right after the listener can reach Chrome first, opening the native dialog.
+  const chooser = page.waitForEvent("filechooser");
   await page.goto(`${app.origin}/dashboard/settings`);
   await hydrated(page.getByRole("button", { name: "Modifier la photo" }));
   await page.getByRole("button", { name: "Modifier la photo" }).focus();
-  const chooser = page.waitForEvent("filechooser");
   await page.keyboard.press("Enter");
   await (await chooser).setFiles({ name: "replacement.jpg", mimeType: "image/jpeg", buffer: jpeg });
   await page.getByRole("status").filter({ hasText: "Photo de profil enregistrée." }).waitFor();

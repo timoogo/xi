@@ -92,6 +92,33 @@ Le build et les tests doivent utiliser la même valeur `NEXT_DIST_DIR`. Le dossi
 
 Les tests vérifient aussi le rendu du compte courant, les états vides et l’isolation de deux utilisateurs authentifiés (requêtes simultanées et paramètres d’URL), sans modifier la base de développement.
 
+### Intégration continue (GitHub Actions)
+
+`.github/workflows/ci.yml` s’exécute sur les Pull Requests vers `main`, les push sur `main` et à la demande (`workflow_dispatch`). Un nouveau push annule le run obsolète de la même PR. Node 24 et pnpm (version fixée par `packageManager` dans `package.json`), dépendances installées avec `pnpm install --frozen-lockfile` et cache pnpm.
+
+| Job | Contenu |
+| --- | --- |
+| Quality (lint, types) | `pnpm lint`, `pnpm exec tsc --noEmit` |
+| Tests (core / graph / agents) | `test:publications accounts avatars llm topics`, `test:graph`, `test:xiagents watch` en parallèle ; chaque suite s’exécute même si une précédente échoue, le job échoue si l’une échoue |
+| Build and server tests | `pnpm build`, puis `test:auth` (dont l’arrêt de `next start` avec des flux SSE en cours de connexion et des connexions ouvertes sans requête) et `test:xiagents:pages` sur ce build |
+| Browser E2E | Chrome stable installé par `browser-actions/setup-chrome`, `XI_E2E_CHROME` pointant sur son binaire, build, puis `test:e2e`, `test:topics:e2e`, `test:accounts:e2e`, `test:avatars:e2e`, `test:xiagents:e2e`, un fichier à la fois (`--test-concurrency=1`) |
+
+Isolation et sécurité :
+
+- Permissions `contents: read` seulement ; aucun secret, aucun déploiement, aucune publication, aucun push. Le checkout ne conserve pas le jeton GitHub.
+- Le build reçoit une configuration jetable : `BETTER_AUTH_SECRET` aléatoire à chaque run, base SQLite et vault dans le dossier temporaire du runner. `data/xi-auth.sqlite` n’est jamais utilisé.
+- Les tests créent leurs bases et vaults dans des dossiers `mkdtemp()` ; les serveurs `next start` écoutent sur un port libre de `127.0.0.1` et vident les variables des fichiers `.env*` du projet. Aucun modèle n’est appelé : les tests LLM utilisent des inférences simulées, aucun Ollama ni homelab n’est contacté.
+- Chaque job de test vérifie à la fin que l’arbre Git est intact et qu’aucun dossier `data/` n’a été créé.
+- Diagnostics E2E : un test navigateur qui échoue écrit, pour chaque page ouverte, une capture pleine page, son URL et son titre, ainsi que la sortie récente du serveur (conservée entre redémarrages) et l’arborescence du vault temporaire, dans `XI_E2E_ARTIFACTS` (par défaut `$TMPDIR/xi-e2e-artifacts`). En CI, ce dossier est publié comme artefact privé `e2e-diagnostics` (7 jours) uniquement en cas d’échec ; il ne contient que des données de test synthétiques.
+- `createTestServer().stop()` attend au plus 15 s la fin gracieuse de `next start` (6 s au plus en temps normal) puis échoue explicitement avec la sortie du serveur, au lieu d’un timeout muet du test.
+- `SHARP_IGNORE_GLOBAL_LIBVIPS=1` force le binaire précompilé de `sharp`.
+
+Arrêt de `next start` : sur SIGTERM, Next appelle `server.close()`, qui attend toutes les connexions. Node ferme lui-même les connexions keep-alive inactives, mais pas une connexion qui n’a encore rien envoyé (préconnexion d’un navigateur) : il la compte comme une requête en cours et `close()` arrête aussi la vérification de `headersTimeout`. Seul le client pouvait alors libérer l’arrêt (environ 100 s pour Chrome), en test comme en production. `src/instrumentation.ts` suit les connexions acceptées (canal `net.server.socket`) et ferme au signal celles dont le serveur n’a lu aucun octet ; une requête dont les premiers octets sont arrivés est conservée et servie, et les flux SSE suivent leur propre fermeture. Limites : Next écoute 300 à 400 ms avant d’appeler `register()`, donc une connexion muette ouverte dans cette fenêtre de démarrage n’est pas suivie ; des octets encore en transit au moment du signal ne se distinguent pas du silence, comme pour la fermeture des connexions keep-alive inactives par Node.
+
+Le job Browser E2E n’est pas destiné à devenir un check obligatoire tant que sa fiabilité sur GitHub n’est pas établie : les échecs intermittents observés en local sont corrigés : `sources-browser` (focus vérifié avant sa restitution par Radix), `xiagents-browser` (arrêt de `next start` retenu par les préconnexions de Chrome, voir ci-dessous) et `publication-design-browser` (requête de l’image comptée avant que le navigateur ne la charge : `next/image` est en chargement différé, le test attend désormais `decode()`). Les checks obligatoires seront configurés après un premier run réussi, avec les noms réels des jobs.
+
+Validation locale du workflow : `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml`.
+
 ### Topics hiérarchiques
 
 La page `/dashboard/topics` permet de proposer, confirmer, explorer et gérer les topics partagés, avec pipeline SSE et routage privé corrigible. Les topics restent distincts des comptes éditoriaux. Voir [l’architecture, les permissions et les limites](docs/topics.md). Réindexation : `npm run topics:reindex` ; tests : `npm run test:topics` et `npm run test:topics:e2e`.

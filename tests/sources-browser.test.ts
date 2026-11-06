@@ -76,6 +76,9 @@ test("sources browser: trust list by ΞAgent, global decisions never overwritten
   assert.equal(await dialog.getByRole("combobox", { name: "Confiance de Le Quotidien — @politiks" }).inputValue(), "denied");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
+  // Radix gives focus back in a task after the dialog unmounts, so <body> holds it for a few ms:
+  // wait until it has moved on (bounded), then the assertion decides where it landed.
+  await page.waitForFunction(() => document.activeElement !== document.body, undefined, { timeout: 5_000 }).catch(() => undefined);
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Périmètre des décisions pour Le Quotidien", "focus returns to its trigger");
   // A global denial prevails over an agent approval, and says so.
   await page.getByLabel("ΞAgent", { exact: true }).selectOption(complete.accountId);
