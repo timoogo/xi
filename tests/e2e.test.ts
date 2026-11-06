@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { diagnoseOnFailure } from "./helpers/diagnostics";
 import { createTestServer } from "./helpers/next-server";
 
 // Real browser journeys against the production build (`pnpm build` first) in a local Chrome.
@@ -13,6 +14,7 @@ test("browser: feed, editor, deletion, undo, trash and restore", { timeout: 240_
   await app.migrate();
   await app.start();
   const browser: Browser = await chromium.launch({ executablePath, headless: true });
+  diagnoseOnFailure(t, app, () => browser);
   // node:test runs after hooks in registration order: close the browser's live connections first.
   t.after(async () => { await browser.close(); await app.dispose(); });
   const errors: string[] = [];

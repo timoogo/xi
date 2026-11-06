@@ -148,6 +148,8 @@ jobs:
       - name: Run browser suites
         env:
           XI_E2E_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          # Failing browser tests write screenshots, URLs, server output and the vault tree here.
+          XI_E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         # One test file at a time: each starts its own Next.js server and Chrome, and running
         # them side by side on a small runner pushes slow journeys past their timeouts.
         run: |
@@ -159,6 +161,14 @@ jobs:
             echo "::endgroup::"
           done
           exit $status
+      - name: Upload E2E diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-diagnostics
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Tests left the checkout untouched
         if: ${{ !cancelled() }}
         run: |

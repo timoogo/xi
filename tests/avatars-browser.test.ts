@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import sharp from "sharp";
 import { chromium, type Browser } from "playwright-core";
 import { createTestServer } from "./helpers/next-server";
+import { diagnoseOnFailure } from "./helpers/diagnostics";
 import { hydrated } from "./helpers/hydration";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault } from "../src/lib/publications/vault";
@@ -13,6 +14,7 @@ import { openVault } from "../src/lib/publications/vault";
 test("avatars: secure local uploads, settings, all human surfaces, replacement, concurrency and removal", { timeout: 120_000 }, async t => {
   const app = await createTestServer();
   const resources: { browser?: Browser } = {};
+  diagnoseOnFailure(t, app, () => resources.browser);
   t.after(async () => { await resources.browser?.close(); await app.dispose(); });
   await app.migrate(); await app.start();
   const browser = resources.browser = await chromium.launch({ executablePath: process.env.XI_E2E_CHROME ?? "/usr/bin/google-chrome-stable", headless: true });
