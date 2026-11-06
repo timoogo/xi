@@ -100,7 +100,7 @@ Les tests vérifient aussi le rendu du compte courant, les états vides et l’i
 | --- | --- |
 | Quality (lint, types) | `pnpm lint`, `pnpm exec tsc --noEmit` |
 | Tests (core / graph / agents) | `test:publications accounts avatars llm topics`, `test:graph`, `test:xiagents watch` en parallèle ; chaque suite s’exécute même si une précédente échoue, le job échoue si l’une échoue |
-| Build and server tests | `pnpm build`, puis `test:auth` (dont l’arrêt de `next start` avec des flux SSE en cours de connexion) et `test:xiagents:pages` sur ce build |
+| Build and server tests | `pnpm build`, puis `test:auth` (dont l’arrêt de `next start` avec des flux SSE en cours de connexion et des connexions ouvertes sans requête) et `test:xiagents:pages` sur ce build |
 | Browser E2E | Chrome stable installé par `browser-actions/setup-chrome`, `XI_E2E_CHROME` pointant sur son binaire, build, puis `test:e2e`, `test:topics:e2e`, `test:accounts:e2e`, `test:avatars:e2e`, `test:xiagents:e2e`, un fichier à la fois (`--test-concurrency=1`) |
 
 Isolation et sécurité :
@@ -113,7 +113,9 @@ Isolation et sécurité :
 - `createTestServer().stop()` attend au plus 15 s la fin gracieuse de `next start` (6 s au plus en temps normal) puis échoue explicitement avec la sortie du serveur, au lieu d’un timeout muet du test.
 - `SHARP_IGNORE_GLOBAL_LIBVIPS=1` force le binaire précompilé de `sharp`.
 
-Le job Browser E2E n’est pas destiné à devenir un check obligatoire tant que sa fiabilité sur GitHub n’est pas établie : en local, `sources-browser`, `xiagents-browser` et `publication-design-browser` ont échoué occasionnellement (focus, défilement) puis réussi à chaque nouvelle exécution ; leurs causes ne sont pas encore identifiées. Les checks obligatoires seront configurés après un premier run réussi, avec les noms réels des jobs.
+Arrêt de `next start` : sur SIGTERM, Next appelle `server.close()`, qui attend toutes les connexions. Node ferme lui-même les connexions keep-alive inactives, mais pas une connexion qui n’a encore rien envoyé (préconnexion d’un navigateur) : il la compte comme une requête en cours et `close()` arrête aussi la vérification de `headersTimeout`. Seul le client pouvait alors libérer l’arrêt (environ 100 s pour Chrome), en test comme en production. `src/instrumentation.ts` suit les connexions acceptées (canal `net.server.socket`) et ferme au signal celles qui n’ont reçu aucun octet ; les requêtes en cours et les flux SSE suivent leur propre fermeture.
+
+Le job Browser E2E n’est pas destiné à devenir un check obligatoire tant que sa fiabilité sur GitHub n’est pas établie : en local, `publication-design-browser` a échoué occasionnellement (défilement) puis réussi à chaque nouvelle exécution ; sa cause n’est pas encore identifiée. Les échecs intermittents de `sources-browser` (focus vérifié avant sa restitution par Radix) et de `xiagents-browser` (arrêt de `next start` retenu par les préconnexions de Chrome, voir ci-dessous) sont corrigés. Les checks obligatoires seront configurés après un premier run réussi, avec les noms réels des jobs.
 
 Validation locale du workflow : `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml`.
 
