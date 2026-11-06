@@ -63,3 +63,46 @@ test("SIGTERM ends the connections that never sent a request", { timeout: 60_000
   await ended;
   assert.equal(silent.bytesRead, 0, "the server sent nothing on a connection that asked nothing");
 });
+
+// The connections ended on SIGTERM are only those the server has read nothing from: a request whose
+// first bytes have arrived is kept, completed and answered before the process exits.
+test("SIGTERM keeps a request that has started arriving", { timeout: 60_000 }, async (t) => {
+  const app = await createTestServer();
+  t.after(() => app.dispose());
+  await app.migrate();
+  await app.start();
+  const { hostname, port } = new URL(app.origin);
+  const partial = connect(Number(port), hostname);
+  partial.on("error", () => undefined);
+  let closed = false;
+  partial.once("close", () => { closed = true; });
+  let response = "";
+  partial.on("data", chunk => { response += chunk; });
+  await once(partial, "connect");
+  partial.write(`GET /xi.svg HTTP/1.1\r\nHost: ${hostname}:${port}\r\n`);
+  // Loopback delivers in order: once a later request is answered, the server has read these bytes.
+  assert.equal((await fetch(`${app.origin}/xi.svg`)).status, 200);
+
+  const stopping = app.stop();
+  // Next closes the listener in the same SIGTERM dispatch as the shutdown hook: a refused connection
+  // means both have run.
+  for (let attempt = 0; ; attempt++) {
+    const probe = connect(Number(port), hostname);
+    const refused = await new Promise<boolean>(resolve => { probe.once("connect", () => resolve(false)); probe.once("error", () => resolve(true)); });
+    probe.destroy();
+    if (refused) break;
+    assert.ok(attempt < 500, "next start still accepts connections after SIGTERM");
+    await delay(10);
+  }
+  const answered = new Promise<void>((resolve, reject) => {
+    const cut = () => reject(new Error("SIGTERM cut a request that had started arriving"));
+    if (closed) return cut();
+    partial.once("close", cut);
+    partial.on("data", () => { if (response.includes("\r\n\r\n")) resolve(); });
+  });
+  partial.write("\r\n");
+  await answered;
+  assert.match(response, /^HTTP\/1\.1 200 /);
+  partial.end();
+  await stopping; // Throws if the process is still held 15 s after SIGTERM.
+});
