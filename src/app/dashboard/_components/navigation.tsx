@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CommandMenu } from "@/components/commands/command-menu";
 import { NewPublicationButton } from "@/components/publications/publication-actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -78,6 +79,7 @@ export function Navigation({ user }: { user: User }) {
         <nav aria-label="Navigation principale" className="flex flex-col items-center gap-1 xl:items-stretch">
           {NAV_ITEMS.map((item) => <RailLink key={item.href} item={item} active={isActive(pathname, item.href)} />)}
         </nav>
+        <CommandMenu className="mt-1" />
         <NewPublicationButton className="mt-4 hidden h-[52px] w-full rounded-full text-[17px] font-bold xl:inline-flex" />
         <NewPublicationButton compact className="mt-4 size-[52px] rounded-full xl:hidden" />
         <div className="mt-auto pt-4 xl:w-full"><AccountMenu user={user} /></div>

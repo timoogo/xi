@@ -12,3 +12,5 @@ minimumReleaseAgeExclude:
   - '@better-auth/prisma-adapter@1.7.11'
   - '@better-auth/telemetry@1.7.11'
   - better-auth@1.7.11
+  - '@cmdly/core@0.1.0'
+  - '@cmdly/react@0.1.0'
