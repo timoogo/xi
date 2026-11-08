@@ -12,12 +12,8 @@ import { cn } from "@/lib/utils";
 
 type Engine = RegistryCommandEngine<XiCommandRuntime, true>;
 
-/**
- * Command palette: a rail button and Ctrl/⌘+K open it. It knows no command: it renders whatever
- * the Cmdly engine exposes (menu, step, loading, error, final). A Cmdly engine cannot be reopened
- * after close, so each opening creates one and unmounting destroys it.
- */
-export function CommandMenu({ className }: { className?: string }) {
+/** Open state of the single palette; Ctrl/⌘+K toggles it. Every trigger opens this same palette. */
+export function useCommandMenu() {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -29,8 +25,12 @@ export function CommandMenu({ className }: { className?: string }) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
-  return <>
-    <button type="button" onClick={() => setOpen(true)} title="Commandes (Ctrl+K)" aria-keyshortcuts="Control+K Meta+K"
+  return { open, setOpen };
+}
+
+export function CommandRailButton({ onOpen, className }: { onOpen: () => void; className?: string }) {
+  return (
+    <button type="button" onClick={onOpen} title="Commandes (Ctrl+K)" aria-keyshortcuts="Control+K Meta+K"
       className={cn("group inline-flex items-center rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50", className)}>
       <span className="inline-flex items-center gap-5 rounded-full p-3 text-xl text-foreground/80 transition-colors group-hover:bg-accent xl:pr-6">
         <Command aria-hidden="true" className="size-[26px]" strokeWidth={1.9} />
@@ -38,8 +38,16 @@ export function CommandMenu({ className }: { className?: string }) {
         <span className="sr-only xl:hidden">Commandes</span>
       </span>
     </button>
-    <Dialog open={open} onOpenChange={setOpen}>{open ? <PaletteSession onClose={() => setOpen(false)} /> : null}</Dialog>
-  </>;
+  );
+}
+
+/**
+ * The command palette. It knows no command: it renders whatever the Cmdly engine exposes (menu,
+ * step, loading, error, final). A Cmdly engine cannot be reopened after close, so each opening
+ * creates one and closing destroys it: there is never more than one engine.
+ */
+export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>{open ? <PaletteSession onClose={() => onOpenChange(false)} /> : null}</Dialog>;
 }
 
 function PaletteSession({ onClose }: { onClose: () => void }) {

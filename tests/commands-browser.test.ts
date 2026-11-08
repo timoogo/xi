@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser, type Locator } from "playwright-core";
 import { hydrated } from "./helpers/hydration";
 import { createTestServer } from "./helpers/next-server";
 
@@ -27,7 +27,8 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   const palette = page.getByRole("dialog", { name: "Palette de commandes" });
   const input = palette.getByRole("combobox");
-  const trigger = page.getByRole("button", { name: "Commandes" });
+  const trigger = page.getByRole("button", { name: "Commandes", exact: true });
+  const bubble = page.getByRole("button", { name: "Ouvrir la palette de commandes" });
   async function open(at: string) {
     await page.goto(app.origin + at);
     await hydrated(trigger);
@@ -105,6 +106,46 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   await palette.getByRole("option", { name: /^Politique · @/ }).click();
   await page.waitForURL(`${app.origin}/dashboard/xiagents/${agentId}#publication-generator`);
   await page.getByRole("heading", { name: "Générer une publication" }).waitFor({ state: "visible" });
+
+  // The Bloub bubble opens the same palette (a single dialog), on desktop at the bottom right.
+  await page.goto(`${app.origin}/dashboard`);
+  await hydrated(bubble);
+  const viewport = page.viewportSize()!, desk = (await bubble.boundingBox())!;
+  assert.ok(desk.x + desk.width > viewport.width - 40 && desk.y + desk.height > viewport.height - 40, "bottom right");
+  assert.equal(await bubble.locator("[data-bloub]").count(), 1);
+  await bubble.focus();
+  await page.keyboard.press("Enter");
+  await input.waitFor();
+  assert.equal(await page.getByRole("dialog").count(), 1);
+  await page.keyboard.press("Escape");
+  await palette.waitFor({ state: "detached" });
+
+  // Mobile: visible, clear of the tab bar and the compose button, and fully usable with the keyboard.
+  const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: await context.storageState() });
+  const phone = await mobile.newPage(); phone.setDefaultTimeout(12_000);
+  phone.on("pageerror", error => errors.push(error.message));
+  const phoneBubble = phone.getByRole("button", { name: "Ouvrir la palette de commandes" });
+  const phonePalette = phone.getByRole("dialog", { name: "Palette de commandes" });
+  const box = async (locator: Locator) => (await locator.boundingBox())!;
+  const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+  await phone.goto(`${app.origin}/dashboard`);
+  await hydrated(phoneBubble);
+  const tabBar = await box(phone.locator("nav.fixed")), compose = await box(phone.getByRole("button", { name: "Publier" }));
+  assert.ok(apart(await box(phoneBubble), tabBar) && apart(await box(phoneBubble), compose), "no overlap with the tab bar or the compose button");
+  await phoneBubble.tap();
+  const phoneInput = phonePalette.getByRole("combobox");
+  await phoneInput.waitFor();
+  await phoneInput.fill("aller aux");
+  await phoneInput.press("ArrowDown");
+  await phoneInput.press("Enter");
+  await phone.waitForURL(`${app.origin}/dashboard/publications`);
+  await phonePalette.waitFor({ state: "detached" });
+  // In the editor, where the compose button is hidden, the bubble takes its place, still clear of the tab bar.
+  await phone.goto(`${app.origin}/dashboard/publications/${draftId}/edit`);
+  await hydrated(phoneBubble);
+  const editing = await box(phoneBubble);
+  assert.ok(apart(editing, await box(phone.locator("nav.fixed"))) && editing.x + editing.width > 390 - 24);
+  await mobile.close();
 
   assert.deepEqual(errors, []);
 });

@@ -1,6 +1,6 @@
 # Palette de commandes (Cmdly)
 
-Palette ouverte par **Ctrl+K / ⌘+K** ou le bouton « Commandes » du rail de navigation (tablette et ordinateur). Moteur : [`@cmdly/core`](https://github.com/timoogo/cmdly), abonnement React : `@cmdly/react`.
+Palette ouverte par **Ctrl+K / ⌘+K**, le bouton « Commandes » du rail de navigation (tablette et ordinateur) ou la bulle flottante au Bloub (partout ; sur mobile, à gauche du bouton de rédaction, ou à sa place dans l'éditeur). Tous ouvrent la même palette, donc un seul moteur Cmdly. Moteur : [`@cmdly/core`](https://github.com/timoogo/cmdly), abonnement React : `@cmdly/react`.
 
 ## Organisation
 
@@ -12,7 +12,8 @@ src/lib/<module>/commands/
   index.ts             runtime déclaré par le module, type <Module>Command, registre du module
   <commande>.ts        une commande par fichier
   client.ts            services du runtime en navigateur, via les routes API existantes
-src/components/commands/command-menu.tsx   palette générique (aucune commande n'y est nommée)
+src/components/commands/command-menu.tsx   palette générique (aucune commande n'y est nommée), état d'ouverture et raccourci
+src/components/commands/command-bubble.tsx bulle flottante (Bloub par défaut de Ξ) ; sa position est fixée par la navigation
 ```
 
 - **Un module possède ses commandes.** Son `index.ts` déclare le runtime dont elles ont besoin (`PublicationCommandRuntime`, `XiAgentCommandRuntime`) et les enregistre avec `registerMany`.
