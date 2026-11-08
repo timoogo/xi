@@ -57,6 +57,22 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   await page.keyboard.press("Escape");
   await palette.waitFor({ state: "detached" });
 
+  // ⌘+K opens it too; arrows move the active option (wrapping), Enter runs the active one.
+  await page.keyboard.press("Meta+k");
+  await input.waitFor();
+  const options = palette.getByRole("option");
+  const active = () => palette.getByRole("option", { selected: true }).textContent();
+  const first = await options.first().textContent();
+  await input.press("ArrowDown");
+  assert.equal(await active(), await options.nth(1).textContent());
+  await input.press("ArrowUp");
+  await input.press("ArrowUp");
+  assert.equal(await active(), await options.last().textContent(), "ArrowUp wraps to the last option");
+  await input.press("ArrowDown");
+  assert.equal(await active(), first);
+  await page.keyboard.press("Meta+k");
+  await palette.waitFor({ state: "detached" });
+
   // Multi-step with real data: a draft created in the app, found in "my publications", opened.
   await hydrated(page.getByRole("button", { name: "Publier" }).first());
   await page.getByRole("button", { name: "Publier" }).first().click();

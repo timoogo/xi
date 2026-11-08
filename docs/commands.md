@@ -52,12 +52,12 @@ Exemple : « Ouvrir la corbeille » dans le module Publications.
 
 Rien d'autre à modifier : ni la racine, ni la palette. Une étape dynamique déclare `options: async (answers, { runtime }) => …`. Un service supplémentaire s'ajoute au runtime du module et à son `client.ts`. Pour un **nouveau module**, créer `src/lib/<module>/commands/index.ts` sur le même modèle, puis ajouter une ligne `mount` et son runtime à l'intersection dans `registry.ts`.
 
-## Limites connues (Cmdly 0.1.0)
+## Limites connues (Cmdly 0.1.1)
 
 - Les chargeurs d'options ne reçoivent pas le texte saisi. Le filtrage se fait côté client sur les options chargées : pas de recherche serveur à la frappe.
 - `Answers` ne conserve que les valeurs. Le résumé d'une étape finale afficherait donc des identifiants, pas des libellés : aucune commande n'utilise d'étape finale.
 - `CommandPalette` (de `@cmdly/react`) n'accepte pas de registre. La palette de Ξ est donc construite sur `useCommandEngine`.
-- Les paquets n'exposent que la condition d'export `import`. Les tests unitaires, chargés en CommonJS par `tsx`, utilisent `--conditions=import` (script `test:commands`).
+- Depuis la 0.1.1, les paquets se chargent aussi par `require()` (condition `default`, Node ≥ 20.19 ou ≥ 22.12) : les tests unitaires, chargés en CommonJS par `tsx`, n’ont plus besoin d’option particulière.
 
 ## Vérification
 
