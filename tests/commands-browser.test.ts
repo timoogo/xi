@@ -113,12 +113,49 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   const viewport = page.viewportSize()!, desk = (await bubble.boundingBox())!;
   assert.ok(desk.x + desk.width > viewport.width - 40 && desk.y + desk.height > viewport.height - 40, "bottom right");
   assert.equal(await bubble.locator("[data-bloub]").count(), 1);
+  await bubble.locator('[data-bloub][data-animating="true"]').waitFor();
+  // Its eyes (mask holes, x of their matrix) look left, towards the page, at rest.
+  const eyesX = async (target = page) => {
+    const xs = await target.locator('button[data-mood] [data-bloub] mask path[fill="#000"]').evaluateAll(paths => paths.map(p => Number(/matrix\(([^)]+)\)/.exec(p.getAttribute("transform")!)![1].split(",")[4])));
+    return xs.reduce((a, b) => a + b, 0) / xs.length;
+  };
+  assert.ok(await eyesX() < -5, "looks towards the page at rest");
+  // Hover: attentive, the eyes follow the pointer; leaving brings them back to the rest direction.
+  await page.mouse.move(desk.x + desk.width - 4, desk.y + desk.height / 2);
+  await page.locator('button[data-mood="attentive"]').waitFor();
+  await page.waitForTimeout(500);
+  assert.ok(await eyesX() > 5, "looks at a pointer on its right");
+  await page.mouse.move(200, 200);
+  await page.locator('button[data-mood="neutral"]').waitFor();
+  await page.waitForTimeout(1200);
+  assert.ok(await eyesX() < -5, "back to the rest direction");
+  // A click reacts and opens the palette at once.
+  await bubble.click();
+  await input.waitFor({ timeout: 1000 });
+  assert.equal(await page.locator('button[data-mood="pleased"]').count(), 1);
+  await page.keyboard.press("Escape");
+  await palette.waitFor({ state: "detached" });
   await bubble.focus();
   await page.keyboard.press("Enter");
   await input.waitFor();
   assert.equal(await page.getByRole("dialog").count(), 1);
   await page.keyboard.press("Escape");
   await palette.waitFor({ state: "detached" });
+
+  // Reduced motion: a still frame (no animation loop), still looking towards the page, still opening the palette.
+  const still = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce", storageState: await context.storageState() });
+  const calm = await still.newPage(); calm.setDefaultTimeout(12_000);
+  calm.on("pageerror", error => errors.push(error.message));
+  const calmBubble = calm.getByRole("button", { name: "Ouvrir la palette de commandes" });
+  await calm.goto(`${app.origin}/dashboard`);
+  await hydrated(calmBubble);
+  await calmBubble.hover();
+  await calm.locator('button[data-mood="attentive"]').waitFor();
+  assert.equal(await calmBubble.locator("[data-bloub]").getAttribute("data-animating"), "false");
+  assert.ok(await eyesX(calm) < -5);
+  await calmBubble.click();
+  await calm.getByRole("dialog", { name: "Palette de commandes" }).getByRole("combobox").waitFor();
+  await still.close();
 
   // Mobile: visible, clear of the tab bar and the compose button, and fully usable with the keyboard.
   const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: await context.storageState() });
@@ -130,6 +167,8 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
   await phone.goto(`${app.origin}/dashboard`);
   await hydrated(phoneBubble);
+  await phoneBubble.locator('[data-bloub][data-animating="true"]').waitFor();
+  assert.ok(await eyesX(phone) < -5, "looks towards the page on mobile too");
   const tabBar = await box(phone.locator("nav.fixed")), compose = await box(phone.getByRole("button", { name: "Publier" }));
   assert.ok(apart(await box(phoneBubble), tabBar) && apart(await box(phoneBubble), compose), "no overlap with the tab bar or the compose button");
   await phoneBubble.tap();

@@ -67,7 +67,8 @@ test("publication design: connected threads, mobile, media privacy and still ide
   const eyeBefore = await avatar.locator('mask path[fill="#000"]').first().getAttribute("transform");
   await page.waitForTimeout(300);
   assert.equal(await avatar.locator('mask path[fill="#000"]').first().getAttribute("transform"), eyeBefore);
-  assert.equal(await page.locator('[data-bloub][data-animating="true"]').count(), 0);
+  // Identity Bloubs stay still; only the command bubble's companion (data-mood) is meant to live.
+  assert.equal(await page.locator('[data-bloub][data-animating="true"]:not([data-mood] *)').count(), 0);
   await page.emulateMedia({ reducedMotion: "reduce" });
   const media = card.getByRole("button", { name: /Afficher l’image/ });
   const before = await media.locator("..").boundingBox();

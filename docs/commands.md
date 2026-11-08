@@ -13,8 +13,23 @@ src/lib/<module>/commands/
   <commande>.ts        une commande par fichier
   client.ts            services du runtime en navigateur, via les routes API existantes
 src/components/commands/command-menu.tsx   palette générique (aucune commande n'y est nommée), état d'ouverture et raccourci
-src/components/commands/command-bubble.tsx bulle flottante (Bloub par défaut de Ξ) ; sa position est fixée par la navigation
+src/components/commands/command-bubble.tsx bulle flottante (Bloub `CMDLY_BLOUB_CONFIG`) ; sa position est fixée par la navigation
+src/components/bloub/use-companion.ts      vie du Bloub de la bulle (humeur, regard, écouteurs posés sur la bulle seule)
+src/lib/bloub/companion.ts                 contrôleur sans React ni DOM : humeurs, direction du regard, minuteries
 ```
+
+### Le Bloub de la bulle
+
+bloub-react fournit la vie de base : clignements, dérive et saccades du regard, respiration, fondu entre expressions. Ξ ne pilote que la **direction du regard** (script `gaze`) et l'**expression** :
+
+- au repos, il regarde vers la page (à gauche, la bulle étant à droite), avec de petits coups d'œil irréguliers (toutes les 6 à 15 s) qui reviennent toujours au repos ;
+- au survol (souris ou stylet) ou au focus clavier, il devient attentif (`attentif`) et suit le pointeur ; ensuite il revient progressivement au repos ;
+- au clic, il sourit brièvement (`heureux`) ; la palette s'ouvre dans le même événement, sans délai ;
+- sans interaction, il se calme au bout de 30 s (`somnolent`), puis 90 s plus tard il s'endort : image fixe, plus de boucle d'animation. Toute interaction le réveille.
+
+Pas d'écouteur global : les gestionnaires sont posés sur la bulle seule. La boucle d'animation ne tourne que si la bulle est visible, l'onglet actif et le mouvement accepté. Avec `prefers-reduced-motion`, l'image reste fixe, tournée vers la page.
+
+Limite de bloub-react 1.0.0 : l'intervalle des clignements (1,9 à 4,6 s, parfois doublés) n'est pas réglable par l'API publique.
 
 - **Un module possède ses commandes.** Son `index.ts` déclare le runtime dont elles ont besoin (`PublicationCommandRuntime`, `XiAgentCommandRuntime`) et les enregistre avec `registerMany`.
 - **La racine ne fait que composer** : `xiCommands.mount("publications", publicationCommands)`. Les identifiants deviennent `publications.find`, `xiagents.find`… Cmdly refuse un namespace ou un identifiant en double. Le runtime racine (`XiCommandRuntime`) est l'intersection des runtimes des modules : TypeScript refuse de monter un module dont les besoins ne sont pas couverts.

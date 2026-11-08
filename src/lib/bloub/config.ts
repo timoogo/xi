@@ -15,4 +15,12 @@ export const bloubConfigSchema = z.object({
 /** MVP appearance: black body (the library default ink) and white eyes. */
 export const DEFAULT_BLOUB_CONFIG: BloubConfig = { version: 1, shape: DEFAULT_SHAPE, expression: DEFAULT_EXPRESSION, color: DEFAULT_COLOR };
 
+export const CMDLY_BLOUB_CONFIG: BloubConfig = {
+  version: 1,
+  shape: DEFAULT_SHAPE,
+  expression: DEFAULT_EXPRESSION,
+  color: DEFAULT_COLOR,
+};
+
+
 export const sameBloubConfig = (a: BloubConfig, b: BloubConfig) => a.shape === b.shape && a.expression === b.expression && a.color === b.color;
