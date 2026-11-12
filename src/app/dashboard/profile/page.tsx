@@ -18,7 +18,6 @@ export default async function ProfilePage({ searchParams }: { searchParams: Prom
           <Link href="/dashboard/settings" className="inline-flex min-h-11 items-center rounded-full border px-4 text-sm font-semibold hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Modifier le profil</Link>
         </div>
         <h2 className="mt-3 break-words text-xl font-extrabold leading-6">{user.name}</h2>
-        <p className="text-[15px] text-muted-foreground">{user.handle}</p>
         <dl className="mt-3 text-[15px]">
           <dt className="sr-only">Email du compte</dt>
           <dd className="break-all">{user.email}</dd>

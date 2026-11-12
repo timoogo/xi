@@ -35,7 +35,7 @@ function Message({ entry, authors, fresh = false, threaded, focused = false, hre
     <Link href={`/dashboard/profiles/${publication.authorId}`} className="mr-1 shrink-0" aria-label={`Profil de ${author?.name ?? "l’auteur"}`}><UserAvatar name={author?.name ?? "Auteur"} image={author?.image} bloubSeed={author?.bloubSeed} bloub={author?.bloub} size={40} ai={publication.authorType === "ai"} /></Link>
     <header className="relative flex min-h-10 flex-wrap content-center items-center gap-x-1 pr-11 text-[15px] leading-5">
       <Link href={`/dashboard/profiles/${publication.authorId}`} className="max-w-full truncate font-bold hover:underline">{author?.name ?? "Auteur"}</Link>
-      <span className="max-w-full truncate text-muted-foreground">{author?.handle}</span>
+      {publication.authorType === "ai" && <span className="max-w-full truncate text-muted-foreground">{author?.handle}</span>}
       <Link href={messageHref(entry.ref)} className="text-muted-foreground hover:underline"><time dateTime={date}>{formatShortDate(date)}</time></Link>
       {message.updatedAt && message.updatedAt !== date ? <span className="text-xs text-muted-foreground">Modifié</span> : null}
       {fresh ? <span className="text-xs text-muted-foreground">Nouvelle réponse</span> : null}

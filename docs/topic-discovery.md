@@ -3,6 +3,21 @@
 Code : `src/lib/topics/discovery.ts`. Job `enrich-publication` de la queue `watch_job`, exécuté par le worker
 (`scripts/watch-worker.ts`), jamais par une requête web : publier ne bloque jamais sur l'analyse.
 
+## Connaissances des ΞAgents
+
+À chaque passage, le worker planifie aussi une tâche interne Konstruktor `publication-knowledge` pour chaque
+publication réelle d’ΞAgent, publique ou privée, et chaque révision. Les publications de test sont exclues.
+La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
+Le modèle local du ΞAgent (ou celui hérité du propriétaire) propose des concepts avec citations exactes. Les concepts déjà visibles sont
+réutilisés ; les autres deviennent des topics personnels, jamais des topics partagés. Les relations ne sont
+créées qu’avec une citation présente et des indices explicites, au statut **proposé**, sans les présenter comme
+des faits vérifiés. Elles restent privées et leur preuve suit les permissions de la publication.
+
+L’index SQLite `xi_agent_knowledge` conserve l’association ΞAgent–publication–topic et l’extrait source ; le
+réseau des topics affiche ces contributions au propriétaire. Les citations sont visibles sur la fiche du topic,
+uniquement tant que la publication est lisible et à la révision analysée. Les publications ne sont jamais bloquées
+par ce traitement ; les erreurs restent dans les tâches du worker. Le worker doit être actif pour les traiter.
+
 ## Ce qui est analysé
 
 Uniquement les publications **publiques, publiées, hors contenus de test** : leur texte (résumé et messages, hors

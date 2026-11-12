@@ -271,4 +271,21 @@ const converse: SystemTask<z.infer<typeof converseInput>> = {
   },
 };
 
-export const KONSTRUKTOR_TASKS: Record<string, SystemTask> = { converse };
+/** A published hashtag is an explicit request for a personal topic, not an edit of the shared catalogue. */
+const commentTopic: SystemTask<{ commentId: string; tag: string; requestId: string }> = {
+  input: z.object({ commentId: z.uuid(), tag: z.string().min(1).max(180), requestId: z.uuid() }).strict(),
+  internal: true,
+  async run({ owner, input, services }) {
+    const row = services.db.prepare("SELECT 1 FROM xi_comment_topic t JOIN xi_comment c ON c.id = t.source_id WHERE t.comment_id = ? AND t.source_id = ? AND t.owner = ? AND c.owner = ? AND c.agent IS NULL AND t.tag = ? AND t.request_id = ?").get(input.commentId, input.commentId, owner, owner, input.tag, input.requestId);
+    if (!row) throw new TopicError("Demande de topic introuvable.", 404);
+    try {
+      const { topic } = await services.topics.openPersonal(owner, input.tag);
+      services.db.prepare("UPDATE xi_comment_topic SET topic_id = ?, state = 'done' WHERE source_id = ? AND tag = ? AND request_id = ?").run(topic.id, input.commentId, input.tag, input.requestId);
+      return { topicId: topic.id, tag: topic.tag };
+    } catch (error) {
+      services.db.prepare("UPDATE xi_comment_topic SET state = 'error' WHERE source_id = ? AND tag = ? AND request_id = ?").run(input.commentId, input.tag, input.requestId);
+      throw error;
+    }
+  },
+};
+export const KONSTRUKTOR_TASKS: Record<string, SystemTask> = { converse, "comment-topic": commentTopic };

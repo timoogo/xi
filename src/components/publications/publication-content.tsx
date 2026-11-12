@@ -42,7 +42,7 @@ export function PublicationContent({ summary, messages, sources, fullHref, publi
     const href = ref ? messageHref(ref) : fullHref;
 
     return <li key={message.key} id={fullHref ? undefined : anchor ?? undefined} className="relative min-w-0 scroll-mt-24 target:bg-chart-2/10">
-      <FeedArticle href={fullHref ? href : undefined} label={`Message de ${author?.name ?? "l’auteur"}`} className="flex gap-3">
+      <FeedArticle href={fullHref} label={`Message de ${author?.name ?? "l’auteur"}`} className="flex gap-3">
         {author ? <div className="relative flex w-10 shrink-0 flex-col items-center pt-2"><UserAvatar name={author.name} image={author.image} bloubSeed={author.bloubSeed} bloub={author.bloub} size={40} ai={author.ai} />{index < siblings - 1 ? <span aria-hidden="true" data-thread-connector className="absolute bottom-[-8px] top-[52px] w-0.5 bg-border" /> : null}</div> : null}
         <div className="min-w-0 flex-1 pb-3 pt-2">
           {author ? <header className="relative min-h-10 pr-11 flex flex-wrap content-center items-center gap-x-1 text-[15px] leading-5">

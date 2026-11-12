@@ -1,5 +1,6 @@
 import { labelTestMessage } from "./test-content";
 import { locked } from "../topics/lock";
+import { migrateAgentKnowledge } from "../konstruktor/knowledge";
 import { parseMessage } from "./message-metadata";
 import { threadNumbers } from "./conversation";
 import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
@@ -1052,10 +1053,28 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     await ensureIndexed();
     // The viewer's own agents: their private publications are readable by their owner.
     await authorized({ id: viewerId });
-    return db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
+    const declared = db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
       SELECT p.author_id AS agent_id, t.topic_id, COUNT(*) AS count FROM publication p JOIN publication_topic t ON t.publication_id = p.id AND t.origin = 'declared'
       WHERE p.author_type = 'ai' AND p.author_id IN (SELECT value FROM json_each(@agents)) AND p.status = 'published' AND p.test_content = 0 AND ${readablePublicationSql("p")}
       GROUP BY p.author_id, t.topic_id`).all({ viewer: viewerId, agents: JSON.stringify(agentIds) });
+    migrateAgentKnowledge(db);
+    const inferred = db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
+      SELECT k.agent AS agent_id, k.topic AS topic_id, COUNT(*) AS count FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.agent IN (SELECT value FROM json_each(@agents)) AND p.author_type = 'ai' AND p.author_id = k.agent AND p.revision = k.revision AND p.status = 'published' AND p.test_content = 0 AND ${readablePublicationSql("p")}
+      AND NOT EXISTS (SELECT 1 FROM publication_topic t WHERE t.publication_id = p.id AND t.topic_id = k.topic AND t.origin = 'declared')
+      GROUP BY k.agent, k.topic`).all({ viewer: viewerId, agents: JSON.stringify(agentIds) });
+    const merged = new Map(declared.map(row => [`${row.agent_id}:${row.topic_id}`, { ...row }]));
+    for (const row of inferred) { const key = `${row.agent_id}:${row.topic_id}`; const current = merged.get(key); if (current) current.count += row.count; else merged.set(key, row); }
+    return [...merged.values()];
+  }
+
+  /** Private provenance is only returned while its publication remains readable at the same revision. */
+  async function agentKnowledgeSources(viewerId: string, topicId: string) {
+    await ensureIndexed(); await authorized({ id: viewerId }); migrateAgentKnowledge(db);
+    return db.prepare<{ viewer: string; topic: string }, { publication: string; agent: string; excerpt: string }>(`
+      SELECT k.publication, k.agent, k.excerpt FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.topic = @topic AND p.author_type = 'ai' AND p.author_id = k.agent AND p.revision = k.revision AND p.status = 'published' AND ${readablePublicationSql("p")}
+      ORDER BY p.published_at DESC, p.id`).all({ viewer: viewerId, topic: topicId });
   }
 
   async function setSocial(viewer: Viewer, authorId: string, change: { following?: boolean; preference?: Preference | null }) {
@@ -1110,7 +1129,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       .all({ viewer: viewerId, ids: JSON.stringify(wanted) }).map(row => row.id));
   }
 
-  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, agentKnowledgeSources, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

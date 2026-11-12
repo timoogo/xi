@@ -6,6 +6,7 @@ import type { WatchAgent } from "../src/lib/accounts/types";
 import { createPublicationStore } from "../src/lib/publications/store";
 import { openVault, vaultPathFromEnv } from "../src/lib/publications/vault";
 import { createTopicDiscovery, DISCOVERY_JOB } from "../src/lib/topics/discovery";
+import { planAgentKnowledge } from "../src/lib/konstruktor/knowledge";
 import { createTopicRelationStore } from "../src/lib/topics/relations";
 import { createTopicStore } from "../src/lib/topics/store";
 import { TopicError } from "../src/lib/topics/types";
@@ -75,9 +76,9 @@ async function main() {
     });
     // System agents' tasks: started by the web server; a pass resumes those it could not finish.
     const systemAgents = createSystemAgentStore({ vault, db });
-    const systemServices = { db, accounts, topics, sources, models: (owner: string) => modelChoices(runtime.store, owner) };
+    const systemServices = { db, accounts, topics, publications, relations: createTopicRelationStore({ vault, db, topics, readable: publications.readableIds }), agentLLM: (agent: WatchAgent) => bindSafely(llm, agent), sources, models: (owner: string) => modelChoices(runtime.store, owner) };
     // Konstruktor's proactive reviews: rules each pass, a review job only when a finding changed.
-    const reviews = { plan: (queue: JobQueue, at: number) => planReviews({ queue, systemAgents, services: systemServices, now: at }) };
+    const reviews = { plan: async (queue: JobQueue, at: number) => await planReviews({ queue, systemAgents, services: systemServices, now: at }) + ((await systemAgents.get("konstruktor")).enabled ? await planAgentKnowledge(queue, systemServices, at) : 0) };
     const systemTasks = systemTaskHandler({ store: systemAgents, services: systemServices, llm: owner => bindSafely(user => runtime.bind(user, null), owner) });
     // @arbitre decides priority publications outside the publish calendar; a decision never publishes by itself.
     const arbitration = createArbitration({ db, systemAgents, now: () => now().getTime() });

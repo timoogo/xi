@@ -122,7 +122,6 @@ function AccountMenu({ user }: { user: User }) {
         <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={40} />
         <span className="hidden min-w-0 flex-1 xl:block">
           <span className="block truncate text-[15px] font-bold leading-5">{user.name}</span>
-          <span className="block truncate text-[15px] leading-5 text-muted-foreground">{user.handle}</span>
         </span>
         <MoreHorizontal aria-hidden="true" className="hidden size-5 shrink-0 xl:block" />
       </DropdownMenuTrigger>
@@ -177,7 +176,6 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
             <div className="border-b p-4">
               <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={44} />
               <p className="mt-2 truncate font-bold">{user.name}</p>
-              <p className="truncate text-sm text-muted-foreground">{user.handle}</p>
             </div>
             <nav aria-label="Menu du compte" className="flex flex-col py-2">
               {[NAV_ITEMS[4], NAV_ITEMS[6], NAV_ITEMS[7], NAV_ITEMS[8], ...SECONDARY_ITEMS].map(({ label, icon: Icon, href }) => (

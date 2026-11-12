@@ -26,7 +26,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
     <p className="border-b p-4 text-sm text-muted-foreground">Choisissez explicitement les comptes que vous souhaitez suivre et leur place dans votre fil.</p>
     {handle ? <p role="status" className="p-4 text-sm">Ce handle ne correspond pas à un compte accessible unique.</p> : null}
     {accounts.length ? accounts.map((account) => <section key={account.id} className="border-b p-4">
-      <Link href={`/dashboard/profiles/${encodeURIComponent(account.id)}`} className="break-words font-bold hover:underline">{account.name} <span className="font-normal text-muted-foreground">{account.handle}</span></Link>
+      <Link href={`/dashboard/profiles/${encodeURIComponent(account.id)}`} className="break-words font-bold hover:underline">{account.name} {generators.some(generator => generator.id === account.id) && <span className="font-normal text-muted-foreground">{account.handle}</span>}</Link>
       <AccountControls authorId={account.id} following={settings.following.includes(account.id)} preference={settings.preferences[account.id]} />
     </section>) : <p className="p-4 text-muted-foreground">Aucun compte à découvrir pour l’instant.</p>}
   </>;

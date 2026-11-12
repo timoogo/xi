@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { StringDecoder } from "node:string_decoder";
 import type { AccountStore } from "../accounts/store";
 import { getAppDatabase } from "../auth";
 import { createLocalInference, InferenceConfigError, inferenceConfigFromEnv, InferenceOutputError, InferenceUnavailableError, type Inference, type InferenceConfig } from "../watch/inference";
@@ -77,6 +78,28 @@ export function createLLMRuntime({ db, env = process.env, fetch, now = () => new
     return { ok: true, inference: inferenceFor(owner, resolution.value, resolution.value.options), resolved: resolution.value };
   }
 
+  async function streamChat(owner: string, agent: AgentLLMSettings | null, system: string, prompt: string, onText: (text: string) => void) {
+    const resolution = resolve(owner, agent);
+    if (!resolution.ok) throw new Error(resolution.message);
+    const { model, options, instanceSource, instance } = resolution.value;
+    if (instanceSource === "environment" && envConfig?.api !== "ollama") throw new Error("Le streaming nécessite un serveur Ollama.");
+    const baseUrl = instanceSource === "environment" ? envConfig!.url : store.get(owner, instance.id)!.baseUrl;
+    const base = (await import("./network")).validateBaseUrl(baseUrl, policy);
+    let buffer = "", output = "", done = false;
+    const decoder = new StringDecoder("utf8");
+    const response = await request(new URL("api/chat", base).href, {
+      method: "POST", headers: { "Content-Type": "application/json" }, timeoutMs: options.timeoutMs, maxBytes: 1_000_000,
+      body: JSON.stringify({ model, stream: true, think: false, messages: [{ role: "system", content: system }, { role: "user", content: prompt }], options: { temperature: options.temperature, num_predict: options.maxTokens, ...(options.contextSize ? { num_ctx: options.contextSize } : {}) } }),
+      onChunk: chunk => {
+        buffer += decoder.write(chunk);
+        const lines = buffer.split("\n"); buffer = lines.pop()!;
+        for (const line of lines) { if (!line.trim()) continue; const item = JSON.parse(line); if (typeof item.message?.content === "string") { output += item.message.content; onText(output); } if (item.done) done = true; if (item.error) throw new Error("Erreur de génération Ollama."); }
+      },
+    });
+    if (response.status !== 200 || !done || !output.trim()) throw new Error("Réponse Ollama incomplète ou indisponible.");
+    return output;
+  }
+
   /** Connectivity (`/api/version`, loads no model) then installed models (`/api/tags`); recorded on the instance. */
   async function check(owner: string, id: string) {
     const instance = store.get(owner, id);
@@ -127,7 +150,7 @@ export function createLLMRuntime({ db, env = process.env, fetch, now = () => new
   }
 
   return {
-    store, policy, resolve, bind, check, testModel,
+    store, policy, resolve, bind, streamChat, check, testModel,
     environment: (): EnvironmentInstance => ({ configured: !!envConfig, api: envConfig?.api ?? null, defaultModel: envConfig?.defaultModel ?? null, error: envError }),
   };
 }

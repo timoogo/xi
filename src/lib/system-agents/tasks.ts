@@ -11,6 +11,10 @@ import { admit, drainLimits, jobRuns, SYSTEM_TASK_KIND, type RunRecord } from ".
 import { drainJobs, type DrainControl, type Handler } from "../watch/worker";
 import { KONSTRUKTOR_TASKS } from "../konstruktor/converse";
 import { REVIEW_TASK } from "../konstruktor/suggestions";
+import { KNOWLEDGE_TASK } from "../konstruktor/knowledge";
+import type { PublicationStore } from "../publications/store";
+import type { TopicRelationStore } from "../topics/relations";
+import type { WatchAgent } from "../accounts/types";
 import { ARBITER_TASKS } from "../arbiter/decide";
 import type { SourceStore } from "../watch/sources";
 import { enqueueSystemTask, payloadSchema, systemTaskKey, type SystemTaskPayload } from "./queue";
@@ -31,7 +35,7 @@ import type { SystemAgent, SystemAgentStore } from "./store";
 
 /** Stores a task may read, always on behalf of its requester (`owner`); writes stay with the user (L5). */
 /** Stores a system task may read; `models`: the owner's local instances and models (none known when absent). */
-export type SystemServices = { db: Database.Database; accounts: AccountStore; topics: TopicStore; sources?: SourceStore; models?: (owner: string) => ModelChoices };
+export type SystemServices = { db: Database.Database; accounts: AccountStore; topics: TopicStore; publications?: PublicationStore; relations?: TopicRelationStore; agentLLM?: (agent: WatchAgent) => LLMBinding; sources?: SourceStore; models?: (owner: string) => ModelChoices };
 /** What a task gets: its requester, the agent (enabled), validated input, the requester's model and the stores. */
 export type SystemTaskContext<I> = { owner: string; agent: SystemAgent; input: I; llm: () => LLMBinding; now: () => number; services: SystemServices; jobId: string };
 /**
@@ -55,7 +59,7 @@ const probeModel: SystemTask<null> = {
 
 const COMMON_TASKS: Record<string, SystemTask> = { "probe-model": probeModel };
 /** Each agent's own tasks (Konstruktor's conversations, the arbiter's decisions) are declared here. */
-const AGENT_TASKS: Partial<Record<SystemAgentKind, Record<string, SystemTask>>> = { konstruktor: { ...KONSTRUKTOR_TASKS, review: REVIEW_TASK }, "priority-arbiter": ARBITER_TASKS };
+const AGENT_TASKS: Partial<Record<SystemAgentKind, Record<string, SystemTask>>> = { konstruktor: { ...KONSTRUKTOR_TASKS, review: REVIEW_TASK, "publication-knowledge": KNOWLEDGE_TASK }, "priority-arbiter": ARBITER_TASKS };
 export const systemTask = (kind: string, task: string): SystemTask | null =>
   Object.hasOwn(AGENT_TASKS[kind as SystemAgentKind] ?? {}, task) ? AGENT_TASKS[kind as SystemAgentKind]![task]
     : Object.hasOwn(COMMON_TASKS, task) && systemAgentDefinition(kind) ? COMMON_TASKS[task] : null;

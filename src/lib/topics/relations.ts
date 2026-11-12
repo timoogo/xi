@@ -363,6 +363,34 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
     });
   }
 
+  /** An inferred relation stays private and proposed; citations retain their publication permissions. */
+  async function proposePersonal(owner: string, input: unknown) {
+    const data = automaticSchema.parse(input);
+    if (data.source === data.target) throw new TopicError("Une relation relie deux topics distincts.");
+    const insufficient = automaticInsufficiency(data);
+    if (insufficient) throw new TopicError(insufficient, 422);
+    return exclusive(async () => {
+      const catalogue = await topics.visible(owner);
+      const ids = new Set([...catalogue.personal, ...catalogue.shared].map(topic => topic.id));
+      if (!ids.has(data.source) || !ids.has(data.target)) throw new TopicError("Topic introuvable.", 404);
+      const ends = normalize(data.type, data.source, data.target);
+      const mine = await personalRelations(owner);
+      // An exclusion on the pair, or a human correction away from this type, is never undone by a later analysis.
+      const rejected = mine.find(r => samePair(r, data.source, data.target) && (r.status === "excluded" || r.history.some(h => h.action === "type_changed" && h.from === data.type)));
+      if (rejected) return rejected;
+      const existing = mine.find(r => r.type === data.type && r.source === ends.source && r.target === ends.target);
+      if (existing) {
+        const fresh = data.evidence.filter(e => !existing.evidence.some(previous => previous.kind === e.kind && previous.ref === e.ref && previous.excerpt === e.excerpt));
+        if (!fresh.length || existing.evidence.length >= 20) return existing;
+        const updated = { ...existing, evidence: [...existing.evidence, ...fresh].slice(0, 20), updatedAt: now().toISOString() };
+        await save(updated); return updated;
+      }
+      const at = now().toISOString();
+      const relation: TopicRelation = { id: randomUUID(), ...ends, type: data.type, owner, status: "proposed", origin: data.origin, createdBy: data.createdBy, confidence: data.confidence, justification: data.justification, evidence: data.evidence, ...(data.assessment ? { assessment: data.assessment } : {}), createdAt: at, updatedAt: at, history: [{ at, by: data.createdBy, action: "created" }] };
+      await save(relation); return relation;
+    });
+  }
+
   /** Global correction (type) or decision (accept/exclude/restore), traced. Creator of an endpoint, or owner. */
   async function correct(viewer: string, id: string, input: unknown) {
     const change = correctionSchema.parse(input);
@@ -462,6 +490,6 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
     return edges;
   }
 
-  return { relationsOf, create, propose, correct, hide, readableStructure, networkEdges, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
+  return { relationsOf, create, propose, proposePersonal, correct, hide, readableStructure, networkEdges, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
 }
 export type TopicRelationStore = ReturnType<typeof createTopicRelationStore>;
