@@ -16,7 +16,18 @@ manquantes, ou réanalyse complète). Un run n’est qu’un plan persistant (`k
 publications en échec, le worker ne relance jamais un échec de lui-même. Après un redémarrage, une tentative dont
 le bail expire est marquée `interrupted` puis reprise. Une réponse tronquée par la limite de génération
 échoue dès la première tentative (le décodage est déterministe : un nouvel essai identique serait coupé au
-même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les échecs. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
+même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les échecs.
+
+**Graphe → Connaissances** montre ce qu’un ΞAgent a appris, pour son propriétaire seul et un agent à la fois
+(`src/lib/konstruktor/knowledge-graph*.ts`, `src/components/graph/knowledge-network.tsx`). Les concepts sont les
+topics de `xi_agent_knowledge` lus par `agentMemory` (publications de l’agent lisibles, publiées, à leur révision
+courante, hors contenu de test) ; les relations sont les relations personnelles du propriétaire entre ces concepts
+dont une preuve vient d’une publication de cet agent (`relations.learnedAmong`), preuves d’autres publications
+retirées. Statuts, corrections de type et masques personnels sont affichés tels qu’enregistrés ; les relations
+exclues ou masquées n’apparaissent que sur demande (« Exclues »). Les publications, citations et sources web d’un
+concept sont chargées à sa sélection (`GET /api/xiagents/[id]/knowledge/[topicId]`). Le graphe démarre avec les
+40 concepts les plus reliés et s’étend par voisinage, comme le réseau des topics. Lecture seule : valider, corriger
+ou exclure se fait sur la fiche du topic. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
 La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
 Le modèle local du ΞAgent (ou celui hérité du propriétaire) propose des concepts avec citations exactes. Les concepts déjà visibles sont
 réutilisés ; les autres deviennent des topics personnels, jamais des topics partagés. Les relations ne sont

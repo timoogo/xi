@@ -490,6 +490,19 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
     return edges;
   }
 
-  return { relationsOf, create, propose, proposePersonal, correct, hide, readableStructure, networkEdges, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
+  /**
+   * An agent's learned relations, for its owner (read only): the owner's personal relations between these topics that
+   * rest on at least one of these publications, every status included, with the owner's own masks. Evidence from other
+   * publications is dropped, so what one agent learned is never presented as another's.
+   */
+  async function learnedAmong(owner: string, topicIds: ReadonlySet<string>, publicationIds: ReadonlySet<string>) {
+    const hidden = new Set((await exclusions(owner)).filter(e => !e.restoredAt).map(e => e.relation));
+    return (await personalRelations(owner))
+      .filter(r => topicIds.has(r.source) && topicIds.has(r.target))
+      .map(r => ({ ...r, evidence: r.evidence.filter(e => e.publication !== undefined && publicationIds.has(e.publication)), hidden: hidden.has(r.id), directed: !SYMMETRIC.has(r.type) }))
+      .filter(r => r.evidence.length > 0);
+  }
+
+  return { relationsOf, create, propose, proposePersonal, correct, hide, readableStructure, networkEdges, learnedAmong, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
 }
 export type TopicRelationStore = ReturnType<typeof createTopicRelationStore>;
