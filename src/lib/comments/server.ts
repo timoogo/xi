@@ -7,6 +7,8 @@ import { getPublicationStore } from "@/lib/publications/server";
 import { conversationContext, shouldAgentReply } from "./conversation";
 import { addCommentTopics, migrateCommentTopics } from "./topics";
 import { getSystemTasks } from "@/lib/system-agents/server";
+import { getTopicStore } from "@/lib/topics/server";
+import { recallAgentKnowledge } from "@/lib/konstruktor/knowledge";
 import { extendSequence, migrateSequences, queueMentions, reserveSequence } from "./sequences";
 
 export type Comment = { id: string; publication: string; parent: string | null; root: string; owner: string; author: string; agent: string | null; body: string; state: string; created: number };
@@ -97,7 +99,15 @@ async function generate(id: string) {
     const publication = await (await getPublicationStore()).get({ id: comment.owner }, comment.publication);
     const parent = database.prepare("SELECT * FROM xi_comment WHERE id = ?").get(comment.parent) as Comment;
     const history = database.prepare("SELECT * FROM xi_comment WHERE root = ? AND state = 'done' ORDER BY created, rowid").all(comment.root) as Comment[];
-    const context = conversationContext(publication.messages.filter(message => !message.deleted).map(message => message.body).join("\n"), history, parent);
+    const text = publication.messages.filter(message => !message.deleted).map(message => message.body).join("\n");
+    // Personal memory only for the agent's owner, decided server-side: comments are read by every reader of the
+    // publication, so anything but a private conversation may only use knowledge from public publications.
+    const memory = comment.owner === entry.agent.owner
+      ? await recallAgentKnowledge({ publications: await getPublicationStore(), topics: await getTopicStore() }, comment.owner, entry.agent.id, publication.visibility === "private" ? "private" : "public", [text, ...history.map(item => item.body), parent.body].join("\n"))
+      : [];
+    const context = conversationContext(text, history, parent) + (memory.length
+      ? `\n\nConnaissances issues de tes publications (extraits non nécessairement vérifiés ; présente-les comme tels et cite leur publication source si tu t’en sers) :\n${memory.map(item => `- « ${item.excerpt} » (publication ${item.publication})`).join("\n")}`
+      : "");
     const system = `Tu es ${entry.name} (@${entry.agent.handle.replace(/^@/, "")}), un ΞAgent. Périmètre : ${entry.agent.profile?.perimeter ?? "non précisé"}. Consignes : ${entry.agent.profile?.charter ?? "aucune"}.`;
     const runtime = getLLMRuntime();
     const settings = agentLLMSettings(entry.agent);

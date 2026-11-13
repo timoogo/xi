@@ -1077,6 +1077,19 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       ORDER BY p.published_at DESC, p.id`).all({ viewer: viewerId, topic: topicId });
   }
 
+  /**
+   * What an agent learned from its own publications, for its owner only. Same checks as `agentKnowledgeSources`
+   * (owner, readable, published, same revision, real content); a non-private audience only gets public sources.
+   */
+  async function agentMemory(ownerId: string, agentId: string, audience: "private" | "public") {
+    await ensureIndexed(); await authorized({ id: ownerId }); migrateAgentKnowledge(db);
+    return db.prepare<{ viewer: string; agent: string; audience: string }, { publication: string; topic: string; excerpt: string }>(`
+      SELECT k.publication, k.topic, k.excerpt FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.agent = @agent AND p.author_type = 'ai' AND p.author_id = k.agent AND p.revision = k.revision AND p.status = 'published' AND p.test_content = 0
+      AND (@audience = 'private' OR p.visibility = 'public') AND ${readablePublicationSql("p")}
+      ORDER BY p.published_at DESC, p.id`).all({ viewer: ownerId, agent: agentId, audience });
+  }
+
   async function setSocial(viewer: Viewer, authorId: string, change: { following?: boolean; preference?: Preference | null }) {
     if (!USER_ID.test(authorId) || (change.preference !== undefined && change.preference !== null && !PREFERENCES.includes(change.preference))) throw invalid("Préférence invalide.");
     return withLock(`social:${viewer.id}`, async () => {
@@ -1129,7 +1142,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       .all({ viewer: viewerId, ids: JSON.stringify(wanted) }).map(row => row.id));
   }
 
-  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, agentKnowledgeSources, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, agentKnowledgeSources, agentMemory, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

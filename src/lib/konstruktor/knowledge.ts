@@ -8,7 +8,9 @@ import type { JobQueue } from "../watch/jobs";
 import { enqueueSystemTask } from "../system-agents/queue";
 import { systemAgentDefinition } from "../system-agents/registry";
 import type { SystemTask } from "../system-agents/tasks";
-import { assess, DISCOVERY_SYSTEM, modelSchema, topicKeys } from "../topics/discovery";
+import { assess, DISCOVERY_SYSTEM, explicitConcepts, modelSchema, topicKeys } from "../topics/discovery";
+import type { PublicationStore } from "../publications/store";
+import type { TopicStore } from "../topics/store";
 
 /** Private provenance index; concepts and relations themselves remain in the existing topic stores. */
 export function migrateAgentKnowledge(db: Database.Database) {
@@ -76,4 +78,25 @@ export async function planAgentKnowledge(queue: JobQueue, services: NonNullable<
   }
   void at;
   return planned;
+}
+
+export const MEMORY_LIMIT = 20;
+export type Memory = { publication: string; excerpt: string };
+/**
+ * Excerpts of the agent's knowledge whose concepts the conversation names (tags, aliases, names: no embeddings).
+ * Access is decided by the store query before any prompt exists; the caller decides who may recall at all.
+ */
+export async function recallAgentKnowledge(stores: { publications: Pick<PublicationStore, "agentMemory">; topics: Pick<TopicStore, "visible"> }, owner: string, agent: string, audience: "private" | "public", conversation: string): Promise<Memory[]> {
+  const rows = await stores.publications.agentMemory(owner, agent, audience);
+  if (!rows.length) return [];
+  const learned = new Set(rows.map(row => row.topic));
+  const catalog = await stores.topics.visible(owner);
+  const candidates = [...catalog.personal, ...catalog.shared].filter(topic => learned.has(topic.id));
+  const named = new Set(explicitConcepts([{ text: conversation, from: "conversation", source: false }], candidates).map(concept => concept.topicId));
+  const recalled = new Map<string, Memory>();
+  for (const row of rows) {
+    if (recalled.size === MEMORY_LIMIT) break;
+    if (named.has(row.topic)) recalled.set(`${row.publication}\n${row.excerpt}`, { publication: row.publication, excerpt: row.excerpt });
+  }
+  return [...recalled.values()];
 }

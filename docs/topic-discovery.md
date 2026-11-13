@@ -18,6 +18,12 @@ réseau des topics affiche ces contributions au propriétaire. Les citations son
 uniquement tant que la publication est lisible et à la révision analysée. Les publications ne sont jamais bloquées
 par ce traitement ; les erreurs restent dans les tâches du worker. Le worker doit être actif pour les traiter.
 
+Quand le propriétaire sollicite son ΞAgent en commentaire, `generate()` ajoute au contexte du modèle au plus 20
+extraits de cet index dont le concept est nommé dans la conversation (tags, alias, noms ; pas d’embeddings), avec
+leur publication source et la mention « non nécessairement vérifiés ». Le filtrage est fait côté serveur avant le
+prompt : jamais pour un autre utilisateur, sources publiées, lisibles et à la révision analysée, et uniquement des
+sources publiques hors d’une conversation privée. La rédaction de publications n’utilise pas cette mémoire.
+
 ## Ce qui est analysé
 
 Uniquement les publications **publiques, publiées, hors contenus de test** : leur texte (résumé et messages, hors
