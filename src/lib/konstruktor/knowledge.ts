@@ -71,8 +71,8 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       // The model's proposal remains unverified and requires a substantive citation and human review.
       if (score.assessment.evidence < 1 || score.assessment.type < 0.7) { log("info", `Relation ${label} ignorée : preuve insuffisante.`); continue; }
       // Grounded justification: the linking words the text uses, never a free paraphrase by the model.
-      const justification = `La publication relie « ${item.from} » à « ${item.to} » par « ${item.link} ».`;
-      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote.slice(0, 600) }], acceptable: false });
+      const justification = knowledgeJustification(item.from, item.to, item.link);
+      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote.slice(0, 600), label: item.link.slice(0, 200), subject: a.id }], acceptable: false });
       if (relation.status === "excluded" || relation.type !== item.type) { kept++; log("info", `Relation ${label} non reproposée : exclue ou corrigée par une décision humaine.`); }
       else { proposed++; log("info", `Relation ${label} ${relation.status === "accepted" ? "déjà acceptée : preuve conservée" : "proposée, à examiner"}.`); }
     }
@@ -86,6 +86,14 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
     return { outcome: "done", concepts: resolved.size, reused, created, ignored, relations: proposed, kept };
   },
 };
+
+/** Konstruktor's justification of a relation: the linking words of the evidence it was proposed with. */
+export const knowledgeJustification = (from: string, to: string, link: string) => `La publication relie « ${from} » à « ${to} » par « ${link} ».`;
+/** The reverse, for evidence recorded before linking words were stored with it. */
+export function justificationLink(text: string) {
+  const match = /^La publication relie « ([^«»]+) » à « ([^«»]+) » par « ([^«»]+) »\.$/.exec(text);
+  return match ? { from: match[1], to: match[2], link: match[3] } : null;
+}
 
 export const MEMORY_LIMIT = 20;
 export type Memory = { publication: string; excerpt: string };

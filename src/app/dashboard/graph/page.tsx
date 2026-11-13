@@ -42,17 +42,17 @@ export default async function GraphPage({ searchParams }: { searchParams: Promis
   return (
     <div data-xi-graph="" className="flex h-[calc(100dvh-3.5rem-env(safe-area-inset-bottom))] min-h-[420px] flex-col sm:h-dvh">
       <style dangerouslySetInnerHTML={{ __html: FULL_WIDTH }} />
-      <PageHeader title="Graphe" subtitle={topics ? "Topics, vos connaissances, vos centres d’intérêt et les ΞAgents experts" : knowledge ? "Concepts et relations appris par chaque ΞAgent" : "Générateurs, publications et connexions validées"}>
+      <PageHeader title="Graphe" subtitle={topics ? "Topics, vos connaissances, vos centres d’intérêt et les ΞAgents experts" : knowledge ? "Concepts et relations appris par vos ΞAgents" : "Générateurs, publications et connexions validées"}>
         <nav aria-label="Mode du graphe" className="flex rounded-full border p-0.5">
           <Link href="/dashboard/graph" aria-current={tree ? "page" : undefined} className={cn(tab, tree ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>Arbre actuel</Link>
           <Link href={networkHref({ layers: ["knowledge", "interests", "experts"], focus: null, open: [], proposed: false })} aria-current={topics ? "page" : undefined}
             className={cn(tab, topics ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>Réseau Topics</Link>
-          <Link href={knowledgeHref({ agent: null, focus: null, open: [], excluded: false })} aria-current={knowledge ? "page" : undefined}
+          <Link href={knowledgeHref({ agents: [], all: false, focus: null, open: [], excluded: false })} aria-current={knowledge ? "page" : undefined}
             className={cn(tab, knowledge ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>Connaissances</Link>
         </nav>
       </PageHeader>
       {network ? <TopicNetworkView network={network} className="flex-1" />
-        : learned ? <KnowledgeNetworkView key={learned.agent?.id ?? "none"} graph={learned} className="flex-1" />
+        : learned ? <KnowledgeNetworkView key={learned.request.all ? "all" : learned.selected.map(agent => agent.id).join(",") || "none"} graph={learned} className="flex-1" />
           : <GraphExplorer userId={user.id} className="flex-1" />}
     </div>
   );

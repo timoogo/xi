@@ -39,6 +39,12 @@ const evidenceSchema = z.object({
   excerpt: z.string().trim().min(1).max(600).optional(),
   /** The publication this evidence was taken from: its excerpt is shown only to those who can read it now. */
   publication: z.string().regex(PUBLICATION_ID).optional(),
+  /**
+   * The words of the excerpt linking the two topics (« développe », « est un »), and the topic the sentence names
+   * first. The type stays the relation's nature; this keeps what the text says, its direction included.
+   */
+  label: z.string().trim().min(1).max(200).optional(),
+  subject: z.uuid().optional(),
 }).strict();
 const historySchema = z.object({
   at: iso, by: actor,
@@ -499,7 +505,8 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
     const hidden = new Set((await exclusions(owner)).filter(e => !e.restoredAt).map(e => e.relation));
     return (await personalRelations(owner))
       .filter(r => topicIds.has(r.source) && topicIds.has(r.target))
-      .map(r => ({ ...r, evidence: r.evidence.filter(e => e.publication !== undefined && publicationIds.has(e.publication)), hidden: hidden.has(r.id), directed: !SYMMETRIC.has(r.type) }))
+      // `position`: the evidence's rank in the record (the first one is the one the justification was written for).
+      .map(r => ({ ...r, evidence: r.evidence.map((e, position) => ({ ...e, position })).filter(e => e.publication !== undefined && publicationIds.has(e.publication)), hidden: hidden.has(r.id), directed: !SYMMETRIC.has(r.type) }))
       .filter(r => r.evidence.length > 0);
   }
 

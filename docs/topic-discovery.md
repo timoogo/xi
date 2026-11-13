@@ -18,14 +18,22 @@ le bail expire est marquée `interrupted` puis reprise. Une réponse tronquée p
 échoue dès la première tentative (le décodage est déterministe : un nouvel essai identique serait coupé au
 même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les échecs.
 
-**Graphe → Connaissances** montre ce qu’un ΞAgent a appris, pour son propriétaire seul et un agent à la fois
-(`src/lib/konstruktor/knowledge-graph*.ts`, `src/components/graph/knowledge-network.tsx`). Les concepts sont les
+**Graphe → Connaissances** montre ce que les ΞAgents choisis ont appris (un par défaut, plusieurs ou tous :
+`?agents=<id>,<id>` ou `agents=all` ; l’ancien `?agent=<id>` reste lu), pour leur propriétaire seul
+(`src/lib/konstruktor/knowledge-graph*.ts`, `src/components/graph/knowledge-network.tsx`). Plusieurs agents donnent
+une vue agrégée, jamais une fusion de ce qui est stocké : un concept (un topic) est dessiné une fois avec les agents
+qui le connaissent ; une relation est une arête, ses preuves séparées par agent, et un agent n’y figure que si l’une
+de ses propres publications la prouve entre deux concepts qu’il a lui-même appris. Statut, correction et exclusion
+restent ceux du propriétaire (communs à ses agents) ; deux relations contradictoires sur une paire restent deux arêtes.
+Chaque preuve garde les mots du texte qui relient les concepts et le concept sujet (`label`, `subject`, champs
+optionnels) : l’arête affiche « développe → » ou « est un → » sans multiplier les cinq types. Pour les preuves
+antérieures, ces mots sont relus dans la justification de Konstruktor (première preuve seulement), jamais devinés. Les concepts sont les
 topics de `xi_agent_knowledge` lus par `agentMemory` (publications de l’agent lisibles, publiées, à leur révision
 de contenu courante, hors contenu de test) ; les relations sont les relations personnelles du propriétaire entre ces concepts
 dont une preuve vient d’une publication de cet agent (`relations.learnedAmong`), preuves d’autres publications
 retirées. Statuts, corrections de type et masques personnels sont affichés tels qu’enregistrés ; les relations
 exclues ou masquées n’apparaissent que sur demande (« Exclues »). Les publications, citations et sources web d’un
-concept sont chargées à sa sélection (`GET /api/xiagents/[id]/knowledge/[topicId]`). Le graphe démarre avec les
+concept sont chargées à sa sélection, agent par agent (`GET /api/xiagents/[id]/knowledge/[topicId]`). Le graphe démarre avec les
 40 concepts les plus reliés et s’étend par voisinage, comme le réseau des topics. Lecture seule : valider, corriger
 ou exclure se fait sur la fiche du topic. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
 La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.

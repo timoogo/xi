@@ -18,7 +18,7 @@ import { createAccountStore } from "../src/lib/accounts/store";
  * fake Ollama), human decisions recorded in the vault, then navigation, selection, provenance, exclusions, empty
  * state, other modes intact, mobile, and another user's access.
  */
-test("graphe des connaissances : agent, concepts, relations, provenance, décisions et confidentialité", { timeout: 240_000 }, async t => {
+test("graphe des connaissances : ΞAgents, concepts, relations, provenance, décisions et confidentialité", { timeout: 240_000 }, async t => {
   const ollama = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer);
     const data = JSON.parse(Buffer.concat(chunks).toString());
@@ -62,25 +62,29 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
     assert.ok((await publications.reviewWatchDraft({ id: owner }, agent.id, id, { action: "approve", revision: draft.revision })).ok);
     return id;
   };
-  const astronoxi = await agentOf("Astronoxi"), vide = await agentOf("Vide");
+  const astronoxi = await agentOf("Astronoxi"), orbites = await agentOf("Orbites"), vide = await agentOf("Vide");
   const p1 = await publish(astronoxi, "Asterion-47 utilise le moteur Helios-9. Helios-9 influence la trajectoire Orbite-3.");
   const p2 = await publish(astronoxi, "Vega-2 utilise le moteur Helios-9. Lyra-5 utilise le capteur Kappa-1.");
-  for (const id of [p1, p2]) {
+  // Another agent of the same owner learning one of the same relations from its own publication.
+  const p3 = await publish(orbites, "Asterion-47 utilise le moteur Helios-9.");
+  for (const id of [p1, p2, p3]) {
     let status = 0;
     for (let attempt = 0; status !== 200 && attempt < 40; attempt++) { status = (await context.request.get(`${app.origin}/api/publications/${id}`)).status(); if (status !== 200) await new Promise(resolve => setTimeout(resolve, 250)); }
     assert.equal(status, 200);
   }
 
-  // A real knowledge pipeline run (the « run #2 » of the request is any such run).
-  const started = await context.request.post(`${app.origin}/api/konstruktor/pipelines`, { headers: { Origin: app.origin }, data: { agent: astronoxi.id, mode: "missing" } });
-  assert.equal(started.status(), 200);
-  const runId = (await started.json()).run.id as string;
-  let status = "";
-  for (let attempt = 0; status !== "success" && attempt < 80; attempt++) {
-    status = (await (await context.request.get(`${app.origin}/api/konstruktor/pipelines/${runId}`)).json()).run.status;
-    if (status !== "success") await new Promise(resolve => setTimeout(resolve, 250));
+  // Real knowledge pipeline runs (the « run #2 » of the request is any such run).
+  for (const agent of [astronoxi, orbites]) {
+    const started = await context.request.post(`${app.origin}/api/konstruktor/pipelines`, { headers: { Origin: app.origin }, data: { agent: agent.id, mode: "missing" } });
+    assert.equal(started.status(), 200);
+    const runId = (await started.json()).run.id as string;
+    let status = "";
+    for (let attempt = 0; status !== "success" && attempt < 80; attempt++) {
+      status = (await (await context.request.get(`${app.origin}/api/konstruktor/pipelines/${runId}`)).json()).run.status;
+      if (status !== "success") await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    assert.equal(status, "success");
   }
-  assert.equal(status, "success");
 
   // Human decisions, recorded in the vault like the topic page does: validation, correction, exclusion.
   const catalog = await topics.visible(owner);
@@ -101,8 +105,13 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await page.goto(`${app.origin}/dashboard/graph`);
   await page.getByRole("navigation", { name: "Mode du graphe" }).getByRole("link", { name: "Connaissances" }).click();
   await page.waitForURL(/view=knowledge/);
-  await page.getByRole("toolbar", { name: "Outils des connaissances" }).getByLabel("ΞAgent").selectOption({ label: "Astronoxi" });
-  await page.waitForURL(new RegExp(`agent=${astronoxi.id}`));
+  // One agent by default, the first by name; the picker toggles agents one by one, or all of them.
+  const picker = page.getByRole("toolbar", { name: "Outils des connaissances" }).locator("details");
+  const toggle = async (name: string) => {
+    if (await picker.getAttribute("open") === null) await picker.locator("summary").click();
+    await picker.getByRole("checkbox", { name }).click();
+  };
+  assert.equal(await picker.locator("summary").getAttribute("aria-label"), "ΞAgents affichés : Astronoxi");
   await concept("Helios-9").waitFor();
   assert.equal(await nodes().count(), 6);
   // Excluded relations are not drawn by default; the validated, proposed and corrected ones are.
@@ -168,8 +177,32 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await concept("Vega-2").focus();
   await page.keyboard.press("Enter");
 
-  // Empty agent; the two other modes still render.
-  await page.getByRole("toolbar", { name: "Outils des connaissances" }).getByLabel("ΞAgent").selectOption({ label: "Vide" });
+  // Several agents: one node per concept, marked when shared; one edge per relation, each agent's evidence apart.
+  await toggle("Orbites");
+  await page.waitForURL(new RegExp(`agents=${astronoxi.id}(%2C|,)${orbites.id}`));
+  await page.locator("summary[aria-label='ΞAgents affichés : Astronoxi et Orbites']").waitFor();
+  await concept("Helios-9").waitFor();
+  assert.equal(await concept("Helios-9").count(), 1);
+  assert.equal(await nodes().count(), 6);
+  assert.equal(await page.locator('[data-shared-by="2"]').count(), 2, "Asterion-47 et Helios-9");
+  await concept("Helios-9").click();
+  await panel.locator("[data-known-by]").getByText("Connu de Astronoxi et Orbites.").waitFor();
+  await panel.locator(`[data-agent-provenance="${orbites.id}"] [data-provenance="${p3}"]`).waitFor();
+  assert.equal(await panel.locator(`[data-agent-provenance="${astronoxi.id}"] [data-provenance]`).count(), 2);
+  await panel.locator('section[aria-labelledby="concept-sym"]').getByRole("button").first().click();
+  await relation.locator("[data-labels]").getByText("Asterion-47 utilise le moteur Helios-9").waitFor();
+  assert.equal(await relation.locator("[data-agent-evidence]").count(), 2);
+  await relation.locator(`[data-agent-evidence="${orbites.id}"]`).getByText("« Asterion-47 utilise le moteur Helios-9. »").waitFor();
+  await page.screenshot({ path: "artifacts/knowledge-graph/relation-agents-desktop.png" });
+  await toggle("Tous les ΞAgents");
+  await page.waitForURL(/agents=all/);
+  await page.locator("summary[aria-label='ΞAgents affichés : Astronoxi, Orbites et Vide']").waitFor();
+
+  // Empty agent (the others unticked); the two other modes still render.
+  await toggle("Astronoxi");
+  await page.waitForURL(new RegExp(`agents=${orbites.id}(%2C|,)${vide.id}`));
+  await toggle("Orbites");
+  await page.waitForURL(new RegExp(`agents=${vide.id}(&|$)`));
   await page.getByText("Aucune connaissance").waitFor();
   assert.equal(await page.getByRole("link", { name: "Ouvrir les pipelines" }).getAttribute("href"), `/dashboard/konstruktor/pipelines?agent=${vide.id}`);
   await page.getByRole("navigation", { name: "Mode du graphe" }).getByRole("link", { name: "Réseau Topics" }).click();
@@ -190,6 +223,13 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await phone.screenshot({ path: "artifacts/knowledge-graph/concept-mobile.png" });
   await phone.locator('[data-panel="concept"]').getByRole("button", { name: "Fermer la fiche du concept" }).click();
   await phone.screenshot({ path: "artifacts/knowledge-graph/graph-mobile.png" });
+  // The picker fits a phone, with every agent shown.
+  await phone.goto(`${app.origin}/dashboard/graph?view=knowledge&agents=all`);
+  await phone.getByRole("button", { name: /^Helios-9, #/ }).waitFor();
+  await phone.locator("details summary").first().click();
+  const menu = await phone.locator("details fieldset").first().boundingBox();
+  assert.ok(menu && menu.x >= 0 && menu.x + menu.width <= 390, `sélecteur dans l’écran : ${JSON.stringify(menu)}`);
+  await phone.screenshot({ path: "artifacts/knowledge-graph/agents-mobile.png" });
 
   // Another user: no agent of Alice in the selector, no graph, no provenance.
   const other = await browser.newContext();
