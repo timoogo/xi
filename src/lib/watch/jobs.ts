@@ -163,6 +163,11 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
       .run({ id: job.id, token: job.leaseToken, state: final ? "failed" : "pending", runAfter: final ? job.runAfter : at + retryDelay(job.attempts), error: describe(error), at }).changes === 1;
   }
 
+  /** A pending job withdrawn before it started (a cancelled pipeline): final, never claimed. Running jobs finish. */
+  function cancel(key: string, reason: string) {
+    return db.prepare("UPDATE watch_job SET state = 'failed', last_error = ?, updated_at = ? WHERE key = ? AND state = 'pending'").run(reason.slice(0, 500), now(), key).changes === 1;
+  }
+
   function counts() {
     const rows = db.prepare<[], { state: JobState; n: number }>("SELECT state, count(*) AS n FROM watch_job GROUP BY state").all();
     return Object.fromEntries(rows.map(row => [row.state, row.n])) as Partial<Record<JobState, number>>;
@@ -172,6 +177,6 @@ export function createJobQueue(db: Database.Database, now: () => number = Date.n
     return db.prepare("DELETE FROM watch_job WHERE state IN ('done', 'failed') AND updated_at < ?").run(now() - olderThanMs).changes;
   }
 
-  return { enqueue, get, claim, heartbeat, complete, wait, fail, counts, purge };
+  return { enqueue, get, claim, heartbeat, complete, wait, fail, cancel, counts, purge };
 }
 export type JobQueue = ReturnType<typeof createJobQueue>;

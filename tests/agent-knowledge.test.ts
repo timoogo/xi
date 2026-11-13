@@ -9,7 +9,8 @@ import { openVault } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
 import { createTopicRelationStore } from "../src/lib/topics/relations";
 import { createJobQueue } from "../src/lib/watch/jobs";
-import { KNOWLEDGE_TASK, planAgentKnowledge } from "../src/lib/konstruktor/knowledge";
+import { KNOWLEDGE_TASK } from "../src/lib/konstruktor/knowledge";
+import { createKnowledgePipelines } from "../src/lib/konstruktor/pipelines";
 import { systemTask } from "../src/lib/system-agents/tasks";
 
 test("Konstruktor enrichit les topics privés à partir de citations, sans doublons ni fuite", async t => {
@@ -29,9 +30,10 @@ test("Konstruktor enrichit les topics privés à partir de citations, sans doubl
   const services = { db, topics, accounts, publications, relations };
   const queue = createJobQueue(db);
   assert.equal(systemTask("konstruktor", "publication-knowledge"), KNOWLEDGE_TASK);
-  assert.equal(await planAgentKnowledge(queue, services as never, Date.now()), 1);
-  assert.equal(await planAgentKnowledge(queue, services as never, Date.now()), 0);
-  const context = { owner: "alice", input: { publication: id, agent, revision: publication.revision }, services, llm } as never;
+  const pipelines = createKnowledgePipelines({ db, accounts: accounts as never, publications: publications as never, systemAgents: { get: async () => ({ enabled: true }) } as never, queue });
+  assert.equal(await pipelines.planAutomatic(), 1);
+  assert.equal(await pipelines.planAutomatic(), 0);
+  const context = { owner: "alice", input: { publication: id, agent, revision: publication.revision }, services, llm, log: () => {} } as never;
   await KNOWLEDGE_TASK.run(context);
   await KNOWLEDGE_TASK.run(context);
   const mine = await topics.visible("alice"), other = await topics.visible("bob");
@@ -47,7 +49,7 @@ test("Konstruktor enrichit les topics privés à partir de citations, sans doubl
   const different = { ...publication, id: randomUUID(), revision: "revision-2", messages: [{ body: "Perseverance, Tinga." }] };
   const weakServices = { ...services, publications: { ...publications, get: async () => different } };
   const weakAnswer = { concepts: [{ label: "Perseverance", quote: "Perseverance, Tinga." }, { label: "Tinga", quote: "Perseverance, Tinga." }], relations: [{ from: "Perseverance", to: "Tinga", type: "influences", quote: "Perseverance, Tinga.", justification: "Une relation hypothétique mais sans preuve explicite.", confidence: 0.9 }] };
-  await KNOWLEDGE_TASK.run({ owner: "alice", input: { publication: different.id, agent, revision: different.revision }, services: weakServices, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(weakAnswer) } }) } as never);
+  await KNOWLEDGE_TASK.run({ owner: "alice", input: { publication: different.id, agent, revision: different.revision }, services: weakServices, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(weakAnswer) } }), log: () => {} } as never);
   assert.equal((await relations.relationsOf("alice", mine.personal[0].id)).proposed.length, 1);
 });
 
@@ -94,9 +96,9 @@ test("concepts existants réutilisés, relations exclues ou corrigées jamais re
   const services = { db, topics, accounts, publications, relations };
   const relation = (type: string) => ({ from: "PERSEVERANCE", to: "Tinga", type, quote, justification: "La publication affirme que la mission a capturé une image de cette région.", confidence: 0.8 });
   const answer = (type: string) => ({ concepts: [{ label: "PERSEVERANCE", quote }, { label: "perseverance", quote }, { label: "Tinga", quote }, { label: "NASA", quote }], relations: [relation(type)] });
-  const run = (type: string, owner = "alice") => KNOWLEDGE_TASK.run({ owner, input: { publication: current.id, agent, revision: current.revision }, services, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(answer(type)) } }) } as never);
+  const run = (type: string, owner = "alice") => KNOWLEDGE_TASK.run({ owner, input: { publication: current.id, agent, revision: current.revision }, services, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(answer(type)) } }), log: () => {} } as never);
 
-  assert.deepEqual(await run("related_to"), { outcome: "done", concepts: 3 });
+  assert.deepEqual(await run("related_to"), { outcome: "done", concepts: 3, reused: 1, created: 2, ignored: 0, relations: 1, kept: 0 });
   const mine = await topics.visible("alice");
   assert.deepEqual(mine.personal.map(topic => topic.tag).sort(), ["nasa", "perseverance", "tinga"]);
   assert.ok(mine.personal.some(topic => topic.id === existing.id), "le topic existant est réutilisé, sans doublon de casse");

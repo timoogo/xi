@@ -1,12 +1,8 @@
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { normalizeTag } from "../search/query";
 import { conceptKey } from "../search/text";
 import { askJson } from "../watch/inference";
-import type { JobQueue } from "../watch/jobs";
-import { enqueueSystemTask } from "../system-agents/queue";
-import { systemAgentDefinition } from "../system-agents/registry";
 import type { SystemTask } from "../system-agents/tasks";
 import { assess, DISCOVERY_SYSTEM, explicitConcepts, modelSchema, topicKeys } from "../topics/discovery";
 import type { PublicationStore } from "../publications/store";
@@ -22,34 +18,51 @@ const schema = z.object({ publication: z.uuid(), agent: z.uuid(), revision: z.st
 const relationCue = /(?<!\p{L})(?:appartien|fait partie|compos|compren|contien|li[eé](?:e|s|es|nt)?(?!\p{L})|utilis|produi|captur|observ|influen|caus|oppos|similaire|concern)/iu;
 export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
   input: schema, internal: true,
-  async run({ owner, input, services, llm }) {
+  async run({ owner, input, services, llm, log }) {
     if (!services.publications || !services.relations) throw new Error("Services de connaissances indisponibles.");
     const agent = (await services.accounts.watchAgents()).find(item => item.id === input.agent && item.owner === owner);
     if (!agent) throw new Error("ΞAgent indisponible.");
+    log("info", `Analyse de la publication ${input.publication} (révision ${input.revision}).`);
     const publication = await services.publications.get({ id: owner }, input.publication);
-    if (publication.status !== "published" || publication.authorId !== agent.id || publication.revision !== input.revision) return { outcome: "obsolete" };
+    if (publication.status !== "published" || publication.authorId !== agent.id || publication.revision !== input.revision) {
+      log("warn", "Publication modifiée ou retirée depuis la planification : ignorée.");
+      return { outcome: "obsolete" };
+    }
     const text = [publication.summary, ...publication.messages.filter(item => !item.deleted).map(item => item.body)].join("\n").slice(0, 8000);
     const binding = services.agentLLM ? services.agentLLM(agent) : llm(); if (!binding.ok) throw new Error(binding.message);
+    log("info", `Extraction par le modèle local ${binding.resolved.model}.`);
     const answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}` }, modelSchema, 1);
+    log("info", `Concepts proposés : ${answer.concepts.length} ; relations proposées : ${answer.relations.length}.`);
     const catalog = await services.topics.visible(owner);
     const keys = topicKeys([...catalog.personal, ...catalog.shared]);
     const resolved = new Map<string, { id: string; label: string; quote: string }>();
     // Recheck access and revision after inference, before persisting anything derived from it.
     const current = await services.publications.get({ id: owner }, input.publication);
-    if (current.status !== "published" || current.revision !== input.revision) return { outcome: "obsolete" };
+    if (current.status !== "published" || current.revision !== input.revision) {
+      log("warn", "Publication modifiée pendant l’analyse : rien n’est enregistré.");
+      return { outcome: "obsolete" };
+    }
+    let created = 0, reused = 0, ignored = 0, proposed = 0, kept = 0;
     for (const item of answer.concepts) {
       const key = conceptKey(item.label), tag = normalizeTag(item.label);
-      if (!key || !tag || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.label.toLocaleLowerCase()) || resolved.has(key)) continue;
-      const topic = keys.get(key)?.topic ?? (await services.topics.openPersonal(owner, tag)).topic;
+      if (resolved.has(key)) continue;
+      if (!key || !tag || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.label.toLocaleLowerCase())) { ignored++; log("warn", `Concept « ${item.label} » ignoré : citation absente du texte.`); continue; }
+      const known = keys.get(key)?.topic;
+      const topic = known ?? (await services.topics.openPersonal(owner, tag)).topic;
+      if (known) reused++; else created++;
+      log("info", `Concept « ${item.label} » : topic #${topic.tag} ${known ? "réutilisé" : "personnel créé ou retrouvé"}.`);
       resolved.set(key, { id: topic.id, label: item.label, quote: item.quote });
     }
     for (const item of answer.relations) {
       const a = resolved.get(conceptKey(item.from)), b = resolved.get(conceptKey(item.to));
-      if (!a || !b || a.id === b.id || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.from.toLocaleLowerCase()) || !item.quote.toLocaleLowerCase().includes(item.to.toLocaleLowerCase()) || !relationCue.test(item.quote)) continue;
+      const label = `${item.from} → ${item.to} (${item.type})`;
+      if (!a || !b || a.id === b.id || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.from.toLocaleLowerCase()) || !item.quote.toLocaleLowerCase().includes(item.to.toLocaleLowerCase()) || !relationCue.test(item.quote)) { log("info", `Relation ${label} ignorée : pas d’affirmation explicite dans une citation.`); continue; }
       const score = assess({ quote: item.quote, fromSource: false, sourceCount: publication.sources.filter(source => source.url).length, keys: [[item.from], [item.to]], type: item.type, modelConfidence: item.confidence });
       // The model's proposal remains unverified and requires a substantive citation and human review.
-      if (score.assessment.evidence < 1 || score.assessment.type < 0.7 || item.justification.length < 20) continue;
-      await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification: item.justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote }], acceptable: false });
+      if (score.assessment.evidence < 1 || score.assessment.type < 0.7 || item.justification.length < 20) { log("info", `Relation ${label} ignorée : preuve insuffisante.`); continue; }
+      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification: item.justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote }], acceptable: false });
+      if (relation.status === "excluded" || relation.type !== item.type) { kept++; log("info", `Relation ${label} non reproposée : exclue ou corrigée par une décision humaine.`); }
+      else { proposed++; log("info", `Relation ${label} ${relation.status === "accepted" ? "déjà acceptée : preuve conservée" : "proposée, à examiner"}.`); }
     }
     migrateAgentKnowledge(services.db);
     services.db.transaction(() => {
@@ -57,28 +70,10 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       const insert = services.db.prepare("INSERT OR IGNORE INTO xi_agent_knowledge VALUES (?, ?, ?, ?, ?, ?)");
       for (const item of resolved.values()) insert.run(owner, agent.id, publication.id, publication.revision, item.id, item.quote);
     })();
-    return { outcome: "done", concepts: resolved.size };
+    log("info", `Terminé : ${resolved.size} concepts (${reused} réutilisés, ${created} créés, ${ignored} ignorés), ${proposed} relations proposées, ${kept} décisions conservées.`);
+    return { outcome: "done", concepts: resolved.size, reused, created, ignored, relations: proposed, kept };
   },
 };
-
-/** Existing worker queue, keyed by publication revision: retries and concurrent planners stay idempotent. */
-export async function planAgentKnowledge(queue: JobQueue, services: NonNullable<Parameters<SystemTask["run"]>[0]["services"]>, at: number) {
-  if (!services.publications) return 0;
-  await services.publications.ensureIndexed();
-  let planned = 0;
-  for (const agent of await services.accounts.watchAgents()) {
-    for (const item of services.publications.agentPublications(agent.id)) {
-      if (item.test) continue;
-      const publication = await services.publications.get({ id: agent.owner }, item.id).catch(() => null);
-      if (!publication || publication.status !== "published") continue;
-      const digest = createHash("sha256").update(`${agent.owner}:${agent.id}:${publication.id}:${publication.revision}`).digest("hex");
-      const requestId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-      if (enqueueSystemTask(queue, { agentId: systemAgentDefinition("konstruktor")!.id, kind: "konstruktor", task: "publication-knowledge", owner: agent.owner, requestId, input: { publication: publication.id, agent: agent.id, revision: publication.revision }, trigger: "review" }).created) planned++;
-    }
-  }
-  void at;
-  return planned;
-}
 
 export const MEMORY_LIMIT = 20;
 export type Memory = { publication: string; excerpt: string };

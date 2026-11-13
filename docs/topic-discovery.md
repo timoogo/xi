@@ -6,7 +6,15 @@ Code : `src/lib/topics/discovery.ts`. Job `enrich-publication` de la queue `watc
 ## Connaissances des ΞAgents
 
 À chaque passage, le worker planifie aussi une tâche interne Konstruktor `publication-knowledge` pour chaque
-publication réelle d’ΞAgent, publique ou privée, et chaque révision. Les publications de test sont exclues.
+publication réelle d’ΞAgent, publique ou privée, et chaque révision.
+
+Ces tâches sont regroupées en **pipelines** (`src/lib/konstruktor/pipelines.ts`, page *Konstruktor → Pipelines*) :
+un run automatique par ΞAgent quand le worker trouve du travail nouveau, ou un run manuel (publications
+manquantes, ou réanalyse complète). Un run n’est qu’un plan persistant (`konstruktor_pipeline_run`,
+`konstruktor_pipeline_job`) sur la même file `watch_job` : états, tentatives, baux et logs restent ceux du moteur
+(`xiagent_run`). Un seul run actif par ΞAgent ; « Relancer les échecs » crée de nouvelles tâches pour les seules
+publications en échec, le worker ne relance jamais un échec de lui-même. Après un redémarrage, une tentative dont
+le bail expire est marquée `interrupted` puis reprise. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
 La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
 Le modèle local du ΞAgent (ou celui hérité du propriétaire) propose des concepts avec citations exactes. Les concepts déjà visibles sont
 réutilisés ; les autres deviennent des topics personnels, jamais des topics partagés. Les relations ne sont
