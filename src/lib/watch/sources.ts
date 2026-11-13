@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { assertWithin, inside, listDir, writeAtomic, type Vault } from "../publications/vault";
+import { assertWithin, inside, listDir, RECORD_FILE, recordId, writeRecord, type Vault } from "../publications/vault";
 import { locked } from "../topics/lock";
 import type { TopicStore } from "../topics/store";
 import { TopicError } from "../topics/types";
@@ -110,6 +110,11 @@ export function normalizeSourceUrl(input: string) {
   return httpUrl.parse(canonicalUrl(url.href).url);
 }
 const encode = (data: unknown) => `---\n${stringify(data)}---\n`;
+/** Readable file stem of a source: its address without scheme nor « www » (`nasa-gov-feed`). */
+export function sourceStem(url: string) {
+  const { hostname, pathname } = new URL(url);
+  return `${hostname.replace(/^www\./, "")}${pathname}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 100).replace(/-+$/, "");
+}
 const decode = (text: string) => { const match = /^---\n([\s\S]*?)\n---\n/.exec(text); if (!match) throw new Error("invalid"); return parse(match[1]); };
 
 export function createSourceStore({ vault, topics, now = () => new Date() }: { vault: Vault; topics: TopicStore; now?: () => Date }) {
@@ -127,19 +132,22 @@ export function createSourceStore({ vault, topics, now = () => new Date() }: { v
     await prepare();
     const sources: Source[] = [];
     let invalid = 0;
+    // Identity is the frontmatter `id` (file `<address>.md`, or a legacy `<uuid>.md`); a second file for one id is invalid.
     for (const entry of await listDir(directory)) {
-      if (!entry.isFile() || !/^[0-9a-f-]{36}\.md$/.test(entry.name)) continue;
+      if (!entry.isFile() || !RECORD_FILE.test(entry.name)) continue;
       const path = inside(directory, entry.name);
       try {
         if (await assertWithin(vault.root, path) !== path) throw new Error("symlink");
-        const source = sourceSchema.parse(decode(await readFile(path, "utf8")));
-        if (`${source.id}.md` !== entry.name) throw new Error("id");
+        const text = await readFile(path, "utf8");
+        if (!recordId(text)) throw new Error("id");
+        const source = sourceSchema.parse(decode(text));
+        if (sources.some(item => item.id === source.id)) throw new Error("duplicate");
         sources.push(source);
       } catch { invalid++; }
     }
     return { sources: sources.sort((a, b) => a.createdAt.localeCompare(b.createdAt)), invalid };
   }
-  const write = (source: Source) => writeAtomic(inside(directory, `${source.id}.md`), encode(source));
+  const write = (source: Source) => writeRecord(directory, source.id, sourceStem(source.url), encode(source));
   const exclusive = async <T>(task: () => Promise<T>) => { await prepare(); return locked(root, task); };
   async function validTopics(ids: string[]) {
     const catalog = await topics.list();

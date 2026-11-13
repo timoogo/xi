@@ -10,7 +10,7 @@ import Database from "better-sqlite3";
 import { createAccountStore } from "../src/lib/accounts/store";
 import { DEFAULT_WATCH_POLICY } from "../src/lib/accounts/types";
 import { createPublicationStore, PublicationError } from "../src/lib/publications/store";
-import { openVault } from "../src/lib/publications/vault";
+import { openVault, recordFiles } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
 import { manualPublication } from "../src/lib/xiagents/manual-publication";
 import { decodeBody, proposeFromUrl, sourceState } from "../src/lib/watch/collect";
@@ -249,7 +249,7 @@ test("source catalogue: proposals wait for approval, owner isolation, transition
   assert.equal((await sources.list("alice", { includeDeleted: true })).sources.length, 1, "tombstone kept with its history");
   assert.equal((await sources.propose("alice", proposal, "agent:x")).source.status, "deleted", "never re-proposed");
   // A hand-broken file is ignored and counted, never collected.
-  const file = join(root, "watch", "sources", `${source.id}.md`);
+  const file = join(root, "watch", "sources", (await recordFiles(join(root, "watch", "sources"))).get(source.id)!);
   await writeFile(file, (await readFile(file, "utf8")).replace("status: deleted", "status: approved\nextra: 1"));
   assert.deepEqual([(await sources.list("alice", { includeDeleted: true })).invalid, (await sources.approved()).length], [1, 0]);
 });

@@ -190,7 +190,7 @@ supprimée avec les index reconstructibles ; à sauvegarder avec la base).
 
 ## Catalogue de sources
 
-`<vault>/watch/sources/<uuid>.md` (dossier privé 0700), un fichier par source,
+`<vault>/watch/sources/<adresse>.md` (dossier privé 0700, identité dans le frontmatter `id`), un fichier par source,
 propre à un propriétaire et partagé entre ses ΞAgents par attribution de topics :
 URL du flux, type (`feed` RSS/Atom ou `json` pour une API officielle avec son
 mappage `itemsPath`, `url`, `title`, `summary`, `publishedAt`, `id`), site,

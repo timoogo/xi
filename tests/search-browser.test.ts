@@ -9,7 +9,7 @@ import { Document, stringify } from "yaml";
 import { BUILTIN_PRESETS } from "../src/lib/accounts/types";
 import { serializeGenerator } from "../src/lib/graph/format";
 import { createPublicationStore } from "../src/lib/publications/store";
-import { openVault } from "../src/lib/publications/vault";
+import { openVault, recordId } from "../src/lib/publications/vault";
 import type { Topic } from "../src/lib/topics/types";
 import { createTestServer } from "./helpers/next-server";
 
@@ -145,8 +145,10 @@ test("universal search: #topic, former tags, unknown tags, @agents, crossed sear
   await page.getByRole("button", { name: "S’abonner" }).click();
   await page.getByRole("button", { name: "Abonné" }).waitFor();
   const [owner] = await personalOwners();
+  // The file is named after the tag; the identity is the frontmatter id.
   const [topicFile] = await readdir(join(app.vaultPath, ".xi-personal-topics", owner));
-  const topicId = topicFile.replace(/\.md$/, "");
+  assert.equal(topicFile, "essence.md");
+  const topicId = recordId(await readFile(join(app.vaultPath, ".xi-personal-topics", owner, topicFile), "utf8"))!;
   assert.match(await readFile(join(app.vaultPath, "posts", "_users", owner, "feed.md"), "utf8"), new RegExp(`topics:\\s*\\n\\s*- ${topicId}`));
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.reload();

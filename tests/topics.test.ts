@@ -44,7 +44,7 @@ test("global UUID topics: children preserve parent scope; transverse relations a
   const duplicate = await store.confirm("bob", proposal.id, draft("politiks.france", parent.id), true);
   assert.equal(duplicate.state, "failed");
   assert.match(duplicate.steps[7].error!, /réservé/);
-  const publicText = await readFile(join(root, "topics", `${child.id}.md`), "utf8");
+  const publicText = await readFile(join(root, "topics", `${child.tag}.md`), "utf8");
   assert.ok(!publicText.includes("Intention privée originale"));
   assert.deepEqual(await readdir(join(root, "posts")), []);
   assert.ok(!(await readdir(root)).includes("generators"));
@@ -153,7 +153,7 @@ test("externally corrupted Markdown refuses rebuild without destroying the previ
   const { create, store, draft, root, db } = await setup(t);
   const topic = await create(draft("science"));
   const broken: Topic = { ...topic, parentId: topic.id };
-  await writeFile(join(root, "topics", `${topic.id}.md`), `---\n${stringify(broken)}---\n`);
+  await writeFile(join(root, "topics", `${topic.tag}.md`), `---\n${stringify(broken)}---\n`);
   await assert.rejects(store.reindex(), /Cycle/);
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM topic_index").get() as { n: number }).n, 1);
 });

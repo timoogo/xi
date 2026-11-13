@@ -7,7 +7,7 @@ Code : `src/lib/topics/relations.ts`. Interface : section « Topics liés » de 
 
 | Sorte | Source de vérité | Modifiable ici |
 |---|---|---|
-| Hiérarchie parent/enfant | `parentId` des fiches `topics/<uuid>.md` | non (fiche de gestion) |
+| Hiérarchie parent/enfant | `parentId` des fiches `topics/<tag>.md` | non (fiche de gestion) |
 | Relation déclarée (historique) | `relatedIds` des fiches, validée par le créateur de la fiche | masquage personnel seulement |
 | Relation enregistrée | `topic-relations/<uuid>.md` ou espace privé de l'utilisateur | oui |
 

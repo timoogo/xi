@@ -21,6 +21,35 @@ Le vault Obsidian est configuré côté serveur par `XI_VAULT_PATH` (chemin abso
 
 Les autres dossiers de `posts/` (par exemple `posts/Politiks/`) sont réservés aux futurs générateurs ; ils ne sont ni lus ni modifiés.
 
+### Noms des fichiers
+
+Un chemin n’est jamais un identifiant : l’identité est dans le frontmatter (`id`) ou, pour un message, dans
+`<uuid-publication>/<numéro>`. Les noms sont faits pour être lus (`tree`, Obsidian) :
+
+| Contenu | Nom | Règle |
+|---|---|---|
+| Message | `<n>_<slug>.md` | slug de la première ligne, fixé à la création |
+| Source d’une publication | `_sources/<n>_<slug>.md` | slug du titre |
+| Topic partagé / personnel | `topics/<tag>.md`, `.xi-personal-topics/<userId>/<tag>.md` | suit le tag (renommé avec lui) |
+| Source de veille | `watch/sources/<adresse>.md` | adresse sans schéma ni `www` (`nasa-gov-feed.md`) |
+| ΞAgent | `generators/<handle>/index.md` | inchangé |
+
+Slug : accents repliés, minuscules, élisions (« l’ ») et possessifs (« NASA’s ») retirés, trait d’union gardé
+(`x-59`), au plus dix mots et 80 caractères, jamais coupé dans un mot. Collision d’un topic ou d’une source :
+`<nom>--<8 premiers caractères de l’id>.md`, déterministe ; un nom déjà conforme n’est jamais changé. Deux
+fichiers portant le même `id` sont refusés. Restent techniques, car l’appartenance est vérifiée par
+l’emplacement : `_users/<userId>/` (ID Better Auth), `_generators/<agentId>/` (le handle d’un ΞAgent est
+modifiable et peut être réattribué), `.trash/<userId>/<publicationId>/`, et les dossiers de publication
+`post|thread_<date>_<numéro>` (ordre de création).
+
+Un vault antérieur se renomme une fois, application **et worker arrêtés** :
+`pnpm exec tsx --env-file-if-exists=.env.local scripts/vault-names.ts` affiche le plan sans rien modifier ;
+ajouter `--apply --backup <dossier neuf hors du vault>` sauvegarde le vault et la base, renomme, réécrit les liens
+Obsidian des publications et reporte les connaissances de Konstruktor sur les nouvelles révisions (un nom de fichier
+fait partie de la révision). Idempotent ; une interruption est reprise au passage suivant
+(`src/lib/maintenance/vault-names.ts`). Retour arrière : remettre le dossier `vault/` et `xi-auth.sqlite` de la
+sauvegarde. Le worker réanalysera ensuite les publications renommées (nouvelle révision).
+
 ## Format
 
 ### `index.md`
