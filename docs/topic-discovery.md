@@ -29,10 +29,20 @@ concept sont chargées à sa sélection (`GET /api/xiagents/[id]/knowledge/[topi
 40 concepts les plus reliés et s’étend par voisinage, comme le réseau des topics. Lecture seule : valider, corriger
 ou exclure se fait sur la fiche du topic. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
 La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
-Le modèle local du ΞAgent (ou celui hérité du propriétaire) propose des concepts avec citations exactes. Les concepts déjà visibles sont
-réutilisés ; les autres deviennent des topics personnels, jamais des topics partagés. Les relations ne sont
-créées qu’avec une citation présente et des indices explicites, au statut **proposé**, sans les présenter comme
-des faits vérifiés. Elles restent privées et leur preuve suit les permissions de la publication.
+Extraction (`src/lib/konstruktor/extraction.ts`, prompt propre à Konstruktor, distinct de la découverte de topics) :
+le modèle local du ΞAgent (ou celui hérité du propriétaire) ne donne que des **noms** (`{name, kind}`, au plus 10)
+et des **relations** `{from, link, to, type}` (au plus 8), où `link` sont les mots du texte entre les deux concepts.
+Le code fait le reste, de façon déterministe : la citation est la phrase de la publication qui contient le nom (accents,
+casse, ponctuation et pluriels repliés), jamais un texte du modèle ; sont écartés les noms absents du texte, les
+fragments (plus de six mots), les verbes et actions (« moderniser les données »), les dates. Une relation exige
+les deux concepts dans une même phrase avec `link` entre eux, sans simple coordination (« et ») ni attribution
+(« selon », « according to ») ; elle fonctionne en français comme en anglais. Un type orienté (`part_of`,
+`influences`) ou de nature (`similar_to`, `opposes`) n’est gardé que si la phrase en porte l’indice, et suit le sens
+de la phrase ; sinon la relation est enregistrée `related_to`. La justification cite `link`. Un résumé identique au
+message n’est envoyé qu’une fois. Les concepts déjà visibles sont réutilisés ; les autres deviennent des topics
+personnels nommés comme dans le texte (« X-59 »), jamais des topics partagés. Les relations restent au statut
+**proposé**, sans être présentées comme des faits vérifiés ; exclusions et corrections humaines ne sont jamais
+défaites. Elles restent privées et leur preuve suit les permissions de la publication.
 
 L’index SQLite `xi_agent_knowledge` conserve l’association ΞAgent–publication–topic et l’extrait source ; le
 réseau des topics affiche ces contributions au propriétaire. Les citations sont visibles sur la fiche du topic,

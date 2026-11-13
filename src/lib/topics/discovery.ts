@@ -118,11 +118,13 @@ Réponds uniquement en JSON : {"concepts":[{"label":"…","quote":"…"}],"relat
 /** Words that make a relation type plausible in the quoted sentence (type coherence). related_to needs none. */
 const TYPE_CUES: Record<TopicRelationType, RegExp | null> = {
   related_to: null,
-  similar_to: /\b(comme|similaire|semblable|proche|analogue|equivalent|pareil)/,
-  part_of: /\b(fait partie|partie de|composante|parmi|inclu|compren|compos|secteur|branche|sous)/,
-  influences: /\b(entrain|provoqu|caus|influenc|impact|condui|redui|augment|favoris|affect|pes|fait (monter|baisser)|effet|consequence|depend)/,
-  opposes: /\b(oppos|contre|contrair|conflit|rival|antagon|incompatible|concurren)/,
+  similar_to: /\b(comme|similaire|semblable|proche|analogue|equivalent|pareil|similar|akin)/,
+  part_of: /\b(fait partie|partie de|composante|parmi|inclu|compren|compos|secteur|branche|sous|part of|member of|component|among)/,
+  influences: /\b(entrain|provoqu|caus|influenc|impact|condui|redui|augment|favoris|affect|pes|fait (monter|baisser)|effet|consequence|depend|lead to|leads to|drive|increas|reduc|boost)/,
+  opposes: /\b(oppos|contre|contrair|conflit|rival|antagon|incompatible|concurren|against|versus)/,
 };
+/** Whether a text carries a cue for this relation type (related_to needs none). */
+export const typeCue = (type: TopicRelationType, text: string) => TYPE_CUES[type]?.test(fold(text)) ?? true;
 const fold = (text: string) => text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const round = (value: number) => Math.round(value * 100) / 100;
 

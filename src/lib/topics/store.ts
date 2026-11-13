@@ -344,7 +344,8 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
    * (owner, tag) and serialized by the writer lock, so concurrent requests return the same UUID. A shared topic
    * holding the tag (current or former) always wins at creation: no personal duplicate of a shared topic is made.
    */
-  async function openPersonal(owner: string, rawTag: string): Promise<{ topic: Topic; created: boolean }> {
+  /** `name`: display name of a topic created here (as written, e.g. « X-59 »); by default derived from the tag. */
+  async function openPersonal(owner: string, rawTag: string, name?: string): Promise<{ topic: Topic; created: boolean }> {
     const tag = tagSchema.parse(rawTag);
     ownerDir(owner);
     return exclusive(async () => {
@@ -356,7 +357,7 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       const words = tag.slice(tag.lastIndexOf(".") + 1).replace(/-/g, " ");
       const at = new Date().toISOString();
       const topic: PersonalTopic = {
-        id: randomUUID(), tag, name: words.charAt(0).toLocaleUpperCase("fr-FR") + words.slice(1), description: "",
+        id: randomUUID(), tag, name: name?.trim().slice(0, 160) || words.charAt(0).toLocaleUpperCase("fr-FR") + words.slice(1), description: "",
         scope: `Fiche personnelle créée depuis la recherche « #${tag} ». Périmètre à préciser.`, parentId: null, relatedIds: [],
         aliases: [], owner, createdBy: owner, updatedBy: owner, createdAt: at, updatedAt: at, revision: randomUUID(),
       };

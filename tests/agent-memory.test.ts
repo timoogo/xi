@@ -66,7 +66,7 @@ test("mémoire des ΞAgents : une nouvelle conversation retrouve une connaissanc
   const appDb = new Database(app.databasePath);
   t.after(() => appDb.close());
   const relations = createTopicRelationStore({ vault, db: fixtureDb, topics, readable: async viewer => viewer === owner ? new Set([source]) : new Set() });
-  const answer = { concepts: [{ label: "Asterion-47", quote: FACT }, { label: "Helios-9", quote: FACT }], relations: [{ from: "Asterion-47", to: "Helios-9", type: "related_to", quote: FACT, justification: "La publication affirme qu’Asterion-47 utilise le moteur Helios-9.", confidence: 0.8 }] };
+  const answer = { concepts: [{ name: "Asterion-47" }, { name: "Helios-9" }], relations: [{ from: "Asterion-47", link: "utilise le moteur", to: "Helios-9", type: "related_to", confidence: 0.8 }] };
   const learned = await KNOWLEDGE_TASK.run({ owner, input: { publication: source, agent, revision: reviewed.snapshot.revision }, services: { db: appDb, topics, accounts, publications, relations }, llm: () => ({ ok: true, resolved: { model: "test" }, inference: { complete: async () => JSON.stringify(answer) } }), log: () => {} } as never);
   assert.deepEqual(learned, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 0, relations: 1, kept: 0 });
   const memory = appDb.prepare("SELECT excerpt FROM xi_agent_knowledge WHERE owner = ? AND agent = ?").all(owner, agent) as { excerpt: string }[];

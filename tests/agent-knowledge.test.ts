@@ -25,7 +25,7 @@ test("Konstruktor enrichit les topics privés à partir de citations, sans doubl
   const publications = { ensureIndexed: async () => {}, agentPublications: () => [{ id, test: false }], get: async () => publication };
   const accounts = { watchAgents: async () => [{ id: agent, owner: "alice" }] };
   const relations = createTopicRelationStore({ vault, db, topics, readable: async viewer => viewer === "alice" ? new Set([id]) : new Set() });
-  const answer = { concepts: [{ label: "Perseverance", quote }, { label: "Tinga", quote }, { label: "Imaginaire", quote: "citation inventée" }], relations: [{ from: "Perseverance", to: "Tinga", type: "related_to", quote, justification: "La publication relie explicitement la mission à la région observée.", confidence: 0.8 }] };
+  const answer = { concepts: [{ name: "Perseverance" }, { name: "Tinga" }, { name: "Imaginaire" }], relations: [{ from: "Perseverance", link: "observe la région", to: "Tinga", type: "related_to", confidence: 0.8 }] };
   const llm = () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(answer) } });
   const services = { db, topics, accounts, publications, relations };
   const queue = createJobQueue(db);
@@ -48,7 +48,7 @@ test("Konstruktor enrichit les topics privés à partir de citations, sans doubl
   await assert.rejects(relations.relationsOf("bob", mine.personal[0].id));
   const different = { ...publication, id: randomUUID(), revision: "revision-2", messages: [{ body: "Perseverance, Tinga." }] };
   const weakServices = { ...services, publications: { ...publications, get: async () => different } };
-  const weakAnswer = { concepts: [{ label: "Perseverance", quote: "Perseverance, Tinga." }, { label: "Tinga", quote: "Perseverance, Tinga." }], relations: [{ from: "Perseverance", to: "Tinga", type: "influences", quote: "Perseverance, Tinga.", justification: "Une relation hypothétique mais sans preuve explicite.", confidence: 0.9 }] };
+  const weakAnswer = { concepts: [{ name: "Perseverance" }, { name: "Tinga" }], relations: [{ from: "Perseverance", link: ",", to: "Tinga", type: "influences", confidence: 0.9 }] };
   await KNOWLEDGE_TASK.run({ owner: "alice", input: { publication: different.id, agent, revision: different.revision }, services: weakServices, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(weakAnswer) } }), log: () => {} } as never);
   assert.equal((await relations.relationsOf("alice", mine.personal[0].id)).proposed.length, 1);
 });
@@ -94,8 +94,8 @@ test("concepts existants réutilisés, relations exclues ou corrigées jamais re
   const accounts = { watchAgents: async () => [{ id: agent, owner: "alice" }] };
   const relations = createTopicRelationStore({ vault, db, topics, readable: async viewer => viewer === "alice" ? new Set([current.id]) : new Set() });
   const services = { db, topics, accounts, publications, relations };
-  const relation = (type: string) => ({ from: "PERSEVERANCE", to: "Tinga", type, quote, justification: "La publication affirme que la mission a capturé une image de cette région.", confidence: 0.8 });
-  const answer = (type: string) => ({ concepts: [{ label: "PERSEVERANCE", quote }, { label: "perseverance", quote }, { label: "Tinga", quote }, { label: "NASA", quote }], relations: [relation(type)] });
+  const relation = (type: string) => ({ from: "PERSEVERANCE", link: "a capturé une image de la région", to: "Tinga", type, confidence: 0.8 });
+  const answer = (type: string) => ({ concepts: [{ name: "PERSEVERANCE" }, { name: "perseverance" }, { name: "Tinga" }, { name: "NASA" }], relations: [relation(type)] });
   const run = (type: string, owner = "alice") => KNOWLEDGE_TASK.run({ owner, input: { publication: current.id, agent, revision: current.revision }, services, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(answer(type)) } }), log: () => {} } as never);
 
   assert.deepEqual(await run("related_to"), { outcome: "done", concepts: 3, reused: 1, created: 2, ignored: 0, relations: 1, kept: 0 });

@@ -4,7 +4,8 @@ import { normalizeTag } from "../search/query";
 import { conceptKey } from "../search/text";
 import { askJson, InferenceConfigError, InferenceOutputError } from "../watch/inference";
 import type { SystemTask } from "../system-agents/tasks";
-import { assess, DISCOVERY_SYSTEM, explicitConcepts, modelSchema, topicKeys } from "../topics/discovery";
+import { assess, explicitConcepts, topicKeys, typeCue } from "../topics/discovery";
+import { KNOWLEDGE_SYSTEM, knowledgeAnswerSchema, screenKnowledge } from "./extraction";
 import type { PublicationStore } from "../publications/store";
 import type { TopicStore } from "../topics/store";
 
@@ -14,8 +15,6 @@ export function migrateAgentKnowledge(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS xi_agent_knowledge_owner ON xi_agent_knowledge(owner, agent, publication)`);
 }
 const schema = z.object({ publication: z.uuid(), agent: z.uuid(), revision: z.string().min(1).max(200) }).strict();
-// Verb stems with Unicode boundaries: `\b` is ASCII-only and would miss « capturé », « observé » or « lié ».
-const relationCue = /(?<!\p{L})(?:appartien|fait partie|compos|compren|contien|li[eé](?:e|s|es|nt)?(?!\p{L})|utilis|produi|captur|observ|influen|caus|oppos|similaire|concern)/iu;
 export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
   input: schema, internal: true,
   async run({ owner, input, services, llm, log }) {
@@ -28,10 +27,11 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       log("warn", "Publication modifiée ou retirée depuis la planification : ignorée.");
       return { outcome: "obsolete" };
     }
-    const text = [publication.summary, ...publication.messages.filter(item => !item.deleted).map(item => item.body)].join("\n").slice(0, 8000);
+    // A one-message publication repeats its summary: the model reads each passage once.
+    const text = [...new Set([publication.summary, ...publication.messages.filter(item => !item.deleted).map(item => item.body)].map(item => item.trim()).filter(Boolean))].join("\n").slice(0, 8000);
     const binding = services.agentLLM ? services.agentLLM(agent) : llm(); if (!binding.ok) throw new Error(binding.message);
     log("info", `Extraction par le modèle local ${binding.resolved.model}.`);
-    const answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}`, stage: "concepts" }, modelSchema, 1)
+    const answer = await askJson(binding.inference, { model: binding.resolved.model, system: KNOWLEDGE_SYSTEM, prompt: `Texte :\n${text}`, stage: "concepts" }, knowledgeAnswerSchema, 1)
       .catch((error: unknown) => {
         // Decoding is deterministic (fixed seed): the same text and budget would be cut at the same place again.
         // Permanent, so the worker does not spend two more identical attempts; « Relancer les échecs » stays available.
@@ -39,6 +39,9 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
         throw error;
       });
     log("info", `Concepts proposés : ${answer.concepts.length} ; relations proposées : ${answer.relations.length}.`);
+    // Deterministic screening: names and linking words must be in the text, fragments and attributions are dropped.
+    const screened = screenKnowledge(text, answer, typeCue);
+    for (const item of screened.rejected) log("info", `« ${item.item} » ignoré : ${item.reason}.`);
     const catalog = await services.topics.visible(owner);
     const keys = topicKeys([...catalog.personal, ...catalog.shared]);
     const resolved = new Map<string, { id: string; label: string; quote: string }>();
@@ -48,25 +51,28 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       log("warn", "Publication modifiée pendant l’analyse : rien n’est enregistré.");
       return { outcome: "obsolete" };
     }
-    let created = 0, reused = 0, ignored = 0, proposed = 0, kept = 0;
-    for (const item of answer.concepts) {
-      const key = conceptKey(item.label), tag = normalizeTag(item.label);
-      if (resolved.has(key)) continue;
-      if (!key || !tag || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.label.toLocaleLowerCase())) { ignored++; log("warn", `Concept « ${item.label} » ignoré : citation absente du texte.`); continue; }
+    let created = 0, reused = 0, proposed = 0, kept = 0;
+    const ignored = screened.rejected.length;
+    for (const item of screened.concepts) {
+      const key = conceptKey(item.name), tag = normalizeTag(item.name);
+      if (!key || !tag || resolved.has(key)) continue;
       const known = keys.get(key)?.topic;
-      const topic = known ?? (await services.topics.openPersonal(owner, tag)).topic;
+      const topic = known ?? (await services.topics.openPersonal(owner, tag, item.name)).topic;
       if (known) reused++; else created++;
-      log("info", `Concept « ${item.label} » : topic #${topic.tag} ${known ? "réutilisé" : "personnel créé ou retrouvé"}.`);
-      resolved.set(key, { id: topic.id, label: item.label, quote: item.quote });
+      log("info", `Concept « ${item.name} » : topic #${topic.tag} ${known ? "réutilisé" : "personnel créé ou retrouvé"}.`);
+      resolved.set(key, { id: topic.id, label: item.name, quote: item.quote });
     }
-    for (const item of answer.relations) {
+    for (const item of screened.relations) {
       const a = resolved.get(conceptKey(item.from)), b = resolved.get(conceptKey(item.to));
       const label = `${item.from} → ${item.to} (${item.type})`;
-      if (!a || !b || a.id === b.id || !text.includes(item.quote) || !item.quote.toLocaleLowerCase().includes(item.from.toLocaleLowerCase()) || !item.quote.toLocaleLowerCase().includes(item.to.toLocaleLowerCase()) || !relationCue.test(item.quote)) { log("info", `Relation ${label} ignorée : pas d’affirmation explicite dans une citation.`); continue; }
+      if (!a || !b || a.id === b.id) { log("info", `Relation ${label} ignorée : extrémité non retenue.`); continue; }
+      if (item.note) log("info", `Relation ${label} : ${item.note}.`);
       const score = assess({ quote: item.quote, fromSource: false, sourceCount: publication.sources.filter(source => source.url).length, keys: [[item.from], [item.to]], type: item.type, modelConfidence: item.confidence });
       // The model's proposal remains unverified and requires a substantive citation and human review.
-      if (score.assessment.evidence < 1 || score.assessment.type < 0.7 || item.justification.length < 20) { log("info", `Relation ${label} ignorée : preuve insuffisante.`); continue; }
-      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification: item.justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote }], acceptable: false });
+      if (score.assessment.evidence < 1 || score.assessment.type < 0.7) { log("info", `Relation ${label} ignorée : preuve insuffisante.`); continue; }
+      // Grounded justification: the linking words the text uses, never a free paraphrase by the model.
+      const justification = `La publication relie « ${item.from} » à « ${item.to} » par « ${item.link} ».`;
+      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote.slice(0, 600) }], acceptable: false });
       if (relation.status === "excluded" || relation.type !== item.type) { kept++; log("info", `Relation ${label} non reproposée : exclue ou corrigée par une décision humaine.`); }
       else { proposed++; log("info", `Relation ${label} ${relation.status === "accepted" ? "déjà acceptée : preuve conservée" : "proposée, à examiner"}.`); }
     }

@@ -26,8 +26,8 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
     const pairs = (text.match(/[^.]+\./g) ?? []).map(sentence => sentence.trim()).filter(sentence => /utilise|influence/.test(sentence))
       .map(sentence => { const words = sentence.replace(/\.$/, "").split(" "); return { sentence, from: words[0], to: words.at(-1)! }; });
     const content = JSON.stringify({
-      concepts: pairs.flatMap(({ sentence, from, to }) => [{ label: from, quote: sentence }, { label: to, quote: sentence }]),
-      relations: pairs.map(({ sentence, from, to }) => ({ from, to, type: sentence.includes("influence") ? "influences" : "related_to", quote: sentence, justification: "La publication affirme explicitement ce lien entre les deux.", confidence: 0.8 })),
+      concepts: pairs.flatMap(({ from, to }) => [{ name: from }, { name: to }]),
+      relations: pairs.map(({ sentence, from, to }) => ({ from, link: sentence.slice(sentence.indexOf(from) + from.length, sentence.lastIndexOf(to)).trim(), to, type: sentence.includes("influence") ? "influences" : "related_to", confidence: 0.8 })),
     });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ message: { content }, response: content, done: true }));
@@ -103,7 +103,7 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await page.waitForURL(/view=knowledge/);
   await page.getByRole("toolbar", { name: "Outils des connaissances" }).getByLabel("ΞAgent").selectOption({ label: "Astronoxi" });
   await page.waitForURL(new RegExp(`agent=${astronoxi.id}`));
-  await concept("Helios 9").waitFor();
+  await concept("Helios-9").waitFor();
   assert.equal(await nodes().count(), 6);
   // Excluded relations are not drawn by default; the validated, proposed and corrected ones are.
   assert.equal(await page.locator('[data-edge-id][data-status="excluded"]').count(), 0);
@@ -111,13 +111,13 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   assert.equal(await page.locator('[data-edge-id][data-status="proposed"]').count(), 2);
 
   // Concept panel: relations, provenance, quotes, web sources.
-  await concept("Helios 9").click();
+  await concept("Helios-9").click();
   const panel = page.locator('[data-panel="concept"]');
-  await panel.getByRole("heading", { name: "Helios 9" }).waitFor();
+  await panel.getByRole("heading", { name: "Helios-9" }).waitFor();
   // Helios → Orbite (influence) is outgoing; the corrected « part of » keeps the stored order of its ends; « lié à »
   // is symmetric, never outgoing nor incoming.
   await panel.getByText("Relations symétriques (1)").waitFor();
-  assert.match(await panel.locator('section[aria-labelledby="concept-out"]').textContent() ?? "", /Influence\s*Orbite 3/);
+  assert.match(await panel.locator('section[aria-labelledby="concept-out"]').textContent() ?? "", /Influence\s*Orbite-3/);
   const oriented = await panel.evaluate(element => [...element.querySelectorAll("h3")].map(h => h.textContent ?? "").filter(text => /sortantes|entrantes/.test(text)).map(text => Number(/\((\d+)\)/.exec(text)![1])));
   assert.equal(oriented[0] + oriented[1], 2);
   await panel.locator("[data-provenance]").nth(1).waitFor();
@@ -134,19 +134,19 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await relation.getByText("Relation orientée").waitFor();
   await relation.getByText("Validée", { exact: true }).waitFor();
   await relation.getByText("« Helios-9 influence la trajectoire Orbite-3. »").waitFor();
-  await relation.getByRole("button", { name: "Orbite 3" }).waitFor();
+  await relation.getByRole("button", { name: "Orbite-3" }).waitFor();
   await page.screenshot({ path: "artifacts/knowledge-graph/relation-desktop.png" });
-  await relation.getByRole("button", { name: "Helios 9" }).click();
+  await relation.getByRole("button", { name: "Helios-9" }).click();
   await panel.getByRole("button", { name: /^(Comprend|Fait partie de)$/ }).click();
   await relation.locator("[data-correction]").getByText("« Lié à » → « Fait partie de »", { exact: false }).waitFor();
   await relation.getByText("Proposée, à examiner").waitFor();
 
   // The publication of origin opens.
-  await relation.getByRole("button", { name: "Helios 9" }).click();
+  await relation.getByRole("button", { name: "Helios-9" }).click();
   await panel.locator(`[data-provenance="${p1}"] a`).first().click();
   await page.waitForURL(new RegExp(`/dashboard/publications/${p1}$`));
   await page.goBack();
-  await concept("Helios 9").waitFor();
+  await concept("Helios-9").waitFor();
 
   // Exclusions on request only, never as validated.
   await page.getByRole("button", { name: /^Exclues/ }).click();
@@ -157,15 +157,15 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   await relation.getByText("Lien trop vague.", { exact: false }).waitFor();
 
   // Zoom, recentre, list, keyboard.
-  const before = await concept("Helios 9").evaluate(element => element.parentElement!.getAttribute("transform"));
+  const before = await concept("Helios-9").evaluate(element => element.parentElement!.getAttribute("transform"));
   await page.getByRole("button", { name: "Zoom avant" }).click();
-  assert.notEqual(await concept("Helios 9").evaluate(element => element.parentElement!.getAttribute("transform")), before);
+  assert.notEqual(await concept("Helios-9").evaluate(element => element.parentElement!.getAttribute("transform")), before);
   await page.getByRole("button", { name: "Recentrer le graphe" }).click();
   await page.getByRole("button", { name: /Liste/ }).click();
   await page.getByRole("heading", { name: "Liste des connaissances" }).waitFor();
-  await page.locator('section[aria-labelledby="knowledge-list-title"]').getByRole("button", { name: /^Vega 2 #vega-2/ }).click();
-  await page.locator('[data-panel="concept"]').getByRole("heading", { name: "Vega 2" }).waitFor();
-  await concept("Vega 2").focus();
+  await page.locator('section[aria-labelledby="knowledge-list-title"]').getByRole("button", { name: /^Vega-2 #vega-2/ }).click();
+  await page.locator('[data-panel="concept"]').getByRole("heading", { name: "Vega-2" }).waitFor();
+  await concept("Vega-2").focus();
   await page.keyboard.press("Enter");
 
   // Empty agent; the two other modes still render.
@@ -183,7 +183,7 @@ test("graphe des connaissances : agent, concepts, relations, provenance, décisi
   t.after(() => mobile.close());
   const phone = await mobile.newPage(); phone.setDefaultTimeout(20_000);
   await phone.goto(`${app.origin}/dashboard/graph?view=knowledge&agent=${astronoxi.id}`);
-  await phone.getByRole("button", { name: /^Helios 9, #/ }).click();
+  await phone.getByRole("button", { name: /^Helios-9, #/ }).click();
   await phone.locator('[data-panel="concept"] [data-provenance]').first().waitFor();
   const overflow = await phone.evaluate(() => ({ width: document.documentElement.scrollWidth, wide: [...document.querySelectorAll("body *")].filter(element => element.getBoundingClientRect().right > 391).slice(0, 6).map(element => `${element.tagName.toLowerCase()}.${String(element.getAttribute("class") ?? "").slice(0, 60)} ${Math.round(element.getBoundingClientRect().right)}`) }));
   assert.ok(overflow.width <= 390, `pas de défilement horizontal : ${JSON.stringify(overflow)}`);

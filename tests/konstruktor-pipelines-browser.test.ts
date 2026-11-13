@@ -29,7 +29,7 @@ test("pipelines Konstruktor : lancement, progression, échecs, relance, redémar
     if (!sentence || (sentence.includes("PANNE") && model.broken)) { res.end(JSON.stringify({ message: { content: "réponse illisible" }, response: "réponse illisible", done: true })); return; }
     const words = sentence.replace("PANNE : ", "").replace(/\.$/, "").split(" ");
     const [from, to] = [words[0], words.at(-1)!];
-    const content = JSON.stringify({ concepts: [{ label: from, quote: sentence }, { label: to, quote: sentence }], relations: [{ from, to, type: "related_to", quote: sentence, justification: "La publication affirme explicitement ce lien entre les deux.", confidence: 0.8 }] });
+    const content = JSON.stringify({ concepts: [{ name: from }, { name: to }], relations: [{ from, link: sentence.slice(sentence.indexOf(from) + from.length, sentence.lastIndexOf(to)).trim(), to, type: "related_to", confidence: 0.8 }] });
     res.end(JSON.stringify({ message: { content }, response: content, done: true }));
   });
   ollama.listen(0, "127.0.0.1"); await once(ollama, "listening");

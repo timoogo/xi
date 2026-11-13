@@ -24,8 +24,8 @@ export const knowledgeModel = { complete: async ({ prompt }: { prompt: string })
   const sentences = text.match(/[^.]+\./g)!.map(sentence => sentence.trim()).filter(sentence => /utilise|influence/.test(sentence));
   const pairs = sentences.map(sentence => { const words = sentence.replace(/\.$/, "").split(" "); return { sentence, from: words[0], to: words.at(-1)! }; });
   return JSON.stringify({
-    concepts: pairs.flatMap(({ sentence, from, to }) => [{ label: from, quote: sentence }, { label: to, quote: sentence }]),
-    relations: pairs.map(({ sentence, from, to }) => ({ from, to, type: sentence.includes("influence") ? "influences" : "related_to", quote: sentence, justification: "La publication affirme explicitement ce lien entre les deux.", confidence: 0.8 })),
+    concepts: pairs.flatMap(({ from, to }) => [{ name: from }, { name: to }]),
+    relations: pairs.map(({ sentence, from, to }) => ({ from, link: sentence.slice(sentence.indexOf(from) + from.length, sentence.lastIndexOf(to)).trim(), to, type: sentence.includes("influence") ? "influences" : "related_to", confidence: 0.8 })),
   });
 } };
 
@@ -79,7 +79,7 @@ test("connaissances : un graphe par ΞAgent, décisions humaines, provenance et 
   await w.publish("bob", fusees, "Secret-9 utilise le moteur Cache-4.");
   for (const [owner, agent] of [["alice", astronoxi.id], ["alice", orbites.id], ["bob", fusees.id]] as const) await w.learn(owner, agent);
 
-  // Concepts are compared by tag: Konstruktor names the topics it opens after their tag (« Asterion 47 »).
+  // Concepts are compared by tag: display names follow the text (« Asterion-47 »), tags are stable.
   const names = (graph: Awaited<ReturnType<typeof w.graph>>) => graph.nodes.map(node => node.tag).sort();
   let graph = await w.graph("alice", { agent: astronoxi.id });
   // Only this agent's concepts; Helios-9, extracted from two of its publications, appears once.
@@ -154,8 +154,9 @@ test("connaissances : affichage progressif et exploration par voisinage", async 
   const agent = await w.agentOf("alice", "Constellations");
   // A hub linked to many concepts, more than the seeds: the graph starts limited, the hub's neighbours come on request.
   // Publications are short (summary ≤ 1 000 characters): the hub spans three of them.
-  for (let part = 0; part < 3; part++) await w.publish("alice", agent, Array.from({ length: 10 }, (_, index) => `Satellite-${part * 10 + index + 1} utilise le relais Nexus-0.`).join(" "));
-  await w.publish("alice", agent, Array.from({ length: 12 }, (_, index) => `Sonde-${index + 1} utilise le moteur Propulseur-${index + 1}.`).join(" "));
+  // Each publication stays under the per-publication concept cap (MAX_CONCEPTS).
+  for (let part = 0; part < 6; part++) await w.publish("alice", agent, Array.from({ length: 5 }, (_, index) => `Satellite-${part * 5 + index + 1} utilise le relais Nexus-0.`).join(" "));
+  for (let part = 0; part < 3; part++) await w.publish("alice", agent, Array.from({ length: 4 }, (_, index) => `Sonde-${part * 4 + index + 1} utilise le moteur Propulseur-${part * 4 + index + 1}.`).join(" "));
   await w.learn("alice", agent.id);
   const graph = await w.graph("alice", { agent: agent.id });
   assert.equal(graph.counts.concepts, 55);

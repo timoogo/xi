@@ -63,7 +63,7 @@ async function setup(t: { after: (fn: () => Promise<void>) => void }) {
     if (sentence.includes("PANNE") && state.broken) throw new Error("Modèle local en panne.");
     const [from, , ...rest] = sentence.replace("PANNE : ", "").replace(/\.$/, "").split(" ");
     const to = rest.at(-1)!;
-    return JSON.stringify({ concepts: [{ label: from, quote: sentence }, { label: to, quote: sentence }], relations: [{ from, to, type: "related_to", quote: sentence, justification: "La publication affirme explicitement ce lien entre les deux.", confidence: 0.8 }] });
+    return JSON.stringify({ concepts: [{ name: from }, { name: to }], relations: [{ from, link: sentence.slice(sentence.indexOf(from) + from.length, sentence.lastIndexOf(to)).trim(), to, type: "related_to", confidence: 0.8 }] });
   } };
   const binding = { ok: true as const, resolved: { model: "local-test" }, inference };
   /** The agent's binding; a test can swap in the real Ollama client (`bindInference`). */
@@ -254,11 +254,11 @@ const conceptsOf = (text: string) => {
   const sentences = text.split("\n")[0].match(/[^.]+\./g)!.map(sentence => sentence.trim());
   const pairs = sentences.map(sentence => { const words = sentence.replace(/\.$/, "").split(" "); return { sentence, from: words[0], to: words.at(-1)! }; });
   return JSON.stringify({
-    concepts: pairs.flatMap(({ sentence, from, to }) => [{ label: from, quote: sentence }, { label: to, quote: sentence }]),
-    relations: pairs.map(({ sentence, from, to }) => ({ from, to, type: "related_to", justification: "La phrase affirme que l’un utilise l’autre.", quote: sentence, confidence: 0.8 })),
+    concepts: pairs.flatMap(({ from, to }) => [{ name: from }, { name: to }]),
+    relations: pairs.map(({ sentence, from, to }) => ({ from, link: sentence.slice(sentence.indexOf(from) + from.length, sentence.lastIndexOf(to)).trim(), to, type: "related_to", confidence: 0.8 })),
   });
 };
-const fleet = Array.from({ length: 8 }, (_, index) => `Sonde-${index + 1} utilise le moteur Propulseur-${index + 1}.`).join(" ");
+const fleet = Array.from({ length: 20 }, (_, index) => `Sonde-${index + 1} utilise le moteur Propulseur-${index + 1}.`).join(" ");
 
 test("budget de génération : une réponse de concepts au-delà de 512 tokens n’est plus tronquée par la limite de l’ΞAgent", async t => {
   const env = await setup(t);
@@ -274,7 +274,8 @@ test("budget de génération : une réponse de concepts au-delà de 512 tokens n
   const job = run.jobs.find(item => item.publication === id)!;
   assert.equal(job.status, "success");
   assert.equal(job.attempts.length, 1);
-  assert.equal(job.result?.created, 16);
+  // The model names 40 concepts; screening keeps the first ten (MAX_CONCEPTS).
+  assert.equal(job.result?.created, 10);
   // The concepts step gets its floor as num_predict; the context window (num_ctx) stays the model's own.
   assert.ok(ollama.requests.length >= 1 && ollama.requests.every(options => options.num_predict === 1_536 && options.num_ctx === undefined));
   // A higher configured limit is kept, never lowered.
@@ -287,7 +288,7 @@ test("budget de génération : une réponse de concepts au-delà de 512 tokens n
 test("génération incomplète : une seule tentative, erreur explicite, historique conservé et relance ciblée", async t => {
   const env = await setup(t);
   // An answer longer than the concepts budget: the same text and budget would be cut identically on every attempt.
-  const ollama = await sizedOllama(t, text => !text.includes("Sonde-1") ? conceptsOf(text) : conceptsOf(text).replace(/"concepts":\[/, `"concepts":[${Array.from({ length: 24 }, () => `{"label":"Remplissage","quote":"${"x".repeat(200)}"}`).join(",")},`));
+  const ollama = await sizedOllama(t, text => !text.includes("Sonde-1") ? conceptsOf(text) : conceptsOf(text).replace(/^\{/, `{"notes":"${"x".repeat(6_000)}",`));
   env.bind("qwen3:1.7b", ollama.bind(512));
   const id = await env.publish(env.other, fleet);
   const started = await env.pipelines().start("alice", { agent: env.other.id, mode: "missing" });
