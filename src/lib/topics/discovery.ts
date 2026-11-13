@@ -111,7 +111,8 @@ export const DISCOVERY_SYSTEM = `Tu identifies les concepts d’un texte d’act
 Réponds uniquement en JSON : {"concepts":[{"label":"…","quote":"…"}],"relations":[{"from":"…","to":"…","type":"related_to|similar_to|part_of|influences|opposes","justification":"…","quote":"…","confidence":0.0}]}.
 - label : le concept tel qu’il est nommé (groupe nominal court) ; quote : une phrase recopiée mot pour mot du texte.
 - Une relation n’existe que si une phrase du texte l’affirme ; deux concepts cités ensemble ne sont pas liés pour autant.
-- justification : pourquoi cette phrase établit cette relation ; confidence : ta certitude que le texte l’affirme.
+- justification : une phrase courte (moins de 20 mots) ; confidence : ta certitude que le texte l’affirme.
+- Sois concis : au plus 12 concepts, les plus importants, et au plus 8 relations ; chaque quote est une seule phrase.
 - N’invente rien : aucune relation plutôt qu’une relation douteuse.`;
 
 /** Words that make a relation type plausible in the quoted sentence (type coherence). related_to needs none. */
@@ -306,7 +307,7 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     const text = parts.map(p => p.text).join("\n").slice(0, MAX_TEXT);
     let answer: ModelAnswer;
     try {
-      answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}` }, modelSchema);
+      answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}`, stage: "concepts" }, modelSchema);
     } catch (error) {
       // The explicit matches are kept meanwhile; the job waits for the model (or retries), never a cloud fallback.
       await write(base);

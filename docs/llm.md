@@ -55,7 +55,9 @@ Options : `temperature`, `maxTokens` (`num_predict`), `contextSize` (`num_ctx`),
 valeurs intégrées (température 0, 2 048 jetons, contexte du modèle, 180 s) ← instance ← agent. Le
 décodage reste déterministe (graine fixe) pour qu'une tâche reprise ne dérive pas. Dans le moteur de
 veille, chaque étape relève `maxTokens` au minimum qu'exige sa réponse (extraction 2 048, voir
-`docs/watch.md`, « Journaux du worker ») ; une valeur plus haute n'est jamais réduite.
+`docs/watch.md`, « Journaux du worker ») ; une valeur plus haute n'est jamais réduite. Il en va de
+même pour l'extraction de concepts (Konstruktor et découverte de topics, étape `concepts`, 1 536) :
+`maxTokens` borne la génération (`num_predict`), jamais la fenêtre de contexte (`num_ctx`).
 
 ## Intégration au moteur
 

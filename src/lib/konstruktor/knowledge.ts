@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { normalizeTag } from "../search/query";
 import { conceptKey } from "../search/text";
-import { askJson } from "../watch/inference";
+import { askJson, InferenceConfigError, InferenceOutputError } from "../watch/inference";
 import type { SystemTask } from "../system-agents/tasks";
 import { assess, DISCOVERY_SYSTEM, explicitConcepts, modelSchema, topicKeys } from "../topics/discovery";
 import type { PublicationStore } from "../publications/store";
@@ -31,7 +31,13 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
     const text = [publication.summary, ...publication.messages.filter(item => !item.deleted).map(item => item.body)].join("\n").slice(0, 8000);
     const binding = services.agentLLM ? services.agentLLM(agent) : llm(); if (!binding.ok) throw new Error(binding.message);
     log("info", `Extraction par le modèle local ${binding.resolved.model}.`);
-    const answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}` }, modelSchema, 1);
+    const answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}`, stage: "concepts" }, modelSchema, 1)
+      .catch((error: unknown) => {
+        // Decoding is deterministic (fixed seed): the same text and budget would be cut at the same place again.
+        // Permanent, so the worker does not spend two more identical attempts; « Relancer les échecs » stays available.
+        if (error instanceof InferenceOutputError && error.code === "truncated") throw new InferenceConfigError(`${error.message} Réessayer à l’identique échouerait de la même façon : augmenter la limite de génération (maxTokens) de l’ΞAgent, puis relancer les échecs.`, "truncated");
+        throw error;
+      });
     log("info", `Concepts proposés : ${answer.concepts.length} ; relations proposées : ${answer.relations.length}.`);
     const catalog = await services.topics.visible(owner);
     const keys = topicKeys([...catalog.personal, ...catalog.shared]);

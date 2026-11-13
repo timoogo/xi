@@ -14,7 +14,9 @@ manquantes, ou réanalyse complète). Un run n’est qu’un plan persistant (`k
 `konstruktor_pipeline_job`) sur la même file `watch_job` : états, tentatives, baux et logs restent ceux du moteur
 (`xiagent_run`). Un seul run actif par ΞAgent ; « Relancer les échecs » crée de nouvelles tâches pour les seules
 publications en échec, le worker ne relance jamais un échec de lui-même. Après un redémarrage, une tentative dont
-le bail expire est marquée `interrupted` puis reprise. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
+le bail expire est marquée `interrupted` puis reprise. Une réponse tronquée par la limite de génération
+échoue dès la première tentative (le décodage est déterministe : un nouvel essai identique serait coupé au
+même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les échecs. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
 La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
 Le modèle local du ΞAgent (ou celui hérité du propriétaire) propose des concepts avec citations exactes. Les concepts déjà visibles sont
 réutilisés ; les autres deviennent des topics personnels, jamais des topics partagés. Les relations ne sont

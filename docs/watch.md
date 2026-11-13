@@ -914,7 +914,7 @@ Diagnostic d’un `llm.end` en échec après 90 à 100 s sur le Pi : `errorKind:
 ni le réseau. Chaque étape reçoit au moins le budget que son format de réponse
 exige (`src/lib/watch/stages.ts`) : pertinence 512, même événement 384, nouveauté 768,
 extraction 2 048 (jusqu’à 12 affirmations avec citations exactes), rédaction 1 536,
-relecture 512. Un `maxTokens` configuré plus bas est relevé pour l’étape concernée,
+relecture 512 ; hors veille, concepts Konstruktor 1 536. Un `maxTokens` configuré plus bas est relevé pour l’étape concernée,
 un `maxTokens` plus haut est conservé. Une erreur d’inférence, quelle qu’elle soit,
 n’est jamais une validation : la tâche attend ou réessaie, puis l’actualité est mise
 en attente avec la raison.

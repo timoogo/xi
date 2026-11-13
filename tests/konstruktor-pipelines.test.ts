@@ -15,6 +15,9 @@ import { drainJobs } from "../src/lib/watch/worker";
 import { admit, startRun, SYSTEM_TASK_KIND } from "../src/lib/watch/orchestrator";
 import { systemTaskHandler } from "../src/lib/system-agents/tasks";
 import { createKnowledgePipelines } from "../src/lib/konstruktor/pipelines";
+import http from "node:http";
+import { bindInference } from "../src/lib/llm/inference";
+import { BUILTIN_INFERENCE_OPTIONS } from "../src/lib/llm/types";
 
 /**
  * Pipelines on the real engine: the system-task queue, drainJobs with its run history, the system-task handler
@@ -63,14 +66,17 @@ async function setup(t: { after: (fn: () => Promise<void>) => void }) {
     return JSON.stringify({ concepts: [{ label: from, quote: sentence }, { label: to, quote: sentence }], relations: [{ from, to, type: "related_to", quote: sentence, justification: "La publication affirme explicitement ce lien entre les deux.", confidence: 0.8 }] });
   } };
   const binding = { ok: true as const, resolved: { model: "local-test" }, inference };
+  /** The agent's binding; a test can swap in the real Ollama client (`bindInference`). */
+  let current: { ok: true; resolved: { model: string }; inference: unknown } = binding;
   const systemAgents = { enabled: true, get: async () => ({ id: "konstruktor", enabled: systemAgents.enabled }) };
   const queue = createJobQueue(db, now);
-  const handlers = { [SYSTEM_TASK_KIND]: systemTaskHandler({ store: systemAgents as never, llm: () => binding as never, services: { db, accounts, topics, publications, relations, agentLLM: () => binding as never }, now }) };
+  const handlers = { [SYSTEM_TASK_KIND]: systemTaskHandler({ store: systemAgents as never, llm: () => binding as never, services: { db, accounts, topics, publications, relations, agentLLM: () => current as never }, now }) };
   const control = { db, admit: async (job: Job) => admit(job, undefined, new Map(), now()), owner: async (job: Job) => (job.payload as { owner: string }).owner };
   /** Worker passes until the queue is idle, the clock jumping past retry delays in between. */
   const drain = async () => { for (let pass = 0; pass < 12; pass++) { await drainJobs({ queue, handlers, clock: now, control, maxJobs: 50 }); clock += 10 * 60_000; } };
   const pipelines = () => createKnowledgePipelines({ db, accounts, publications, systemAgents: systemAgents as never, queue, now });
-  return { db, queue, now, tick: (ms: number) => { clock += ms; }, topics, relations, publications, alice, other, bob, p1, p2, p3, state, systemAgents, drain, pipelines };
+  const bind = (model: string, inference: unknown) => { current = { ok: true, resolved: { model }, inference }; };
+  return { db, queue, now, tick: (ms: number) => { clock += ms; }, topics, relations, publications, alice, other, bob, p1, p2, p3, state, systemAgents, drain, pipelines, publish, bind };
 }
 
 test("pipeline manuel : progression persistante, échecs, relance ciblée et réanalyse forcée sans perte de décisions", async t => {
@@ -219,4 +225,92 @@ test("isolation : un autre utilisateur ne voit, ne lance ni ne modifie aucun run
   assert.ok(jobIds.length > 0);
   assert.ok(jobIds.every(id => jobRuns(env.db, "bob", id).length === 0));
   assert.equal((await env.topics.visible("bob")).personal.length, 0);
+});
+
+/**
+ * A local Ollama that answers with a complete JSON object only if `num_predict` allows it (about 3.5 characters
+ * per token, as stages.ts assumes); otherwise the answer is cut with `done_reason: "length"`, like the real server.
+ */
+async function sizedOllama(t: { after: (fn: () => Promise<void>) => void }, answer: (text: string) => string) {
+  const requests: { num_predict: number; num_ctx?: number }[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = ""; req.on("data", chunk => { raw += chunk; });
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      requests.push(body.options);
+      const content = answer(body.messages[1].content.replace(/^Texte :\n/, ""));
+      const budget = Math.floor(body.options.num_predict * 3.5), cut = content.length > budget;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ model: body.model, message: { role: "assistant", content: cut ? content.slice(0, budget) : content }, done: true, done_reason: cut ? "length" : "stop" }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const bind = (maxTokens: number) => bindInference({ type: "ollama", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`, policy: { allow: [], hosts: null }, options: { ...BUILTIN_INFERENCE_OPTIONS, maxTokens, timeoutMs: 5_000 } });
+  return { requests, bind };
+}
+/** Every « X utilise le moteur Y. » sentence: its two concepts and their relation, as a model would answer. */
+const conceptsOf = (text: string) => {
+  const sentences = text.split("\n")[0].match(/[^.]+\./g)!.map(sentence => sentence.trim());
+  const pairs = sentences.map(sentence => { const words = sentence.replace(/\.$/, "").split(" "); return { sentence, from: words[0], to: words.at(-1)! }; });
+  return JSON.stringify({
+    concepts: pairs.flatMap(({ sentence, from, to }) => [{ label: from, quote: sentence }, { label: to, quote: sentence }]),
+    relations: pairs.map(({ sentence, from, to }) => ({ from, to, type: "related_to", justification: "La phrase affirme que l’un utilise l’autre.", quote: sentence, confidence: 0.8 })),
+  });
+};
+const fleet = Array.from({ length: 8 }, (_, index) => `Sonde-${index + 1} utilise le moteur Propulseur-${index + 1}.`).join(" ");
+
+test("budget de génération : une réponse de concepts au-delà de 512 tokens n’est plus tronquée par la limite de l’ΞAgent", async t => {
+  const env = await setup(t);
+  const ollama = await sizedOllama(t, conceptsOf);
+  const expected = conceptsOf(fleet);
+  assert.ok(expected.length / 3.5 > 512 && expected.length / 3.5 < 1_536, `réponse réaliste au-delà de 512 tokens (${Math.round(expected.length / 3.5)})`);
+  // An agent configured like Astronoxi (`llm.options.maxTokens: 512`), on a model without its own context setting.
+  env.bind("qwen3:1.7b", ollama.bind(512));
+  const id = await env.publish(env.other, fleet);
+  const started = await env.pipelines().start("alice", { agent: env.other.id, mode: "missing" });
+  await env.drain();
+  const run = env.pipelines().get("alice", started!.run.id);
+  const job = run.jobs.find(item => item.publication === id)!;
+  assert.equal(job.status, "success");
+  assert.equal(job.attempts.length, 1);
+  assert.equal(job.result?.created, 16);
+  // The concepts step gets its floor as num_predict; the context window (num_ctx) stays the model's own.
+  assert.ok(ollama.requests.length >= 1 && ollama.requests.every(options => options.num_predict === 1_536 && options.num_ctx === undefined));
+  // A higher configured limit is kept, never lowered.
+  env.bind("qwen3:1.7b", ollama.bind(4_096));
+  await env.pipelines().start("alice", { agent: env.other.id, mode: "force" });
+  await env.drain();
+  assert.equal(ollama.requests.at(-1)!.num_predict, 4_096);
+});
+
+test("génération incomplète : une seule tentative, erreur explicite, historique conservé et relance ciblée", async t => {
+  const env = await setup(t);
+  // An answer longer than the concepts budget: the same text and budget would be cut identically on every attempt.
+  const ollama = await sizedOllama(t, text => !text.includes("Sonde-1") ? conceptsOf(text) : conceptsOf(text).replace(/"concepts":\[/, `"concepts":[${Array.from({ length: 24 }, () => `{"label":"Remplissage","quote":"${"x".repeat(200)}"}`).join(",")},`));
+  env.bind("qwen3:1.7b", ollama.bind(512));
+  const id = await env.publish(env.other, fleet);
+  const started = await env.pipelines().start("alice", { agent: env.other.id, mode: "missing" });
+  await env.drain();
+  const calls = ollama.requests.length;
+  let run = env.pipelines().get("alice", started!.run.id);
+  let job = run.jobs.find(item => item.publication === id)!;
+  assert.equal(job.status, "failed");
+  assert.equal(run.status, "partial");
+  assert.equal(job.attempts.length, 1, "pas de deux tentatives identiques supplémentaires");
+  const logs = job.attempts[0].logs.map(log => log.message).join("\n");
+  assert.match(logs, /Échec définitif \(erreur permanente, non réessayée\)/);
+  assert.match(logs, /limite de 1536 tokens atteinte/);
+  assert.match(logs, /augmenter la limite de génération \(maxTokens\)/);
+  // Nothing derived from a cut answer is stored.
+  assert.equal(job.result, null);
+  // After raising the agent's limit, « Relancer les échecs » reruns only this publication; the history stays.
+  env.bind("qwen3:1.7b", ollama.bind(8_192));
+  env.pipelines().retry("alice", started!.run.id);
+  await env.drain();
+  run = env.pipelines().get("alice", started!.run.id);
+  job = run.jobs.find(item => item.publication === id)!;
+  assert.equal(run.status, "success");
+  assert.deepEqual(job.attempts.map(attempt => attempt.status), ["failed", "done"]);
+  assert.equal(ollama.requests.length - calls, 1);
 });
