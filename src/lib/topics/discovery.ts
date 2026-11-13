@@ -181,8 +181,8 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
     return [...byTopic.values()];
   };
   /** SQLite projection of one record, if it still describes the current public content; else nothing. */
-  async function projectOne(record: DiscoveryRecord | null, publicationId: string, current: { revision: string } | undefined, known: Set<string>) {
-    const valid = record && current && record.revision === current.revision;
+  async function projectOne(record: DiscoveryRecord | null, publicationId: string, current: { contentRevision: string } | undefined, known: Set<string>) {
+    const valid = record && current && record.revision === current.contentRevision;
     publications.setInferredTopics(publicationId, valid ? associations(record).filter(c => known.has(c.topicId!)).map(c => ({ topic_id: c.topicId!, score: c.match === "explicit" ? 1 : 0.6 })) : []);
   }
   /**
@@ -207,7 +207,7 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
   /** Publications associated by inference with a topic, with their evidence, for public publications only. */
   async function associationsOf(topicId: string) {
     const current = new Map((await publications.publicPublications()).map(p => [p.id, p]));
-    return (await all()).filter(r => current.get(r.publication)?.revision === r.revision)
+    return (await all()).filter(r => current.get(r.publication)?.contentRevision === r.revision)
       .flatMap(r => associations(r).filter(c => c.topicId === topicId).map(c => ({ publicationId: r.publication, concept: c, mode: r.mode, model: r.model, analyzedAt: r.analyzedAt })))
       .sort((x, y) => y.analyzedAt.localeCompare(x.analyzedAt));
   }
@@ -221,7 +221,7 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
     const current = new Map((await publications.publicPublications()).map(p => [p.id, p]));
     const groups = new Map<string, { key: string; labels: Set<string>; evidence: { publicationId: string; author: string; excerpt: string; from: string }[] }>();
     for (const record of await all()) {
-      if (current.get(record.publication)?.revision !== record.revision) continue;
+      if (current.get(record.publication)?.contentRevision !== record.revision) continue;
       for (const concept of record.concepts) {
         if (concept.topicId || keys.has(concept.key)) continue;
         const group = groups.get(concept.key) ?? { key: concept.key, labels: new Set(), evidence: [] };
@@ -266,12 +266,12 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     for (const publication of await publications.publicPublications()) {
       const record = await read(publication.id);
       let key: string | null = null;
-      if (!record || record.revision !== publication.revision) key = `enrich:${publication.id}:${publication.revision}`;
+      if (!record || record.revision !== publication.contentRevision) key = `enrich:${publication.id}:${publication.contentRevision}`;
       else if (record.pendingInference) {
         const owner = await ownerOf(publication);
-        if (owner && llm(owner).ok) key = `enrich:${publication.id}:${publication.revision}:model`;
+        if (owner && llm(owner).ok) key = `enrich:${publication.id}:${publication.contentRevision}:model`;
       }
-      if (key && queue.enqueue({ kind: DISCOVERY_JOB, key, payload: { publicationId: publication.id, revision: publication.revision }, runAfter: at, maxAttempts: 3 }).created) planned++;
+      if (key && queue.enqueue({ kind: DISCOVERY_JOB, key, payload: { publicationId: publication.id, revision: publication.contentRevision }, runAfter: at, maxAttempts: 3 }).created) planned++;
     }
     return planned;
   }
@@ -285,7 +285,7 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
       return { status: "done", result: { outcome: "not-public" } };
     }
     const previous = await read(publicationId);
-    if (previous && previous.revision === publication.revision && previous.mode === "model") return { status: "done", result: { outcome: "already" } };
+    if (previous && previous.revision === publication.contentRevision && previous.mode === "model") return { status: "done", result: { outcome: "already" } };
     const catalogue = await topics.list();
     const parts = segments(publication);
     const explicit = explicitConcepts(parts, catalogue);
@@ -293,11 +293,11 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     const owner = await ownerOf(publication);
     const binding = owner ? llm(owner) : null;
     const base: DiscoveryRecord = {
-      publication: publicationId, revision: publication.revision, author, analyzedAt: now().toISOString(), pipeline: DISCOVERY_PIPELINE,
+      publication: publicationId, revision: publication.contentRevision, author, analyzedAt: now().toISOString(), pipeline: DISCOVERY_PIPELINE,
       mode: "deterministic", model: null, pendingInference: true, concepts: explicit, relations: [],
     };
     const known = new Set(catalogue.map(t => t.id));
-    const current = { revision: publication.revision };
+    const current = { contentRevision: publication.contentRevision };
     if (!binding?.ok) {
       // No model: explicit terms only, no relation, no justification, no confidence. The inference pass is planned
       // again as soon as the owner's local model is available.

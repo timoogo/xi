@@ -161,5 +161,39 @@ export async function readMarkdownTree(dir: string) {
   await walk(dir, "");
   const hash = createHash("sha256");
   for (const [name, content] of files) hash.update(`${name}\0${content}\0`);
-  return { files, revision: hash.digest("hex") };
+  return { files, revision: hash.digest("hex"), contentRevision: contentRevision(basename(dir), files) };
+}
+
+/** Stable identity of a publication file: `index`, `m:<n>` for a message, `s:<n>` for a source; other files by name. */
+function fileKey(name: string) {
+  if (name === "index.md") return "index";
+  const source = name.startsWith("_sources/"), file = source ? name.slice(9) : name;
+  const match = !source && name.includes("/") ? null : NUMBERED_FILE.exec(file);
+  return match ? `${source ? "s" : "m"}:${Number(match[1])}` : name;
+}
+
+/**
+ * What a publication says, independent of where its files are: hashed by file identity (not name), with links to its
+ * own files written as that identity. Renaming a message or source file, or moving the folder (links rewritten), keeps
+ * it; any change of text, metadata, source, order or link to another note changes it. The exact `revision` (names and
+ * bytes) stays the token of optimistic concurrency, since an editor's copy names files.
+ */
+export function contentRevision(folder: string, files: Map<string, string>) {
+  const own = new Map([...files.keys()].map(name => [name.replace(/\.md$/, ""), fileKey(name)]));
+  // A file of this folder, by full path (`[[<…>/<folder>/[_sources/]<file>`) or by the short form Obsidian may write
+  // when it updates links after a rename (`[[<file>` or `[[_sources/<file>`).
+  const local = (target: string) => {
+    const parts = target.trim().split("/");
+    const sourceLink = parts.at(-2) === "_sources";
+    const prefix = parts.slice(0, sourceLink ? -2 : -1);
+    if (prefix.length && prefix.at(-1) !== folder) return null;
+    return own.get(sourceLink ? `_sources/${parts.at(-1)}` : parts.at(-1)!) ?? null;
+  };
+  const entries = [...files].map(([name, content]) => [fileKey(name), content.replace(/\[\[([^\]|#\n]+)/g, (link, target: string) => {
+    const key = local(target);
+    return key ? `[[@${key}` : link;
+  })] as const).sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  const hash = createHash("sha256");
+  for (const [key, content] of entries) hash.update(`${key}\0${content}\0`);
+  return hash.digest("hex");
 }

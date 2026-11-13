@@ -21,7 +21,7 @@ même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les éch
 **Graphe → Connaissances** montre ce qu’un ΞAgent a appris, pour son propriétaire seul et un agent à la fois
 (`src/lib/konstruktor/knowledge-graph*.ts`, `src/components/graph/knowledge-network.tsx`). Les concepts sont les
 topics de `xi_agent_knowledge` lus par `agentMemory` (publications de l’agent lisibles, publiées, à leur révision
-courante, hors contenu de test) ; les relations sont les relations personnelles du propriétaire entre ces concepts
+de contenu courante, hors contenu de test) ; les relations sont les relations personnelles du propriétaire entre ces concepts
 dont une preuve vient d’une publication de cet agent (`relations.learnedAmong`), preuves d’autres publications
 retirées. Statuts, corrections de type et masques personnels sont affichés tels qu’enregistrés ; les relations
 exclues ou masquées n’apparaissent que sur demande (« Exclues »). Les publications, citations et sources web d’un

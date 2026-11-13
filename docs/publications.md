@@ -44,11 +44,11 @@ modifiable et peut être réattribué), `.trash/<userId>/<publicationId>/`, et l
 
 Un vault antérieur se renomme une fois, application **et worker arrêtés** :
 `pnpm exec tsx --env-file-if-exists=.env.local scripts/vault-names.ts` affiche le plan sans rien modifier ;
-ajouter `--apply --backup <dossier neuf hors du vault>` sauvegarde le vault et la base, renomme, réécrit les liens
-Obsidian des publications et reporte les connaissances de Konstruktor sur les nouvelles révisions (un nom de fichier
-fait partie de la révision). Idempotent ; une interruption est reprise au passage suivant
-(`src/lib/maintenance/vault-names.ts`). Retour arrière : remettre le dossier `vault/` et `xi-auth.sqlite` de la
-sauvegarde. Le worker réanalysera ensuite les publications renommées (nouvelle révision).
+ajouter `--apply --backup <dossier neuf hors du vault>` sauvegarde le vault, renomme et réécrit les liens Obsidian des
+publications. La base n’est pas touchée : un renommage garde la révision de contenu (ci-dessous), donc les
+connaissances restent visibles et rien n’est réanalysé ; un dossier dont la révision de contenu changerait est laissé
+tel quel et signalé. Idempotent ; une interruption est reprise au passage suivant
+(`src/lib/maintenance/vault-names.ts`). Retour arrière : remettre le dossier `vault/` de la sauvegarde.
 
 ## Format
 
@@ -119,7 +119,10 @@ Tous les champs viennent de l’auteur (URL http(s) originale, titre, éditeur e
 
 - **Source de vérité : les fichiers.** La table SQLite `publication` (même base que Better Auth) n’est qu’un index reconstructible : ID → dossier, métadonnées pour les listes. Elle ne contient aucun contenu et peut être supprimée.
 - **Synchronisation.** À chaque lecture, l’index de l’utilisateur concerné est réconcilié avec le disque (re-lecture de `index.md` si son mtime change). Les renommages ou déplacements dans Obsidian sont retrouvés par `id`, les dossiers supprimés retirés de l’index. Le contenu servi et les permissions sont toujours relus depuis les fichiers.
-- **Révision et conflits.** La révision est le SHA-256 de tous les `.md` du dossier, calculé sur les octets mêmes renvoyés au client. Une sauvegarde n’écrit rien si le disque a changé depuis ; l’éditeur affiche la version des fichiers et l’auteur choisit de la charger ou d’imposer la sienne (explicitement, contre la révision qu’il a vue).
+- **Révisions.** Deux empreintes par publication (`src/lib/publications/vault.ts`) :
+  - `revision`, SHA-256 des noms et octets de tous les `.md` du dossier : le jeton de concurrence des éditeurs et des brouillons, puisqu’une copie d’éditeur nomme des fichiers ;
+  - `contentRevision`, ce que dit la publication : fichiers identifiés par leur rôle (`index`, message `n`, source `n`), liens vers ses propres fichiers (chemin complet ou forme courte d’Obsidian) remplacés par cette identité. Renommer un message ou une source, ou déplacer le dossier, la conserve ; tout changement de texte, de métadonnée, de source (titre, adresse), de numéro ou de lien vers une autre note la change. C’est la révision des analyses : connaissances de Konstruktor (`xi_agent_knowledge`), tâches et runs de pipeline, découverte de topics. Une migration unique (`src/lib/maintenance/content-revisions.ts`, drapeau `content_revision_migration` dans `xi_index_meta`) a reporté les références enregistrées avec l’ancienne révision.
+- **Conflits.** Une sauvegarde est vérifiée contre `revision`, calculée sur les octets mêmes renvoyés au client. Une sauvegarde n’écrit rien si le disque a changé depuis ; l’éditeur affiche la version des fichiers et l’auteur choisit de la charger ou d’imposer la sienne (explicitement, contre la révision qu’il a vue).
 - **Écritures atomiques.** Fichier temporaire caché dans le même dossier, `fsync`, puis `rename`. Les messages sont écrits avant `index.md`. Un verrou par publication sérialise les écritures du processus.
 - **post_ / thread_.** Le type suit le nombre de messages. Le dossier d’un brouillon est renommé en conséquence et ses liens internes réécrits ; un dossier publié garde son nom pour ne pas casser les liens extérieurs. L’`id` ne change jamais.
 - **Permissions (store, côté serveur).** Lecture : l’auteur, ou tout membre connecté si `published` + `public`. Brouillon : toujours privé. `followers` : auteur et membres abonnés, selon les préférences Markdown actuelles. Édition, corbeille, restauration : l’auteur seul. Une publication illisible répond 404, comme une inexistante.

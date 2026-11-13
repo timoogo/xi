@@ -55,7 +55,7 @@ test("universal search: #topic, former tags, unknown tags, @agents, crossed sear
   await publish("Les élections et la canicule.", "public", [france.id, climate.id]);
   // Lot 5: a durable discovery record (as the worker writes it) associating the Lyon publication with Climat by
   // inference, plus a concept without a topic.
-  const revision = (await store.publicPublications()).find(p => p.id === lyon)!.revision;
+  const revision = (await store.publicPublications()).find(p => p.id === lyon)!.contentRevision;
   await mkdir(join(app.vaultPath, "topic-discovery"), { recursive: true });
   const concept = (key: string, label: string, topicId: string | null) => ({ key, label, topicId, match: topicId ? "inferred" : null, via: "model", excerpt: "Les scrutins municipaux à Lyon.", from: `publication:${lyon}` });
   await writeFile(join(app.vaultPath, "topic-discovery", `${lyon}.md`), `---\n${stringify({ publication: lyon, revision, author: "someone-else", analyzedAt: at, pipeline: "xi-discovery-v1", mode: "model", model: "fake-local", pendingInference: false, concepts: [concept("climat", "Climat", climate.id), concept("scrutin municipal", "Scrutin municipal", null)], relations: [] })}---\n`);

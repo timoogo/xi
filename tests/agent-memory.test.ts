@@ -67,7 +67,7 @@ test("mémoire des ΞAgents : une nouvelle conversation retrouve une connaissanc
   t.after(() => appDb.close());
   const relations = createTopicRelationStore({ vault, db: fixtureDb, topics, readable: async viewer => viewer === owner ? new Set([source]) : new Set() });
   const answer = { concepts: [{ name: "Asterion-47" }, { name: "Helios-9" }], relations: [{ from: "Asterion-47", link: "utilise le moteur", to: "Helios-9", type: "related_to", confidence: 0.8 }] };
-  const learned = await KNOWLEDGE_TASK.run({ owner, input: { publication: source, agent, revision: reviewed.snapshot.revision }, services: { db: appDb, topics, accounts, publications, relations }, llm: () => ({ ok: true, resolved: { model: "test" }, inference: { complete: async () => JSON.stringify(answer) } }), log: () => {} } as never);
+  const learned = await KNOWLEDGE_TASK.run({ owner, input: { publication: source, agent, revision: reviewed.snapshot.contentRevision }, services: { db: appDb, topics, accounts, publications, relations }, llm: () => ({ ok: true, resolved: { model: "test" }, inference: { complete: async () => JSON.stringify(answer) } }), log: () => {} } as never);
   assert.deepEqual(learned, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 0, relations: 1, kept: 0 });
   const memory = appDb.prepare("SELECT excerpt FROM xi_agent_knowledge WHERE owner = ? AND agent = ?").all(owner, agent) as { excerpt: string }[];
   assert.ok(memory.length === 2 && memory.every(row => row.excerpt === FACT), "connaissance persistée avec sa citation");
@@ -134,18 +134,19 @@ test("rappel de mémoire : pertinence, sources obsolètes ou non publiées, audi
   const draft = async (text: string) => {
     const id = randomUUID();
     const saved = await publications.saveWatchDraft("alice", agent, { id, summary: text, topicIds: [run.topicId], messages: [{ body: text, sources: [0] }], sources: [{ url: "https://agence.example/a", title: "Agence", publisher: "Agence", accessedAt: "2026-11-01", facts: [text], reservations: [] }], watch: {} });
-    return { id, revision: saved.revision };
+    return { id, revision: saved.revision, contentRevision: saved.contentRevision };
   };
   const publish = async (text: string, visibility: "private" | "public") => {
     const { id, revision } = await draft(text);
     const result = await publications.publishWatchDraft("alice", agent, id, { visibility, revision, details: {}, guard: async () => null, record: () => {} });
     assert.equal(result.outcome, "published");
-    return { id, revision: (result as { snapshot: { revision: string } }).snapshot.revision };
+    const { snapshot } = result as { snapshot: { revision: string; contentRevision: string } };
+    return { id, revision: snapshot.revision, contentRevision: snapshot.contentRevision };
   };
   migrateAgentKnowledge(db);
-  const learn = async (publication: { id: string; revision: string }, tag: string, excerpt: string) => {
+  const learn = async (publication: { id: string; contentRevision: string }, tag: string, excerpt: string) => {
     const topic = (await topics.openPersonal("alice", tag)).topic;
-    db.prepare("INSERT INTO xi_agent_knowledge VALUES ('alice', ?, ?, ?, ?, ?)").run(agent, publication.id, publication.revision, topic.id, excerpt);
+    db.prepare("INSERT INTO xi_agent_knowledge VALUES ('alice', ?, ?, ?, ?, ?)").run(agent, publication.id, publication.contentRevision, topic.id, excerpt);
   };
   const secret = await publish("Asterion-47 utilise le moteur Helios-9.", "private");
   const open = await publish("Asterion-47 décolle depuis Kourou.", "public");
@@ -156,7 +157,7 @@ test("rappel de mémoire : pertinence, sources obsolètes ou non publiées, audi
   await learn(open, "kourou", "Asterion-47 décolle depuis Kourou.");
   await learn(other, "orion-12", "Orion-12 utilise le moteur Vega-2.");
   await learn(pending, "kepler-3", "Asterion-47 embarque la sonde Kepler-3.");
-  await learn({ ...stale, revision: "revision-precedente" }, "mars", "Asterion-47 vise l’orbite de Mars.");
+  await learn({ ...stale, contentRevision: "revision-precedente" }, "mars", "Asterion-47 vise l’orbite de Mars.");
   const stores = { publications, topics };
   const recall = async (audience: "private" | "public", text: string, owner = "alice") => (await recallAgentKnowledge(stores, owner, agent, audience, text)).map(item => item.excerpt);
 

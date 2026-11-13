@@ -23,7 +23,7 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
     if (!agent) throw new Error("ΞAgent indisponible.");
     log("info", `Analyse de la publication ${input.publication} (révision ${input.revision}).`);
     const publication = await services.publications.get({ id: owner }, input.publication);
-    if (publication.status !== "published" || publication.authorId !== agent.id || publication.revision !== input.revision) {
+    if (publication.status !== "published" || publication.authorId !== agent.id || publication.contentRevision !== input.revision) {
       log("warn", "Publication modifiée ou retirée depuis la planification : ignorée.");
       return { outcome: "obsolete" };
     }
@@ -47,7 +47,7 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
     const resolved = new Map<string, { id: string; label: string; quote: string }>();
     // Recheck access and revision after inference, before persisting anything derived from it.
     const current = await services.publications.get({ id: owner }, input.publication);
-    if (current.status !== "published" || current.revision !== input.revision) {
+    if (current.status !== "published" || current.contentRevision !== input.revision) {
       log("warn", "Publication modifiée pendant l’analyse : rien n’est enregistré.");
       return { outcome: "obsolete" };
     }
@@ -80,7 +80,7 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
     services.db.transaction(() => {
       services.db.prepare("DELETE FROM xi_agent_knowledge WHERE owner = ? AND agent = ? AND publication = ?").run(owner, agent.id, publication.id);
       const insert = services.db.prepare("INSERT OR IGNORE INTO xi_agent_knowledge VALUES (?, ?, ?, ?, ?, ?)");
-      for (const item of resolved.values()) insert.run(owner, agent.id, publication.id, publication.revision, item.id, item.quote);
+      for (const item of resolved.values()) insert.run(owner, agent.id, publication.id, publication.contentRevision, item.id, item.quote);
     })();
     log("info", `Terminé : ${resolved.size} concepts (${reused} réutilisés, ${created} créés, ${ignored} ignorés), ${proposed} relations proposées, ${kept} décisions conservées.`);
     return { outcome: "done", concepts: resolved.size, reused, created, ignored, relations: proposed, kept };

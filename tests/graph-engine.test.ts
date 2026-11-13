@@ -313,7 +313,7 @@ function serviceFixture() {
   const snapshot: PublicationSnapshot = {
     id: pf, type: "thread", authorType: "human", authorId: alice.id, status: "published", visibility: "public",
     createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-02T00:00:00.000Z", publishedAt: "2026-10-02T00:00:00.000Z", score: null,
-    summary: "Résumé", sources: [], revision: "0".repeat(64),
+    summary: "Résumé", sources: [], revision: "0".repeat(64), contentRevision: "0".repeat(64),
     messages: [{ file: "1_un.md", body: "Premier **message**" }, { file: "3_trois.md", body: "Troisième message" }, { file: "4_quatre.md", body: "Quatrième" }],
   };
   const publications = {

@@ -1,15 +1,15 @@
 // One-off renaming of an existing vault to the readable names that new files already get:
 // topics `<tag>.md`, watch sources `<address>.md`, message and source files `<n>_<descriptive_slug>.md`.
 // Identities never change: they stay in the frontmatter (`id`) and in message numbers (`<publication>/<n>`).
-// Run with the app and the worker stopped: a plan (dry run) first, then `apply`, which backs up the vault and the
-// database before touching anything. Idempotent: a second run plans nothing.
+// Run with the app and the worker stopped: a plan (dry run) first, then `apply`, which backs up the vault before
+// touching anything. A rename keeps each publication's content revision, so nothing is analysed again; a folder whose
+// content revision would change is left as it is. Idempotent: a second run plans nothing.
 
 import { cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
-import type Database from "better-sqlite3";
 import { parse } from "yaml";
 import { messageSlug, parseSource, slugify } from "../publications/markdown";
-import {
+import { contentRevision,
   exists, FOLDER_NAME, listDir, NUMBERED_FILE, readMarkdownTree, recordFileName, recordFiles, writeAtomic,
 } from "../publications/vault";
 import { locked } from "../topics/lock";
@@ -18,10 +18,6 @@ import { sourceStem } from "../watch/sources";
 export type Rename = { kind: "topic" | "source" | "message" | "publication-source"; from: string; to: string };
 export type FolderPlan = { folder: string; publication: string; renames: Rename[] };
 export type VaultNamesPlan = { records: Rename[]; folders: FolderPlan[]; problems: string[] };
-/** Journal of an applied folder: lets a rerun finish the database remap even after an interruption. */
-type Journal = { folders: { folder: string; publication: string; from: string; to: string }[] };
-
-const JOURNAL = ".xi-vault-names.json";
 const frontmatter = (text: string) => { const yaml = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]; return yaml ? parse(yaml) as Record<string, unknown> : {}; };
 
 /** Record directories: shared topics, each owner's personal topics, watch sources. */
@@ -105,11 +101,12 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Renames one folder's files on a hidden copy, then swaps it in: an interruption leaves either the old folder or the
- * new one (and `recoverFolders` finishes a swap left half-way). Returns the old and new revisions.
+ * new one (and `recoverFolders` finishes a swap left half-way). The copy is swapped in only if its content revision is
+ * the publication's current one: analyses then stay valid, and nothing is planned again.
  */
 async function applyFolder(root: string, plan: FolderPlan) {
   const dir = join(root, plan.folder), parent = join(dir, ".."), name = plan.folder.split("/").at(-1)!;
-  const before = (await readMarkdownTree(dir)).revision;
+  const before = (await readMarkdownTree(dir)).contentRevision;
   const staged = join(parent, `.${name}.renaming`), old = join(parent, `.${name}.previous`);
   await rm(staged, { recursive: true, force: true });
   await cp(dir, staged, { recursive: true, preserveTimestamps: true });
@@ -118,11 +115,15 @@ async function applyFolder(root: string, plan: FolderPlan) {
     const updated = rewriteFileLinks(content, plan.folder, plan.renames);
     if (updated !== content) await writeAtomic(join(staged, ...file.split("/")), updated);
   }
-  const after = (await readMarkdownTree(staged)).revision;
+  // Measured under the folder's real name: links of the staged copy still name it.
+  if (contentRevision(name, (await readMarkdownTree(staged)).files) !== before) {
+    await rm(staged, { recursive: true, force: true });
+    return false;
+  }
   await rename(dir, old);
   await rename(staged, dir);
   await rm(old, { recursive: true, force: true });
-  return { before, after };
+  return true;
 }
 
 /** Finishes a swap interrupted between its two renames; drops abandoned staging copies. */
@@ -144,35 +145,16 @@ async function recoverFolders(root: string) {
   }
 }
 
-async function readJournal(root: string): Promise<Journal> {
-  try { return JSON.parse(await readFile(join(root, JOURNAL), "utf8")) as Journal; } catch { return { folders: [] }; }
-}
+export type VaultNamesResult = { plan: VaultNamesPlan; backup: { vault: string } };
 
-/**
- * Knowledge learned by Konstruktor is tied to a publication revision, and a revision hashes file names: a pure rename
- * would hide it until a reanalysis. Content is unchanged, so the learned rows follow the new revision.
- */
-function remapRevisions(db: Database.Database, journal: Journal) {
-  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'xi_agent_knowledge'").get();
-  if (!table) return 0;
-  const update = db.prepare("UPDATE xi_agent_knowledge SET revision = ? WHERE publication = ? AND revision = ?");
-  let changed = 0;
-  db.transaction(() => { for (const item of journal.folders) changed += update.run(item.to, item.publication, item.from).changes; })();
-  return changed;
-}
-
-export type VaultNamesResult = { plan: VaultNamesPlan; backup: { vault: string; database: string | null }; knowledge: number };
-
-/** Applies the plan after a full backup of the vault (and of the database when given). Never overwrites a file. */
-export async function applyVaultNames(root: string, { db, backupDir }: { db?: Database.Database; backupDir: string }): Promise<VaultNamesResult> {
+/** Applies the plan after a full backup of the vault. Never overwrites a file; the database is not touched. */
+export async function applyVaultNames(root: string, { backupDir }: { backupDir: string }): Promise<VaultNamesResult> {
   if (await exists(backupDir)) throw new Error(`Sauvegarde déjà présente : ${backupDir}. Choisissez un autre dossier.`);
   const outside = relative(root, backupDir);
   if (outside !== ".." && !outside.startsWith("../")) throw new Error("La sauvegarde doit être hors du vault.");
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
   const vaultCopy = join(backupDir, "vault");
   await cp(root, vaultCopy, { recursive: true, preserveTimestamps: true, errorOnExist: true, force: false });
-  let databaseCopy: string | null = null;
-  if (db) { databaseCopy = join(backupDir, "xi-auth.sqlite"); await db.backup(databaseCopy); }
 
   const topicsDir = join(root, "topics"), watchDir = join(root, "watch"), locksDir = join(root, ".xi-locks");
   for (const dir of [topicsDir, watchDir, locksDir]) await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -184,14 +166,10 @@ export async function applyVaultNames(root: string, { db, backupDir }: { db?: Da
       if (await stat(to).then(() => true, () => false)) { current.problems.push(`${item.to} existe déjà : ${item.from} conservé.`); continue; }
       await rename(from, to);
     }
-    const journal = await readJournal(root);
     for (const folder of current.folders) {
-      const { before, after } = await applyFolder(root, folder);
-      journal.folders.push({ folder: folder.folder, publication: folder.publication, from: before, to: after });
-      await writeAtomic(join(root, JOURNAL), `${JSON.stringify(journal, null, 2)}\n`);
+      if (!await applyFolder(root, folder)) current.problems.push(`${folder.folder} : le renommage changerait la révision de contenu, dossier conservé.`);
     }
     return current;
   })));
-  const knowledge = db ? remapRevisions(db, await readJournal(root)) : 0;
-  return { plan, backup: { vault: vaultCopy, database: databaseCopy }, knowledge };
+  return { plan, backup: { vault: vaultCopy } };
 }

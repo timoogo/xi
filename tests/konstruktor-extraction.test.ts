@@ -104,7 +104,7 @@ test("Konstruktor : texte anglais, nom affiché conservé, relation prouvée par
   t.after(async () => { db.close(); await rm(path, { recursive: true, force: true }); });
   const vault = await openVault(path), topics = createTopicStore({ vault, db });
   const agent = randomUUID(), id = randomUUID();
-  const publication = { id, authorId: agent, status: "published", revision: "r1", summary: X59, messages: [{ body: X59 }], sources: [{ url: "https://nasa.example" }] };
+  const publication = { id, authorId: agent, status: "published", revision: "r1", contentRevision: "r1", summary: X59, messages: [{ body: X59 }], sources: [{ url: "https://nasa.example" }] };
   const publications = { ensureIndexed: async () => {}, agentPublications: () => [], get: async () => publication };
   const relations = createTopicRelationStore({ vault, db, topics, readable: async viewer => viewer === "alice" ? new Set([id]) : new Set() });
   const prompts: string[] = [];

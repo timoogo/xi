@@ -130,14 +130,14 @@ export function createKnowledgePipelines({ db, accounts, publications, systemAge
       if (!publication || publication.status !== "published") { planned.push({ publication: item.id, title, revision: null, skip: "Publication illisible ou non publiée." }); continue; }
       // The publication's own words; the index excerpt is normalized for search.
       const label = publication.summary.slice(0, 140) || title;
-      const automatic = knowledgeRequestId(owner, agent.id, publication.id, publication.revision);
+      const automatic = knowledgeRequestId(owner, agent.id, publication.id, publication.contentRevision);
       const existing = queue.get(systemTaskKey("konstruktor", owner, automatic));
-      if (mode === "missing" && (existing?.state === "done" || analysed(owner, agent.id, publication.id, publication.revision))) { planned.push({ publication: item.id, title: label, revision: publication.revision, skip: "Déjà analysée à cette révision." }); continue; }
+      if (mode === "missing" && (existing?.state === "done" || analysed(owner, agent.id, publication.id, publication.contentRevision))) { planned.push({ publication: item.id, title: label, revision: publication.contentRevision, skip: "Déjà analysée à cette révision." }); continue; }
       // The worker never retries a failure on its own: that is the owner's explicit decision (« Relancer les échecs »).
-      if (trigger === "automatic" && existing?.state === "failed") { planned.push({ publication: item.id, title: label, revision: publication.revision, skip: "Échec précédent : relance manuelle requise." }); continue; }
+      if (trigger === "automatic" && existing?.state === "failed") { planned.push({ publication: item.id, title: label, revision: publication.contentRevision, skip: "Échec précédent : relance manuelle requise." }); continue; }
       // A forced analysis, or a failed one, gets a new task; otherwise the shared automatic task (queued or new).
       const fresh = mode === "force" || existing?.state === "failed";
-      planned.push({ publication: item.id, title: label, revision: publication.revision, key: { requestId: fresh ? randomUUID() : automatic, reuse: !fresh && !!existing } });
+      planned.push({ publication: item.id, title: label, revision: publication.contentRevision, key: { requestId: fresh ? randomUUID() : automatic, reuse: !fresh && !!existing } });
     }
     return planned;
   }

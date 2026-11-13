@@ -135,7 +135,7 @@ test("migration : sauvegarde, renommages, liens, révisions, isolation, idempote
   assert.equal((await w.topics.visible("alice")).personal[0].id, personal.id);
   // Knowledge learned at the legacy revision.
   migrateAgentKnowledge(w.db);
-  w.db.prepare("INSERT INTO xi_agent_knowledge VALUES (?, ?, ?, ?, ?, ?)").run("alice", agent, usda, before.revision, personal.id, USDA);
+  w.db.prepare("INSERT INTO xi_agent_knowledge VALUES (?, ?, ?, ?, ?, ?)").run("alice", agent, usda, before.contentRevision, personal.id, USDA);
   assert.equal((await w.publications.agentMemory("alice", agent, "private")).length, 1);
 
   // Dry run: a plan, nothing written.
@@ -151,11 +151,10 @@ test("migration : sauvegarde, renommages, liens, révisions, isolation, idempote
   assert.equal(await snapshot(), untouched);
 
   // Apply: backup first (outside the vault only), then renames.
-  await assert.rejects(applyVaultNames(w.root, { db: w.db, backupDir: join(w.root, "sauvegarde") }), /hors du vault/);
-  const result = await applyVaultNames(w.root, { db: w.db, backupDir: `${w.root}-backup` });
+  await assert.rejects(applyVaultNames(w.root, { backupDir: join(w.root, "sauvegarde") }), /hors du vault/);
+  const result = await applyVaultNames(w.root, { backupDir: `${w.root}-backup` });
   assert.ok((await readdir(join(result.backup.vault, "topics"))).includes(`${run.topicId}.md`), "la sauvegarde garde l’état d’origine");
-  assert.equal(new Database(result.backup.database!, { readonly: true }).prepare("SELECT revision FROM xi_agent_knowledge").pluck().get(), before.revision);
-  assert.equal(result.knowledge, 1);
+  assert.deepEqual(result.plan.problems, []);
 
   // Same data through the stores after the restart; every link resolves to an existing file.
   restart();
@@ -164,14 +163,16 @@ test("migration : sauvegarde, renommages, liens, révisions, isolation, idempote
   const unlinked = (body: string) => body.replace(/\[\[[^\]|]*\|?/g, "[[");
   assert.deepEqual([after.id, after.messages.map(m => unlinked(m.body)), after.sources.map(s => [s.title, s.url])], [before.id, before.messages.map(m => unlinked(m.body)), before.sources.map(s => [s.title, s.url])]);
   assert.match(after.messages[0].body, /_sources\/1_nasa_usda_sign_agreement_to_advance_agricultural_data\|/);
+  // The files changed (names, link paths) but not what the publication says: analyses stay valid.
   assert.notEqual(after.revision, before.revision);
+  assert.equal(after.contentRevision, before.contentRevision);
   for (const id of [usda, x59]) {
     const dir = await folderOf(id);
     for (const [, content] of (await readMarkdownTree(dir)).files) for (const [, target] of content.matchAll(/\[\[([^\]|#]+)/g)) {
       assert.ok((await readdir(join(w.root, ...target.split("/").slice(0, -1)))).includes(`${target.split("/").at(-1)}.md`), `lien cassé : ${target}`);
     }
   }
-  assert.deepEqual(await w.publications.agentMemory("alice", agent, "private"), [{ publication: usda, topic: personal.id, excerpt: USDA }], "la connaissance suit la nouvelle révision");
+  assert.deepEqual(await w.publications.agentMemory("alice", agent, "private"), [{ publication: usda, topic: personal.id, excerpt: USDA }], "la connaissance reste visible sans réanalyse");
   assert.deepEqual((await w.topics.visible("alice")).personal.map(topic => topic.id), [personal.id]);
   assert.equal((await w.topics.visible("bob")).personal.length, 0);
   assert.equal((await w.sources.list("alice")).sources[0].id, nasa.source.id);
@@ -181,14 +182,14 @@ test("migration : sauvegarde, renommages, liens, révisions, isolation, idempote
   // Idempotent: nothing left to do, and a rerun changes nothing.
   assert.deepEqual(await planVaultNames(w.root), { records: [], folders: [], problems: [] });
   await rm(`${w.root}-backup`, { recursive: true, force: true });
-  assert.equal((await applyVaultNames(w.root, { db: w.db, backupDir: `${w.root}-backup` })).knowledge, 0);
+  assert.deepEqual((await applyVaultNames(w.root, { backupDir: `${w.root}-backup` })).plan.folders, []);
   assert.equal(await w.publications.agentMemory("alice", agent, "private").then(rows => rows.length), 1);
 
   // A swap interrupted between its two renames is finished by the next run, without loss.
   const dir = await folderOf(x59), name = dir.split("/").at(-1)!;
   await rename(dir, join(dir, "..", `.${name}.previous`));
   await rm(`${w.root}-backup`, { recursive: true, force: true });
-  await applyVaultNames(w.root, { db: w.db, backupDir: `${w.root}-backup` });
+  await applyVaultNames(w.root, { backupDir: `${w.root}-backup` });
   restart();
   assert.ok((await readdir(join(dir, ".."))).includes(name));
   assert.equal((await w.publications.get({ id: "alice" }, x59)).messages[0].body.includes("X-59"), true);

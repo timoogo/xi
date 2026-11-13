@@ -7,7 +7,7 @@ import type { PublicationMeta } from "./types";
  */
 
 // Bump whenever an index table changes shape: every index table is then dropped and rebuilt from the vault.
-export const INDEX_SCHEMA_VERSION = "7";
+export const INDEX_SCHEMA_VERSION = "8";
 const INDEX_TABLES = ["publication_fts", "publication_topic", "publication_message", "publication", "graph_generator", "graph_relation", "feed_follow", "feed_managed_agent"];
 
 /** Drops every derived table (never Better Auth's): the next reconciliation rebuilds them from the vault. */
@@ -66,6 +66,8 @@ export function migratePublicationIndex(db: Database.Database) {
       test_content INTEGER NOT NULL DEFAULT 0,
       reply_to TEXT,
       revision TEXT NOT NULL DEFAULT '',
+      -- What the publication says, independent of file names (vault.ts contentRevision): the revision of analyses.
+      content_revision TEXT NOT NULL DEFAULT '',
       index_mtime REAL NOT NULL
     );
     CREATE INDEX IF NOT EXISTS publication_author ON publication (author_id, trashed_at);
@@ -114,7 +116,7 @@ export type IndexRow = {
   id: string; author_type: PublicationMeta["authorType"]; author_id: string; type: PublicationMeta["type"];
   status: PublicationMeta["status"]; visibility: PublicationMeta["visibility"]; path: string; original_path: string | null;
   trashed_at: string | null; created_at: string; updated_at: string; published_at: string | null; score: number | null;
-  excerpt: string; generator_id: string | null; test_content: 0 | 1; reply_to?: string | null; revision?: string; index_mtime: number;
+  excerpt: string; generator_id: string | null; test_content: 0 | 1; reply_to?: string | null; revision?: string; content_revision?: string; index_mtime: number;
 };
 
 export type TopicRow = { topic_id: string; role: "primary" | "secondary" };
@@ -131,13 +133,13 @@ const sameRows = <T extends object>(a: T[], b: T[]) =>
 export function createIndex(db: Database.Database) {
   migratePublicationIndex(db);
   const upsert = db.prepare(`
-    INSERT INTO publication (id, author_type, author_id, type, status, visibility, path, original_path, trashed_at, created_at, updated_at, published_at, score, excerpt, generator_id, test_content, reply_to, revision, index_mtime)
-    VALUES (@id, @author_type, @author_id, @type, @status, @visibility, @path, @original_path, @trashed_at, @created_at, @updated_at, @published_at, @score, @excerpt, @generator_id, @test_content, @reply_to, @revision, @index_mtime)
+    INSERT INTO publication (id, author_type, author_id, type, status, visibility, path, original_path, trashed_at, created_at, updated_at, published_at, score, excerpt, generator_id, test_content, reply_to, revision, content_revision, index_mtime)
+    VALUES (@id, @author_type, @author_id, @type, @status, @visibility, @path, @original_path, @trashed_at, @created_at, @updated_at, @published_at, @score, @excerpt, @generator_id, @test_content, @reply_to, @revision, @content_revision, @index_mtime)
     ON CONFLICT (id) DO UPDATE SET author_type = excluded.author_type, author_id = excluded.author_id, type = excluded.type,
       status = excluded.status, visibility = excluded.visibility, path = excluded.path, original_path = excluded.original_path,
       trashed_at = excluded.trashed_at, created_at = excluded.created_at, updated_at = excluded.updated_at,
       published_at = excluded.published_at, score = excluded.score, excerpt = excluded.excerpt, generator_id = excluded.generator_id, test_content = excluded.test_content, reply_to = excluded.reply_to,
-      revision = excluded.revision, index_mtime = excluded.index_mtime`);
+      revision = excluded.revision, content_revision = excluded.content_revision, index_mtime = excluded.index_mtime`);
   const byId = db.prepare<[string], IndexRow>("SELECT * FROM publication WHERE id = ?");
   const byAuthor = db.prepare<[string], IndexRow>("SELECT * FROM publication WHERE author_id = ?");
   const allRows = db.prepare<[], IndexRow>("SELECT * FROM publication");
@@ -182,7 +184,7 @@ export function createIndex(db: Database.Database) {
   // Unchanged rows are not rewritten, so the generation only moves on real changes (trash entries are re-read each time).
   const write = db.transaction((row: IndexRow, messages: MessageRow[], search: SearchRow) => {
     const existing = byId.get(row.id);
-    const normalizedRow = {...row, reply_to: row.reply_to ?? null, revision:row.revision ?? ""};
+    const normalizedRow = {...row, reply_to: row.reply_to ?? null, revision:row.revision ?? "", content_revision: row.content_revision ?? ""};
     const normalizedMessages = messages.map(message => ({reply_to:null,created_at:row.created_at,updated_at:row.created_at,deleted:0,...message}));
     if (existing && sameRows([existing], [normalizedRow]) && sameRows(messagesOf.all(row.id), normalizedMessages) && sameSearch(row.id, search)) return;
     upsert.run(normalizedRow);
