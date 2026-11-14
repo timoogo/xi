@@ -10,8 +10,9 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
    pour une demande vaste ; 10 au plus, limite technique d'un déploiement et d'une réponse de petit modèle), chacun
    rattaché à un domaine ; un domaine = un ΞAgent. Le nombre de domaines vient du regroupement. Pour chaque ΞAgent :
    `agent` = nom inventé (identité courte et prononçable), `description` = mission ; le handle en est dérivé. Seuls les
-   **noms** des ΞAgents existants sont donnés au modèle, comme noms pris à éviter (jamais leurs topics ni de références). Contrôles déterministes (`answerProblems`) : topic explicite (au moins deux mots
-   porteurs de sens : « production d'hydrogène », pas « production »), sujets distincts, domaines cohérents ; nom
+   **noms** des ΞAgents existants sont donnés au modèle, comme noms pris à éviter (jamais leurs topics ni de références). Contrôles déterministes (`answerProblems`) : topic explicite, quel que soit son
+   nombre de mots : « Comètes » ou « Production d'hydrogène » acceptés ; refusé seulement s'il n'est fait que de mots
+   manifestement génériques, d'une courte liste (« Science », « Recherche et innovation »), sujets distincts, domaines cohérents ; nom
    d'ΞAgent court (1 à 3 mots), qui ne soit pas une simple description (tous ses mots déjà dans le domaine ou les
    topics), distinct des autres et des ΞAgents existants, sans préfixe ni suffixe commun à tous. Un
    problème → une seule correction demandée au modèle avec la liste des problèmes, puis erreur lisible. JSON illisible →
@@ -19,7 +20,7 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
 3. **Réutilisation**, décidée par le code seul, contre le catalogue visible et les ΞAgents de l'utilisateur. Dans le
    doute, on propose du neuf :
    - topic réutilisé seulement s'il **est** le topic proposé : même étiquette, alias ou nom (accents, casse, pluriel
-     ignorés), et lui-même explicite. Un mot générique commun (« science », « recherche ») ne suffit jamais ;
+     ignorés), et lui-même explicite (un mot précis comme « Comètes » suffit ; « science » n'est jamais réutilisé). Un mot générique commun (« science », « recherche ») ne suffit jamais ;
    - ΞAgent réutilisé seulement s'il **suit déjà** un topic réutilisé du groupe (le plus de topics en commun ; égalité →
      nouvel ΞAgent). Un nom identique ne suffit jamais : un homonyme est signalé, pas réutilisé ;
    - deux topics de la proposition qui reviennent au même → le second est écarté (note affichée) ;

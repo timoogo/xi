@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { BUILTIN_PRESETS } from "../src/lib/accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../src/lib/bloub/config";
 import { accountDraftSchema } from "../src/lib/accounts/types";
-import { IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, type IdeaPlan } from "../src/lib/konstruktor/idea";
+import { answerProblems, IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, isSpecific, sameTopic, type IdeaPlan } from "../src/lib/konstruktor/idea";
 import { ideaSteps, type IdeaTaskView } from "../src/lib/konstruktor/idea-steps";
 import { InferenceUnavailableError } from "../src/lib/watch/inference";
 import type { LLMBindOptions } from "../src/lib/watch/llm-binding";
@@ -173,13 +173,13 @@ test("konstruktor idea: vague topics are corrected once with explicit feedback, 
 
   const corrected = await generate(app);
   assert.equal(corrected.request.state, "done");
-  assert.match(requests[1].prompt, /Le topic « Production » est trop vague/);
-  assert.match(requests[1].prompt, /Le topic « Science » est trop vague/);
+  assert.match(requests[1].prompt, /Le topic « Production » est trop générique/);
+  assert.match(requests[1].prompt, /Le topic « Science » est trop générique/);
   assert.ok(corrected.plan.groups[0].topics.some(item => item.name === "Production d’hydrogène"));
 
   const still = await generate(app);
   assert.equal(still.request.state, "failed");
-  assert.match(still.request.message!, /Proposition du modèle inutilisable : Le topic « Production » est trop vague.*Rien n’a été créé/);
+  assert.match(still.request.message!, /Proposition du modèle inutilisable : Le topic « Production » est trop générique.*Rien n’a été créé/);
   await assert.rejects(app.konstruktor.createFromIdea("alice", { requestId: still.requestId }), { status: 409, message: /La génération a échoué/ });
 
   const invalid = await generate(app);
@@ -321,4 +321,38 @@ test("konstruktor idea: descriptive, shared, existing or same-prefix ΞAgent nam
   const ceiling = await generate(app);
   assert.equal(ceiling.request.state, "failed");
   assert.match(ceiling.request.message!, /non conforme au format attendu/);
+});
+
+test("konstruktor idea: a topic's relevance does not depend on its number of words — precise single words accepted, generic ones rejected", () => {
+  for (const name of ["Comètes", "Exoplanètes", "Neuroprothèses", "Cybersécurité", "Production d’hydrogène", "Science ouverte", "Œnologie"]) assert.ok(isSpecific(name), `${name} is a subject`);
+  for (const name of ["Science", "Sciences", "Production", "Innovation", "Recherche", "Technologie", "Recherche et innovation", "Les technologies", "Data"]) assert.ok(!isSpecific(name), `${name} is too generic`);
+  const answer = (...names: string[]) => ({ topics: names.map(name => topic(name, "Astronomie amateur")), domains: [domain("Astronomie amateur")] });
+  assert.deepEqual(answerProblems(answer("Comètes", "Pluies d’étoiles filantes")), []);
+  assert.deepEqual(answerProblems(answer("Comètes", "Science")), ["Le topic « Science » est trop générique : nommez le sujet précis à suivre (un mot suffit s’il est précis)."]);
+  assert.deepEqual(answerProblems(answer("Comètes", "comète")), ["Deux topics désignent le même sujet : fusionnez-les ou remplacez-en un."]);
+});
+
+test("konstruktor idea: single-word topics — exact reuse of a precise one only, generic ones never; the real case stays clean; confirmation creates them", { timeout: 30_000 }, async t => {
+  const answer = { topics: [topic("Comètes", "Astronomie amateur"), topic("Pluies d’étoiles filantes", "Astronomie amateur")], domains: [domain("Astronomie amateur")] };
+  const { binding } = model(() => json(answer));
+  const app = await setup(t, binding);
+  await seed(app);
+  const { astronoxi, hackxing, politiks, gaia } = await realCatalog(app);
+  const science = (await app.topics.list()).find(item => item.tag === "science")!;
+  assert.equal(sameTopic("Science", [science]), null, "an existing generic topic is never reused, even on an exact match");
+  const comets = await newTopic(app, "alice", "cometes", "Comètes");
+  assert.equal(sameTopic("comète", [comets])?.id, comets.id, "a precise single word is reused on an exact match");
+  assert.equal(sameTopic("Comètes interstellaires", [comets]), null, "a different subject sharing the word is not");
+
+  const { requestId, request, plan } = await generate(app, "alice", "Je veux suivre les comètes et les pluies d’étoiles filantes visibles depuis la France.");
+  assert.equal(request.state, "done", "one-word topic accepted, no correction round");
+  assert.deepEqual(tags(plan), [["new", "orbitelle", ["~cometes", "+pluies-etoiles-filantes"]]], "few topics; #cometes reused; no existing ΞAgent (Astronoxi follows science and X-59, not comets)");
+  for (const id of [astronoxi, hackxing, politiks, gaia]) assert.ok(!plan.groups.some(group => group.agent.type === "existing" && group.agent.id === id));
+
+  const { results } = await app.konstruktor.createFromIdea("alice", { requestId });
+  assert.deepEqual(results.map(result => result.status), ["completed"]);
+  const catalog = await app.topics.list();
+  const created = (await ownAgents(app)).find(item => item.handle === "orbitelle")!;
+  assert.deepEqual([created.editorial!.primaryTopicId, ...created.editorial!.secondaryTopicIds].map(id => catalog.find(item => item.id === id)!.tag), ["cometes", "pluies-etoiles-filantes"]);
+  assert.equal(catalog.filter(item => item.tag === "cometes").length, 1);
 });
