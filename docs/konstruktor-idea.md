@@ -25,25 +25,51 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
      nouvel ΞAgent). Un nom identique ne suffit jamais : un homonyme est signalé, pas réutilisé ;
    - deux topics de la proposition qui reviennent au même → le second est écarté (note affichée) ;
    - handle pris → suffixe `-2`, `-3`…
-4. **Prévisualisation** par ΞAgent avec la raison de chaque réutilisation, topics « à créer », « existant », « déjà
+4. **Organisation parmi les ΞAgents existants** (étape « Analyse des ΞAgents existants », après la génération, qui
+   reste aveugle au catalogue). Pour chaque groupe sans ΞAgent déterminé à l'étape 3 :
+   - **candidats** (`candidates`) : les ΞAgents de l'utilisateur dont la mission (description + périmètre, sans les
+     exclusions types) ou les topics précis suivis partagent un mot de sujet avec le groupe (mots génériques, de
+     fonction et le nom de l'ΞAgent ignorés ; même mot au pluriel ou au genre près, ou mêmes 6 premières lettres).
+     C'est un filtre, pas une décision. Aucun candidat → pas d'appel au modèle ;
+   - **un seul appel groupé** (`buildMatchPrompt`) : groupes `G1…` et candidats `A1…` avec mission, topics suivis et
+     place dans la hiérarchie ; aucun identifiant. Le modèle choisit `attach`, `specialize` (avec le nom de la
+     spécialisation) ou `new`, avec une raison ;
+   - **vérification** (`checkPlacements`) : seul un candidat **de ce groupe** est accepté ; `specialize` exige un nom
+     (1 à 3 mots) et au moins deux topics (un seul topic → rattachement) ; un ΞAgent déjà au niveau maximal reçoit la
+     spécialisation sous son ancêtre le plus proche qui le permet (à l'utilisateur), sinon nouvel ΞAgent. Réponse
+     inexploitable (après une relance de format) → nouveaux ΞAgents, note affichée, la génération n'échoue pas ;
+   - **sous-agent** = mécanisme existant des générateurs pointés (`docs/graph.md`) : handle `parent.specialite`, nom
+     « Parent Spécialité », sa mission et ses topics. Profondeur calculée sur la hiérarchie réelle (`hierarchy`,
+     même règle que le graphe : ancêtre existant le plus proche par préfixe pointé), jamais en comptant les points ;
+     `IDEA_MAX_SUBAGENT_DEPTH = 1` (racine → sous-agent), seule valeur à changer pour aller plus profond ;
+   - plusieurs groupes rangés sur le même ΞAgent (ou le même sous-agent) → un seul groupe, un seul déploiement.
+
+   Priorité : un ΞAgent qui suit déjà les topics réutilisés (étape 3) > choix vérifié du modèle > nouvel ΞAgent.
+5. **Prévisualisation** par ΞAgent : « ΞAgent existant, réutilisé », « Nouveau sous-agent » (avec son parent) ou
+   « Nouvel ΞAgent racine », avec la raison de chaque rattachement ou spécialisation, topics « à créer », « existant », « déjà
    suivi », problèmes bloquants (`draftIssues`). La tâche n'écrit rien.
-5. **Confirmation** (`POST /api/konstruktor/ideas {requestId}` → `createFromIdea`) : le plan est relu côté serveur depuis
+6. **Confirmation** (`POST /api/konstruktor/ideas {requestId}` → `createFromIdea`) : le plan est relu côté serveur depuis
    le résultat de la tâche de l'utilisateur (jamais envoyé par le client). Un **déploiement par ΞAgent**, avec
    l'identifiant fixé à la prévisualisation :
-   - nouveau ΞAgent : brouillon de création standard (`newDraft` → `draftToSpec`) ;
+   - nouveau ΞAgent : brouillon de création standard (`newDraft` → `draftToSpec`) ; pour un sous-agent, le parent est
+     revérifié à ce moment (`subAgentProblem` : toujours à l'utilisateur, même handle, profondeur permise), sinon ce
+     groupe échoue (409, « régénérez ») sans rien écrire ;
    - ΞAgent existant : modification (`draftToEditSpec`) qui ajoute seulement ses topics manquants ; rien à ajouter →
      `unchanged`.
 
    Le préflight des déploiements revérifie tout avant d'écrire (étiquettes, handles, révisions). Un groupe en échec
    n'empêche pas les autres ; confirmer à nouveau reprend les déploiements non terminés, sans doublon.
 
-Limites du MVP : pas d'édition du plan (régénérer pour changer), pas de hiérarchie de topics, ΞAgents créés avec le
+Limites du MVP : pas d'édition du plan (régénérer pour changer), pas de hiérarchie de topics, filtre de candidats
+lexical (un ΞAgent dont la mission emploie d'autres mots que le groupe n'est pas proposé ; un mot commun peut en
+proposer un hors sujet, que le modèle doit alors écarter), un sous-agent hérite des réglages par défaut et non de ceux
+de son parent, ΞAgents créés avec le
 premier preset et les réglages par défaut (modifiables ensuite dans leur configuration).
 
 ## Pipeline visible
 
 La page affiche les étapes de la tâche (`idea-steps.ts`) : analyse de l'intention, génération locale et regroupement,
-validation des correspondances, prévisualisation disponible. Chaque étape est journalisée (début, fin) dans
+analyse des ΞAgents existants (candidats et décisions journalisés), validation des correspondances, prévisualisation disponible. Chaque étape est journalisée (début, fin) dans
 l'historique de la tentative (`xiagent_run`) au moment où elle se produit, avec chaque appel au modèle et sa durée ;
 la page les relit avec la tâche. Une étape n'est « terminée » que si sa fin est journalisée, la dernière que si le
 résultat est enregistré. Temps écoulé réel, aucun pourcentage. L'identifiant de la demande est gardé dans l'adresse

@@ -16,7 +16,7 @@ import { createSuggestionStore, findings, reviewRequestId, SUGGESTION_KINDS, typ
 import { createConversationStore, type Decision } from "./store";
 import { draftToSpec } from "../xiagents/draft";
 import { draftToEditSpec } from "../xiagents/edit";
-import { groupPicks, IDEA_TASK, ideaPlanSchema, newAgentDraft, type PlanGroup } from "./idea";
+import { groupPicks, IDEA_TASK, ideaPlanSchema, newAgentDraft, subAgentProblem, type PlanGroup } from "./idea";
 import { MAX_MESSAGE, targetSchema, type KonstruktorSession, type KonstruktorTarget, type Proposal, type ProposalStatus, type TurnStatus } from "./types";
 
 const openSchema = z.object({ id: z.uuid(), target: targetSchema }).strict();
@@ -292,7 +292,12 @@ export function createKonstruktor({ db, tasks, accounts, topics, sources, deploy
   }
   /** Deployment input of one group, built now from the current configuration; null when nothing is to be added. */
   async function ideaSpec(owner: string, group: PlanGroup, plan: { intent: string; timeZone: string; model: string }, presets: Awaited<ReturnType<AccountStore["listPresets"]>>) {
-    if (group.agent.type === "new") return draftToSpec(newAgentDraft(group, plan.intent, plan.timeZone, plan.model, presets));
+    if (group.agent.type === "new") {
+      // A sub-agent: its parent is checked again now (still the owner's, same handle, depth allowed).
+      const problem = group.agent.parent && subAgentProblem({ handle: group.agent.handle, parent: group.agent.parent }, await accounts.list(owner), owner);
+      if (problem) throw new TopicError(problem, 409);
+      return draftToSpec(newAgentDraft(group, plan.intent, plan.timeZone, plan.model, presets));
+    }
     const { draft, base } = await exportAgentConfiguration({ owner, agentId: group.agent.id, accounts, topics, sources });
     const attached = new Set(draft.topics.flatMap(pick => pick.type === "existing" ? [pick.id] : []));
     const added = groupPicks(group).filter(pick => pick.type !== "existing" || !attached.has(pick.id));

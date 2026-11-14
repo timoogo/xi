@@ -7,6 +7,7 @@
 export const IDEA_STEPS = [
   { key: "intent", label: "Analyse de l’intention" },
   { key: "generate", label: "Génération locale des topics et regroupement" },
+  { key: "match", label: "Analyse des ΞAgents existants" },
   { key: "check", label: "Validation et vérification des correspondances" },
   { key: "preview", label: "Prévisualisation disponible" },
 ] as const;
