@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { BUILTIN_PRESETS } from "../src/lib/accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../src/lib/bloub/config";
 import { accountDraftSchema } from "../src/lib/accounts/types";
-import { answerProblems, candidates, hierarchy, IDEA_MAX_SUBAGENT_DEPTH, IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, isDescriptiveName, isSpecific, sameTopic, subAgentProblem, type IdeaPlan } from "../src/lib/konstruktor/idea";
+import { answerProblems, candidates, hierarchy, separationRequested, IDEA_MAX_SUBAGENT_DEPTH, IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, isDescriptiveName, isSpecific, sameTopic, subAgentProblem, type IdeaPlan } from "../src/lib/konstruktor/idea";
 import { ideaSteps, type IdeaTaskView } from "../src/lib/konstruktor/idea-steps";
 import { InferenceUnavailableError } from "../src/lib/watch/inference";
 import type { LLMBindOptions } from "../src/lib/watch/llm-binding";
@@ -584,4 +584,83 @@ test("konstruktor idea: candidates come from subject words, not from the wording
   assert.deepEqual(of("Élections en France", "Les élections françaises.", ["Élections municipales"]), ["politiks"]);
   const swingo = { id: randomUUID(), handle: "swingo", name: "Swingo", topicIds: [], mission: "Hacking éthique et failles logicielles." };
   assert.deepEqual(candidates({ name: "Swingo", description: "Tout sur Swingo.", topics: ["Saxophone ténor"] }, [swingo], []), [], "the ΞAgent's name alone never makes it a candidate");
+});
+
+const MARS = "Je veux développer une veille spécialisée sur l’exploration martienne : missions robotiques, rovers, découvertes géologiques, recherche de traces de vie, technologies de colonisation et futures missions habitées.\n\nJe souhaite suivre ces sujets de manière approfondie et distincte de l’actualité astronomique générale.";
+const marsAnswer = {
+  topics: ["Missions robotiques martiennes", "Rovers martiens", "Géologie martienne", "Recherche de vie sur Mars", "Colonisation de Mars", "Missions habitées vers Mars"].map(name => topic(name, "Exploration martienne")),
+  domains: [{ name: "Exploration martienne", agent: "Areion", description: "Suivre l’exploration de Mars, robotique et habitée." }],
+};
+
+test("konstruktor idea: an explicit request for a separate watch reaches the placement call; Mars becomes a sub-agent of Astronoxi, the comets stay with it", { timeout: 30_000 }, async t => {
+  assert.ok(separationRequested(MARS));
+  assert.ok(separationRequested("Une veille dédiée aux comètes."));
+  assert.ok(!separationRequested("Je veux suivre les comètes et les pluies d’étoiles filantes visibles depuis la France."));
+
+  let answer: unknown = marsAnswer;
+  let reply: (request: ChatRequest) => unknown = request => ({ decisions: [decision("G1", "specialize", label(request, "Astronoxi"), "Mars", "Une veille distincte de l’astronomie générale est demandée.")] });
+  const { binding, requests, placements } = ideaModel(() => json(answer), request => reply(request));
+  const app = await setup(t, binding);
+  await seed(app);
+  const org = await organisation(app);
+  const before = await files(app.root);
+
+  const mars = await generate(app, "alice", MARS);
+  assert.equal(mars.request.state, "done");
+  assert.match(requests[0].system, /chaque topic le nomme s’il serait ambigu sans lui/, "topics name their shared context when needed");
+  assert.match(placements[0].prompt, /^Intention de l’utilisateur :\n"[\s\S]*distincte de l’actualité astronomique générale\."/, "the decision sees the original intention");
+  assert.match(placements[0].prompt, /L’utilisateur demande explicitement une veille distincte/);
+  assert.match(placements[0].system, /A\. Un candidat couvre-t-il le domaine[\s\S]*B\. Si oui, les topics du groupe justifient-ils une veille à part/);
+  assert.deepEqual(mars.plan.groups.map(group => [group.agent.type, group.agent.handle, group.agent.type === "new" ? group.agent.parent?.handle : null, group.topics.length]), [["new", "astronoxi.mars", "astronoxi", 6]]);
+  assert.equal(mars.plan.groups[0].agent.name, "Astronoxi Mars");
+  assert.deepEqual(await files(app.root), before, "nothing written before confirmation");
+  const { results } = await app.konstruktor.createFromIdea("alice", { requestId: mars.requestId });
+  assert.equal(results[0].status, "completed");
+  const accounts = await app.accounts.list("alice");
+  assert.deepEqual(hierarchy(accounts).get(accounts.find(item => item.handle === "astronoxi.mars")!.id), { parentId: org.astronoxi, depth: 1 });
+
+  // A general intention: no separation signal, the mission suffices.
+  answer = { topics: [topic("Comètes", "Astronomie"), topic("Pluies d’étoiles filantes", "Astronomie")], domains: [{ name: "Astronomie", agent: "Stelox", description: "Les comètes et étoiles filantes." }] };
+  reply = request => ({ decisions: [decision("G1", "attach", label(request, "Astronoxi"))] });
+  const comets = await generate(app, "alice", "Je veux suivre les comètes et les pluies d’étoiles filantes visibles depuis la France.");
+  assert.doesNotMatch(placements.at(-1)!.prompt, /demande explicitement une veille distincte/);
+  assert.deepEqual(tags(comets.plan).map(([type, handle]) => [type, handle]), [["existing", "astronoxi"]]);
+});
+
+test("konstruktor idea: specialisation already covered or not distinct is attached; no parent means a new root; never a sub-agent of a sub-agent", { timeout: 30_000 }, async t => {
+  let answer: unknown = marsAnswer;
+  let reply: (request: ChatRequest) => unknown = request => ({ decisions: [decision("G1", "specialize", label(request, "Astronoxi"), "Mars")] });
+  const { binding, placements } = ideaModel(() => json(answer), request => reply(request));
+  const app = await setup(t, binding);
+  await seed(app);
+  const org = await organisation(app);
+  const marsOld = await newTopic(app, "alice", "missions-martiennes-passees", "Missions martiennes passées");
+  const sub = await agent(app, "alice", "astronoxi.mars", "Astronoxi Mars", [marsOld.id], "L’exploration de Mars : rovers, géologie martienne et missions habitées.");
+
+  // The sub-agent of that specialty exists: reused, not duplicated (and offered as a candidate itself).
+  const covered = await generate(app, "alice", MARS);
+  assert.match(placements.at(-1)!.prompt, /"Astronoxi Mars" ; .*sous-agent de A\d, sans sous-agent/);
+  assert.deepEqual(tags(covered.plan).map(([type, handle]) => [type, handle]), [["existing", "astronoxi.mars"]]);
+  assert.equal(covered.plan.groups[0].agent.type === "existing" && covered.plan.groups[0].agent.id, sub);
+  assert.match(covered.plan.notes.join(" "), /le sous-agent @astronoxi\.mars couvre déjà cette spécialité/);
+
+  // A « specialty » that only repeats the parent's mission: nothing to separate.
+  reply = request => ({ decisions: [decision("G1", "specialize", label(request, "Astronoxi"), "missions spatiales")] });
+  const artificial = await generate(app, "alice", MARS);
+  assert.deepEqual(tags(artificial.plan).map(([type, handle]) => [type, handle]), [["existing", "astronoxi"]]);
+  assert.match(artificial.plan.notes.join(" "), /la spécialité « missions spatiales » ne se distingue pas de la mission de @astronoxi/);
+
+  // Asked under a sub-agent: a sibling under the root, said so — never a third level, never a silent attach.
+  reply = request => ({ decisions: [decision("G1", "specialize", label(request, "Astronoxi Mars"), "Colonisation")] });
+  const deeper = await generate(app, "alice", MARS);
+  assert.deepEqual(deeper.plan.groups.map(group => [group.agent.handle, group.agent.type === "new" && group.agent.parent?.handle]), [["astronoxi.colonisation", "astronoxi"]]);
+  assert.match(deeper.plan.notes.join(" "), /@astronoxi\.mars est au niveau de sous-agent maximal \(1\) ; la spécialisation est proposée sous @astronoxi/);
+  assert.ok(org.astronoxi);
+
+  // Bob has no ΞAgent covering astronomy: a new root, without a placement call.
+  const calls = placements.length;
+  answer = marsAnswer;
+  const bob = await generate(app, "bob", MARS);
+  assert.equal(placements.length, calls);
+  assert.deepEqual(bob.plan.groups.map(group => [group.agent.type, group.agent.handle, group.agent.type === "new" && group.agent.parent]), [["new", "areion", null]]);
 });

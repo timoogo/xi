@@ -32,10 +32,16 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
      fonction et le nom de l'ΞAgent ignorés ; même mot au pluriel ou au genre près, ou mêmes 6 premières lettres).
      C'est un filtre, pas une décision. Aucun candidat → pas d'appel au modèle ;
    - **un seul appel groupé** (`buildMatchPrompt`) : groupes `G1…` et candidats `A1…` avec mission, topics suivis et
-     place dans la hiérarchie ; aucun identifiant. Le modèle choisit `attach`, `specialize` (avec le nom de la
-     spécialisation) ou `new`, avec une raison ;
+     place dans la hiérarchie ; aucun identifiant. L'appel reçoit aussi **l'intention d'origine** : le modèle répond à
+     deux questions, (A) un candidat couvre-t-il le domaine ? (B) les topics justifient-ils une veille distincte
+     (souhait explicite de séparer, spécialité cohérente plus étroite que la mission, sous-agent existant) ? Il choisit
+     `attach`, `specialize` (avec le nom de la spécialisation) ou `new`, avec une raison. Quand l'intention demande
+     une veille distincte, dédiée ou spécialisée (`separationRequested`, détection lexicale), le prompt le rappelle
+     explicitement pour la question B ;
    - **vérification** (`checkPlacements`) : seul un candidat **de ce groupe** est accepté ; `specialize` exige un nom
-     (1 à 3 mots) et au moins deux topics (un seul topic → rattachement) ; un ΞAgent déjà au niveau maximal reçoit la
+     (1 à 3 mots) et au moins deux topics (un seul topic → rattachement) ; une spécialité dont tous les mots de sujet
+     figurent déjà dans le nom ou la mission du candidat → rattachement (rien de distinct) ; un sous-agent existant du
+     candidat qui porte déjà cette spécialité (`parent.specialite`) → rattachement à ce sous-agent ; un ΞAgent déjà au niveau maximal reçoit la
      spécialisation sous son ancêtre le plus proche qui le permet (à l'utilisateur), sinon nouvel ΞAgent. Réponse
      inexploitable (après une relance de format) → nouveaux ΞAgents, note affichée, la génération n'échoue pas ;
    - **sous-agent** = mécanisme existant des générateurs pointés (`docs/graph.md`) : handle `parent.specialite`, nom
@@ -63,7 +69,9 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
 Limites du MVP : pas d'édition du plan (régénérer pour changer), pas de hiérarchie de topics, filtre de candidats
 lexical (un ΞAgent dont la mission emploie d'autres mots que le groupe n'est pas proposé ; un mot commun peut en
 proposer un hors sujet, que le modèle doit alors écarter), un sous-agent hérite des réglages par défaut et non de ceux
-de son parent, ΞAgents créés avec le
+de son parent, le choix entre rattacher et spécialiser reste celui du modèle (le serveur ne force jamais une
+spécialisation ; il ne fait que l'écarter quand elle n'est pas distincte), la précision des topics (« rovers martiens »
+plutôt que « rovers ») est demandée au modèle sans être imposée, ΞAgents créés avec le
 premier preset et les réglages par défaut (modifiables ensuite dans leur configuration).
 
 ## Pipeline visible
