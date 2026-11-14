@@ -14,6 +14,7 @@ import { scheduleSchema, type Schedule } from "../xiagents/schedule";
 import { loadContext, shownCatalog, type AgentBase, type TargetContext } from "./context";
 import { createConversationStore } from "./store";
 import type { KonstruktorMessage, KonstruktorTarget, Proposal, TopicPatch } from "./types";
+import { IDEA_TASK, planIdea } from "./idea";
 
 /**
  * One conversation turn of Konstruktor, run as a `system-task` (internal: queued by the conversation
@@ -288,4 +289,4 @@ const commentTopic: SystemTask<{ commentId: string; tag: string; requestId: stri
     }
   },
 };
-export const KONSTRUKTOR_TASKS: Record<string, SystemTask> = { converse, "comment-topic": commentTopic };
+export const KONSTRUKTOR_TASKS: Record<string, SystemTask> = { converse, "comment-topic": commentTopic, [IDEA_TASK]: planIdea };

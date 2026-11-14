@@ -10,5 +10,5 @@ export default async function KonstruktorInboxPage({ searchParams }: { searchPar
   await getCurrentUser();
   const { suggestion, type, id } = await searchParams;
   const filter = (type === "agent" || type === "topic") && id ? { type, id } as const : null;
-  return <><PageHeader title="Propositions de Konstruktor"><Link href="/dashboard/konstruktor/pipelines" className="ml-auto rounded-full border px-3 py-1 text-sm font-medium hover:bg-accent">Pipelines</Link></PageHeader><SuggestionInbox focus={suggestion ?? null} filter={filter} /></>;
+  return <><PageHeader title="Propositions de Konstruktor"><Link href="/dashboard/konstruktor/idea" className="ml-auto rounded-full border px-3 py-1 text-sm font-medium hover:bg-accent">Créer à partir d’une idée</Link><Link href="/dashboard/konstruktor/pipelines" className=" rounded-full border px-3 py-1 text-sm font-medium hover:bg-accent">Pipelines</Link></PageHeader><SuggestionInbox focus={suggestion ?? null} filter={filter} /></>;
 }
