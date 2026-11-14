@@ -96,7 +96,8 @@ test("graphe des connaissances : ΞAgents, concepts, relations, provenance, déc
   const between = async (tag: string) => (await mine()).find(view => view.other.id === topic(tag))!;
   await relations.correct(owner, (await between("orbite-3")).id, { status: "accepted" });
   await relations.correct(owner, (await between("vega-2")).id, { type: "part_of", reason: "Le moteur est un composant." });
-  const lyra = (await relations.relationsOf(owner, topic("kappa-1"))).proposed[0];
+  // Every sentence states its relation explicitly: Konstruktor validated them all; the owner's decisions come on top.
+  const lyra = (await relations.relationsOf(owner, topic("kappa-1"))).visible[0];
   await relations.correct(owner, lyra.id, { status: "excluded", reason: "Lien trop vague." });
 
   const page = await context.newPage(); page.setDefaultTimeout(20_000);
@@ -114,10 +115,13 @@ test("graphe des connaissances : ΞAgents, concepts, relations, provenance, déc
   assert.equal(await picker.locator("summary").getAttribute("aria-label"), "ΞAgents affichés : Astronoxi");
   await concept("Helios-9").waitFor();
   assert.equal(await nodes().count(), 6);
-  // Excluded relations are not drawn by default; the validated, proposed and corrected ones are.
+  // Excluded relations are not drawn by default; the confirmed, corrected and automatically validated ones are, apart.
   assert.equal(await page.locator('[data-edge-id][data-status="excluded"]').count(), 0);
-  assert.equal(await page.locator('[data-edge-id][data-status="accepted"]').count(), 1);
-  assert.equal(await page.locator('[data-edge-id][data-status="proposed"]').count(), 2);
+  assert.equal(await page.locator('[data-edge-id][data-status="accepted"]').count(), 3);
+  assert.equal(await page.locator('[data-edge-id][data-validation="human"]').count(), 2);
+  assert.equal(await page.locator('[data-edge-id][data-validation="auto"]').count(), 1);
+  // Hovering an edge says what it means, in the text's words.
+  assert.equal(await page.locator('[data-edge-id][data-validation="auto"] > title').textContent(), "Asterion-47 — utilise le moteur → Helios-9 · Validée automatiquement");
 
   // Concept panel: relations, provenance, quotes, web sources.
   await concept("Helios-9").click();
@@ -141,14 +145,15 @@ test("graphe des connaissances : ΞAgents, concepts, relations, provenance, déc
   const relation = page.locator('[data-panel="relation"]');
   await relation.getByRole("heading", { name: "Influence" }).waitFor();
   await relation.getByText("Relation orientée").waitFor();
-  await relation.getByText("Validée", { exact: true }).waitFor();
+  await relation.getByText("Confirmée par vous", { exact: true }).waitFor();
+  await relation.locator("[data-phrase]").getByText("Helios-9 — influence la trajectoire → Orbite-3").waitFor();
   await relation.getByText("« Helios-9 influence la trajectoire Orbite-3. »").waitFor();
   await relation.getByRole("button", { name: "Orbite-3" }).waitFor();
   await page.screenshot({ path: "artifacts/knowledge-graph/relation-desktop.png" });
   await relation.getByRole("button", { name: "Helios-9" }).click();
   await panel.getByRole("button", { name: /^(Comprend|Fait partie de)$/ }).click();
   await relation.locator("[data-correction]").getByText("« Lié à » → « Fait partie de »", { exact: false }).waitFor();
-  await relation.getByText("Proposée, à examiner").waitFor();
+  await relation.getByText("Corrigée et confirmée par vous").waitFor();
 
   // The publication of origin opens.
   await relation.getByRole("button", { name: "Helios-9" }).click();
@@ -162,7 +167,7 @@ test("graphe des connaissances : ΞAgents, concepts, relations, provenance, déc
   await page.waitForURL(/excluded=1/);
   await page.locator('[data-edge-id][data-status="excluded"]').waitFor();
   await page.locator('[data-edge-id][data-status="excluded"]').click();
-  await relation.getByText("Exclue", { exact: true }).waitFor();
+  await relation.getByText("Exclue par vous", { exact: true }).waitFor();
   await relation.getByText("Lien trop vague.", { exact: false }).waitFor();
 
   // Zoom, recentre, list, keyboard.

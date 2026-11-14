@@ -38,6 +38,9 @@ une justification d'au moins 20 caractères et au moins une preuve substantielle
 avec extrait. Les indices `cooccurrence`, `shared_word`, `shared_agent` peuvent accompagner une preuve mais ne
 suffisent jamais. Confiance ≥ 0,8 : acceptée ; sinon proposée, visible et validable par les créateurs des deux Topics.
 
+`proposePersonal()` (Konstruktor, relations personnelles) ne valide jamais sur la confiance : seulement avec une preuve
+`explicit` et sans décision humaine sur la paire. Règles, priorité et réanalyse : `docs/konstruktor-relations.md`.
+
 ## Corrections et exclusions
 
 - Exclusion personnelle (tout lecteur, toute relation visible, y compris déclarée) :

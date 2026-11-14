@@ -45,14 +45,30 @@ function edgeText(edge: KnowledgeEdge, from: Point, to: Point) {
   return object.x >= subject.x ? `${text} →${more}` : `← ${text}${more}`;
 }
 
-/** What the data says about a relation, never more: the stored status, then the owner's own mask. */
-export function edgeStatus(edge: KnowledgeEdge) {
-  if (edge.status === "excluded") return { label: "Exclue", tone: "border-muted-foreground/50 text-muted-foreground" };
-  if (edge.hidden) return { label: "Masquée par vous", tone: "border-muted-foreground/50 text-muted-foreground" };
-  return edge.status === "accepted" ? { label: "Validée", tone: "border-chart-2/70 text-foreground" } : { label: "Proposée, à examiner", tone: "border-amber-500/70 text-foreground" };
+/**
+ * What the data says about a relation (or about one agent's part of it), never more: a human decision first, then
+ * Konstruktor's automatic validation, then the model's proposal; the owner's own mask last.
+ */
+export function edgeStatus(item: Pick<KnowledgeEdge, "status" | "validation"> & { hidden?: boolean; correction?: KnowledgeEdge["correction"] }) {
+  const muted = "border-muted-foreground/50 text-muted-foreground";
+  if (item.status === "excluded") return { label: "Exclue par vous", tone: muted };
+  if (item.hidden) return { label: "Masquée par vous", tone: muted };
+  if (item.status === "accepted") return item.validation === "human"
+    ? { label: item.correction ? "Corrigée et confirmée par vous" : "Confirmée par vous", tone: "border-chart-2 bg-chart-2/15 text-foreground" }
+    : { label: "Validée automatiquement", tone: "border-chart-2/70 text-foreground" };
+  return { label: item.correction ? "Corrigée par vous, non validée" : "Proposée, à examiner", tone: "border-amber-500/70 text-foreground" };
+}
+/** « Mike Lippert — a effectué un vol à bord de → X-59 »: the text's words from their subject, else the relation's type. */
+export function edgePhrase(edge: KnowledgeEdge, name: (id: string) => string) {
+  const [link] = edge.labels;
+  if (link?.subject) return `${name(link.subject)} — ${link.text} → ${name(link.subject === edge.source ? edge.target : edge.source)}`;
+  const type = (link ? `« ${link.text} »` : typeLabel(edge.type)).toLowerCase();
+  return edge.directed ? `${name(edge.source)} — ${type} → ${name(edge.target)}` : `${name(edge.source)} — ${type} — ${name(edge.target)}`;
 }
 const rejected = (edge: KnowledgeEdge) => edge.status === "excluded" || edge.hidden;
 const edgeTone = (edge: KnowledgeEdge) => rejected(edge) ? "muted" : edge.status === "proposed" ? "proposed" : edge.type === "opposes" ? "opposes" : "accepted";
+/** Human decisions solid and thicker, automatic validations in long dashes, proposals in short dashes, exclusions dotted. */
+const dash = (edge: KnowledgeEdge) => rejected(edge) ? "2 5" : edge.status === "proposed" ? "6 5" : edge.validation === "auto" ? "12 4" : undefined;
 const STROKE = { muted: "stroke-muted-foreground", proposed: "stroke-amber-500", opposes: "stroke-destructive", accepted: "stroke-chart-2" } as const;
 const FILL = { muted: "fill-muted-foreground", proposed: "fill-amber-500", opposes: "fill-destructive", accepted: "fill-chart-2" } as const;
 const origin = (edge: KnowledgeEdge) => edge.origin === "inference" ? `Inférence locale${edge.createdBy.startsWith("local-model:") ? ` (${edge.createdBy.slice(12)})` : ""}` : edge.origin === "agent" ? "Proposée par un ΞAgent" : "Ajoutée par vous";
@@ -186,6 +202,9 @@ export function KnowledgeNetworkView({ graph, className }: { graph: KnowledgeGra
     return ids;
   }, [edge, focusId, graph.edges]);
   const labelsAll = view.k >= 1.15 && graph.edges.length <= 80;
+  // An edge's words are shown on hover too, without drawing every label at once.
+  const [hovered, setHovered] = useState<string | null>(null);
+  const conceptName = (id: string) => byId.get(id)?.name ?? "concept";
   const chip = "h-9 rounded-full px-3 text-[13px]";
   const empty = !graph.nodes.length;
 
@@ -233,15 +252,17 @@ export function KnowledgeNetworkView({ graph, className }: { graph: KnowledgeGra
               // Stop at the node's edge so the arrowhead stays visible.
               const end = { x: to.x - ((to.x - from.x) / length) * (RADIUS + 4), y: to.y - ((to.y - from.y) / length) * (RADIUS + 4) };
               const isSelected = edge?.id === item.id;
-              const near = focusId === item.source || focusId === item.target || isSelected;
+              const near = focusId === item.source || focusId === item.target || isSelected || hovered === item.id;
               const dim = (focusId || edge) && !near;
               const tone = edgeTone(item);
               return (
-                <g key={item.id} data-edge-id={item.id} data-status={item.status} data-hidden={item.hidden ? "" : undefined} onClick={() => selectEdge(item.id)} className="cursor-pointer">
+                <g key={item.id} data-edge-id={item.id} data-status={item.status} data-validation={item.validation ?? undefined} data-hidden={item.hidden ? "" : undefined}
+                  onClick={() => selectEdge(item.id)} onMouseEnter={() => setHovered(item.id)} onMouseLeave={() => setHovered(current => current === item.id ? null : current)} className="cursor-pointer">
+                  <title>{`${edgePhrase(item, conceptName)} · ${edgeStatus(item).label}`}</title>
                   <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth={14} />
                   <line x1={from.x} y1={from.y} x2={end.x} y2={end.y} className={STROKE[tone]} strokeLinecap="round"
-                    strokeWidth={isSelected ? 4 : 2.5} strokeOpacity={dim ? 0.2 : rejected(item) ? 0.55 : 0.85}
-                    strokeDasharray={rejected(item) ? "2 5" : item.status === "proposed" ? "6 5" : undefined}
+                    strokeWidth={isSelected ? 4 : item.validation === "human" && !rejected(item) ? 3.25 : 2.5} strokeOpacity={dim ? 0.2 : rejected(item) ? 0.55 : 0.85}
+                    strokeDasharray={dash(item)}
                     markerEnd={item.directed ? `url(#knowledge-arrow-${tone})` : undefined} />
                   {near || labelsAll ? (
                     <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 5} textAnchor="middle" aria-hidden="true"
@@ -375,8 +396,9 @@ function Legend({ several }: { several: boolean }) {
         <li className={item}><span aria-hidden="true" className="size-3 rounded-full border-2 border-dashed border-chart-2 bg-chart-2/35" />Concept rattaché à un topic personnel</li>
         <li>Chiffre : publications {several ? "des ΞAgents affichés" : "de l’ΞAgent"} dont il est extrait</li>
         {several ? <li className={item}><span aria-hidden="true" className="inline-flex size-4 items-center justify-center rounded-full border border-foreground text-[9px] font-bold">2</span>Concept connu de plusieurs ΞAgents affichés</li> : null}
-        <li>Texte d’une relation : les mots de la publication, orientés vers leur objet ; sinon sa nature</li>
-        <li className={item}><span aria-hidden="true" className="w-5 border-t-2 border-chart-2" />Relation validée</li>
+        <li>Texte d’une relation (au survol ou à la sélection) : les mots de la publication, orientés vers leur objet ; sinon sa nature</li>
+        <li className={item}><span aria-hidden="true" className="w-5 border-t-[3px] border-chart-2" />Relation confirmée ou corrigée par vous</li>
+        <li className={item}><span aria-hidden="true" className="w-5 border-t-2 border-dashed border-chart-2" />Relation validée automatiquement : la phrase l’énonce explicitement</li>
         <li className={item}><span aria-hidden="true" className="w-5 border-t-2 border-dashed border-amber-500" />Relation proposée, à examiner</li>
         <li className={item}><span aria-hidden="true" className="w-5 border-t-2 border-dotted border-muted-foreground" />Relation exclue ou masquée (sur demande)</li>
         <li>Flèche : relation orientée ; sans flèche : symétrique</li>
@@ -421,7 +443,7 @@ function PanelHeader({ id, title, subtitle, onClose, label }: { id: string; titl
   );
 }
 
-function StatusBadge({ edge }: { edge: KnowledgeEdge }) {
+function StatusBadge({ edge }: { edge: Parameters<typeof edgeStatus>[0] }) {
   const status = edgeStatus(edge);
   return <span className={cn("ml-1.5 inline-block rounded-full border px-1.5 text-xs", status.tone)}>{status.label}</span>;
 }
@@ -507,7 +529,7 @@ function RelationPanel({ ref, edge, byId, agentName, several, onClose, onNode }:
   const quote = (item: KnowledgeEvidence) => (
     <>
       {item.excerpt ? <blockquote className="border-l-2 border-chart-2 pl-2 text-[13px]">« {item.excerpt} »</blockquote> : null}
-      {item.label ? <p className="text-xs text-muted-foreground">Lien dans le texte : {linkPhrase({ text: item.label, subject: item.subject }, edge, name)}</p> : null}
+      {item.label ? <p className="text-xs text-muted-foreground">Lien dans le texte : {linkPhrase({ text: item.label, subject: item.subject }, edge, name)}{item.explicit ? " · énoncé explicitement, sens vérifié" : ""}</p> : null}
       <Link href={`/dashboard/publications/${item.publication}`} className="text-xs font-semibold text-primary hover:underline">Ouvrir la publication</Link>
     </>
   );
@@ -515,7 +537,8 @@ function RelationPanel({ ref, edge, byId, agentName, several, onClose, onNode }:
     <aside ref={ref} tabIndex={-1} aria-labelledby="relation-panel-title" data-panel="relation" className={panelClass}>
       <PanelHeader id="relation-panel-title" title={typeLabel(edge.type)} subtitle={edge.directed ? "Relation orientée" : "Relation symétrique"} onClose={onClose} label="Fermer la fiche de la relation" />
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
-        <p className="text-[15px]">
+        <p className="text-[15px] font-semibold" data-phrase="">{edgePhrase(edge, name)}</p>
+        <p className="text-muted-foreground">
           <button type="button" className={linkButton} onClick={() => onNode(source.id)}>{source.name}</button>
           <span className="mx-1.5 text-muted-foreground">{edge.directed ? "→" : "↔"} {RELATION_TYPE_LABELS[edge.type].outgoing.toLowerCase()} {edge.directed ? "→" : "↔"}</span>
           <button type="button" className={linkButton} onClick={() => onNode(target.id)}>{target.name}</button>
@@ -526,16 +549,17 @@ function RelationPanel({ ref, edge, byId, agentName, several, onClose, onNode }:
             <ul className="mt-1 space-y-0.5">{edge.labels.map((link, index) => <li key={index}>{linkPhrase(link, edge, name)}</li>)}</ul>
           </section>
         ) : null}
-        <p>Statut :<StatusBadge edge={edge} />{several ? <span className="block text-xs text-muted-foreground">Vos décisions valent pour tous vos ΞAgents qui la connaissent.</span> : null}</p>
+        <p>Statut :<StatusBadge edge={edge} />{several ? <span className="block text-xs text-muted-foreground">Vos décisions valent pour tous vos ΞAgents qui la connaissent ; une validation automatique, seulement pour ceux dont une phrase l’énonce.</span> : null}</p>
+        {edge.validation === "auto" ? <p className="text-xs text-muted-foreground" data-auto="">Validée automatiquement : une phrase citée relie explicitement ces deux concepts, avec ces mots et dans ce sens. Votre confirmation, correction ou exclusion prévaut.</p> : null}
         {edge.correction ? <p data-correction="">Type corrigé par vous le {dateFr(edge.correction.at)} : « {typeLabel(edge.correction.from)} » → « {typeLabel(edge.correction.to)} »{edge.correction.reason ? ` (${edge.correction.reason})` : ""}.</p> : null}
         {edge.decision ? <p>{edge.decision.action === "excluded" ? "Exclue" : edge.decision.action === "accepted" ? "Validée" : "Restaurée"} par vous le {dateFr(edge.decision.at)}{edge.decision.reason ? ` : ${edge.decision.reason}` : ""}.</p> : null}
         <p className="text-xs text-muted-foreground">
           {[origin(edge), `créée le ${dateFr(edge.createdAt)}`, edge.confidence !== null ? `confiance ${Math.round(edge.confidence * 100)} %` : null].filter(Boolean).join(" · ")}
         </p>
         <section aria-labelledby="relation-justification"><h3 id="relation-justification" className={heading}>Justification</h3><p className="mt-1">{edge.justification}</p></section>
-        {edge.provenance.map(({ agent, evidence, count }) => (
+        {edge.provenance.map(({ agent, evidence, count, status, validation }) => (
           <section key={agent} aria-labelledby={`relation-evidence-${agent}`} data-agent-evidence={agent}>
-            <h3 id={`relation-evidence-${agent}`} className={heading}>Preuves dans les publications de {agentName(agent)} ({count}){several ? <StatusBadge edge={edge} /> : null}</h3>
+            <h3 id={`relation-evidence-${agent}`} className={heading}>Preuves dans les publications de {agentName(agent)} ({count}){several ? <StatusBadge edge={{ ...edge, status, validation }} /> : null}</h3>
             <ul className="mt-1 space-y-2">{evidence.map((item, index) => <li key={index}>{quote(item)}</li>)}</ul>
             {count > evidence.length ? <p className="mt-1 text-xs text-muted-foreground">{evidence.length} preuves affichées sur {count}.</p> : null}
           </section>

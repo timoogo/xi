@@ -86,13 +86,15 @@ test("connaissances : un graphe par ΞAgent, décisions humaines, provenance et 
   assert.deepEqual(names(graph), ["asterion-47", "helios-9", "kappa-1", "lyra-5", "orbite-3", "vega-2"]);
   assert.equal(graph.nodes.find(node => node.tag === "helios-9")!.publications, 2);
   assert.ok(graph.nodes.every(node => node.personal));
-  assert.deepEqual(graph.counts, { concepts: 6, publications: 2, accepted: 0, proposed: 4, excluded: 0 });
+  // Every sentence states its relation explicitly (« X utilise le moteur Y ») : validated automatically.
+  assert.deepEqual(graph.counts, { concepts: 6, publications: 2, accepted: 4, proposed: 0, excluded: 0 });
   assert.deepEqual(graph.agents.map(agent => agent.name), ["Astronoxi", "Orbites", "Vide"]);
   const byName = new Map(graph.nodes.map(node => [node.tag, node.id]));
   const edge = (from: string, to: string) => graph.edges.find(e => [e.source, e.target].sort().join() === [byName.get(from), byName.get(to)].sort().join())!;
   // Oriented relation keeps its direction; symmetric ones carry none.
   const influence = edge("helios-9", "orbite-3");
-  assert.deepEqual([influence.type, influence.directed, influence.source, influence.target, influence.status], ["influences", true, byName.get("helios-9"), byName.get("orbite-3"), "proposed"]);
+  assert.deepEqual([influence.type, influence.directed, influence.source, influence.target, influence.status, influence.validation], ["influences", true, byName.get("helios-9"), byName.get("orbite-3"), "accepted", "auto"]);
+  assert.equal(influence.decision, null, "une validation automatique n’est pas une décision humaine");
   assert.equal(edge("asterion-47", "helios-9").directed, false);
   // The relation also learned by Orbites shows only Astronoxi's evidence here, and only Orbites' there.
   const shared = edge("asterion-47", "helios-9");
@@ -113,9 +115,9 @@ test("connaissances : un graphe par ΞAgent, décisions humaines, provenance et 
   assert.equal(graph.edges.length, 2, "exclue et masquée n’apparaissent pas par défaut");
   assert.ok(!ids.has(shared.id));
   const corrected = graph.edges.find(e => e.type === "part_of")!;
-  assert.deepEqual([corrected.status, corrected.directed, corrected.correction?.from, corrected.correction?.to, corrected.correction?.reason], ["proposed", true, "related_to", "part_of", "Le moteur est un composant."]);
-  assert.deepEqual([graph.edges.find(e => e.id === influence.id)!.status, graph.edges.find(e => e.id === influence.id)!.decision?.action], ["accepted", "accepted"]);
-  assert.deepEqual(graph.counts, { concepts: 6, publications: 2, accepted: 1, proposed: 1, excluded: 2 });
+  assert.deepEqual([corrected.status, corrected.validation, corrected.directed, corrected.correction?.from, corrected.correction?.to, corrected.correction?.reason], ["accepted", "human", true, "related_to", "part_of", "Le moteur est un composant."]);
+  assert.deepEqual([graph.edges.find(e => e.id === influence.id)!.status, graph.edges.find(e => e.id === influence.id)!.validation, graph.edges.find(e => e.id === influence.id)!.decision?.action], ["accepted", "human", "accepted"]);
+  assert.deepEqual(graph.counts, { concepts: 6, publications: 2, accepted: 2, proposed: 0, excluded: 2 });
   const all = await w.graph("alice", { agents: [astronoxi.id], excluded: true });
   const excluded = all.edges.find(e => e.status === "excluded")!;
   assert.deepEqual([excluded.decision?.action, excluded.decision?.reason, excluded.hidden], ["excluded", "Lien trop vague.", false]);
@@ -214,9 +216,10 @@ test("connaissances : plusieurs ΞAgents, vue combinée sans fusion, provenance 
   assert.deepEqual(shared.provenance.map(item => [item.agent, item.evidence.map(e => e.publication)]), [[astronoxi.id, [p1]], [orbites.id, [p2]]]);
   assert.equal(shared.evidenceCount, 2);
   assert.deepEqual(shared.labels, [{ text: "utilise le moteur", subject: node(two, "asterion-47").id }], "mêmes mots, même sujet : un seul libellé");
-  assert.deepEqual(shared.provenance[0].evidence[0], { publication: p1, excerpt: "Asterion-47 utilise le moteur Helios-9.", label: "utilise le moteur", subject: node(two, "asterion-47").id });
+  assert.deepEqual(shared.provenance[0].evidence[0], { publication: p1, excerpt: "Asterion-47 utilise le moteur Helios-9.", label: "utilise le moteur", subject: node(two, "asterion-47").id, explicit: true });
+  assert.deepEqual(shared.provenance.map(item => [item.status, item.validation]), [["accepted", "auto"], ["accepted", "auto"]], "chaque ΞAgent l’établit par sa propre phrase");
   // The stored record is untouched: one relation, the owner's, its evidence from both publications.
-  const stored = (await w.relations.relationsOf("alice", node(two, "helios-9").id)).proposed.find(r => r.id === shared.id)!;
+  const stored = (await w.relations.relationsOf("alice", node(two, "helios-9").id)).visible.find(r => r.id === shared.id)!;
   assert.deepEqual(stored.evidence.map(e => e.publication).sort(), [p1, p2].sort());
   // Each agent alone sees only its own evidence.
   assert.deepEqual(ends(await w.graph("alice", { agents: [orbites.id] }), "asterion-47", "helios-9")[0].provenance.map(item => item.agent), [orbites.id]);
@@ -237,7 +240,7 @@ test("connaissances : plusieurs ΞAgents, vue combinée sans fusion, provenance 
   assert.deepEqual(pair.map(e => [e.type, e.status, e.provenance.map(item => item.agent)]).sort(), [
     ["part_of", "excluded", [orbites.id]], ["related_to", "accepted", [astronoxi.id, orbites.id]],
   ].sort());
-  assert.deepEqual(both.counts, { concepts: 5, publications: 2, accepted: 1, proposed: 2, excluded: 1 });
+  assert.deepEqual(both.counts, { concepts: 5, publications: 2, accepted: 3, proposed: 0, excluded: 1 });
   assert.equal(ends(await w.graph("alice", { agents: [astronoxi.id], excluded: true }), "asterion-47", "helios-9").length, 1, "Astronoxi ne connaît pas l’exclue");
   // A later analysis of Astronoxi does not attach it to the excluded relation either.
   await w.learn("alice", astronoxi.id, "force");

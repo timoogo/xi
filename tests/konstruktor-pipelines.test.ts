@@ -101,9 +101,9 @@ test("pipeline manuel : progression persistante, échecs, relance ciblée et ré
   assert.deepEqual(run.stages.map(stage => [stage.name, stage.status]), [["Planification", "success"], ["Analyse Konstruktor", "partial"], ["Bilan", "partial"]]);
   const success = run.jobs.find(job => job.publication === env.p1)!;
   assert.equal(success.status, "success");
-  assert.deepEqual(success.result, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 0, relations: 1, kept: 0 });
+  assert.deepEqual(success.result, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 0, relations: 1, validated: 1, kept: 0 });
   const logs = success.attempts.flatMap(attempt => attempt.logs.map(log => log.message));
-  for (const expected of [/Analyse de la publication/, /Concept « Asterion-47 » : topic #asterion-47/, /Relation Asterion-47 → Helios-9 \(related_to\) proposée/, /Terminé : 2 concepts/]) assert.ok(logs.some(line => expected.test(line)), `log ${expected}`);
+  for (const expected of [/Analyse de la publication/, /Concept « Asterion-47 » : topic #asterion-47/, /Relation Asterion-47 → Helios-9 \(related_to\) validée automatiquement/, /Terminé : 2 concepts/]) assert.ok(logs.some(line => expected.test(line)), `log ${expected}`);
   const failed = run.jobs.find(job => job.publication === env.p3)!;
   assert.equal(failed.status, "failed");
   assert.equal(failed.attempts.length, 3, "trois tentatives du moteur, chacune journalisée");
@@ -136,7 +136,7 @@ test("pipeline manuel : progression persistante, échecs, relance ciblée et ré
 
   // Forced re-analysis: a human exclusion and topic deduplication survive it.
   const asterion = (await env.topics.visible("alice")).personal.find(topic => topic.tag === "asterion-47")!;
-  const [proposal] = (await env.relations.relationsOf("alice", asterion.id)).proposed;
+  const [proposal] = (await env.relations.relationsOf("alice", asterion.id)).visible;
   await env.relations.correct("alice", proposal.id, { status: "excluded", reason: "Non pertinent." });
   const topicCount = (await env.topics.visible("alice")).personal.length;
   const forced = (await pipelines.start("alice", { agent: env.alice.id, mode: "force" }))!;

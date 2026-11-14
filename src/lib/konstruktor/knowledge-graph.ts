@@ -54,15 +54,24 @@ export type KnowledgeNode = {
  * One quoted sentence, with the words the text uses to link the two concepts (« développe », « est un ») and the
  * concept it names as subject: what the sentence says, whatever the relation's type and stored order.
  */
-export type KnowledgeEvidence = { publication: string; excerpt: string | null; label: string | null; subject: string | null };
-/** What one agent's publications bring to a relation. */
-export type KnowledgeProvenance = { agent: string; evidence: KnowledgeEvidence[]; count: number };
+export type KnowledgeEvidence = { publication: string; excerpt: string | null; label: string | null; subject: string | null; explicit: boolean };
+export type KnowledgeStatus = "proposed" | "accepted" | "excluded";
+/** Who settled a status: a human decision, Konstruktor's automatic validation, or nobody (a model's proposal). */
+export type KnowledgeValidation = "human" | "auto" | null;
+/**
+ * What one agent's publications bring to a relation, and the relation's status for that agent: a human decision
+ * holds for every agent; otherwise it is validated automatically only by this agent's own explicit evidence, never
+ * because another agent's evidence was.
+ */
+export type KnowledgeProvenance = { agent: string; evidence: KnowledgeEvidence[]; count: number; status: KnowledgeStatus; validation: KnowledgeValidation };
 /** A recorded relation as stored: status, the owner's own mask, and the last human correction or decision. */
 export type KnowledgeEdge = {
   id: string; type: TopicRelationType; source: string; target: string;
   /** Oriented types read source → target; the others are symmetric. */
   directed: boolean;
-  status: "proposed" | "accepted" | "excluded";
+  /** For the selected agents: a human decision, else validated if one of them gives explicit evidence, else proposed. */
+  status: KnowledgeStatus;
+  validation: KnowledgeValidation;
   /** Masked by the owner for themself (personal exclusion), whatever the status. */
   hidden: boolean;
   origin: "human" | "agent" | "inference";
@@ -70,6 +79,7 @@ export type KnowledgeEdge = {
   confidence: number | null;
   justification: string;
   createdAt: string;
+  /** The last human type correction and the last human decision; automatic validations are never one. */
   correction: { from: string; to: string; at: string; reason: string | null } | null;
   decision: { action: "accepted" | "excluded" | "restored"; at: string; reason: string | null } | null;
   /** Evidence per selected agent, from its own publications only: one agent's knowledge is never shown as another's. */

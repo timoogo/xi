@@ -1,11 +1,11 @@
 import type { AccountStore } from "../accounts/store";
 import type { PublicationStore } from "../publications/store";
-import type { TopicRelationStore } from "../topics/relations";
+import { humanDecision, isHumanDecision, type TopicRelationStore } from "../topics/relations";
 import type { TopicStore } from "../topics/store";
 import { isPersonal, TopicError, type Topic } from "../topics/types";
 import { conceptKey } from "../search/text";
 import { justificationLink } from "./knowledge";
-import { KNOWLEDGE_LIMITS, type ConceptProvenance, type KnowledgeEdge, type KnowledgeGraph, type KnowledgeNode, type KnowledgeRequest } from "./knowledge-graph";
+import { KNOWLEDGE_LIMITS, type ConceptProvenance, type KnowledgeEdge, type KnowledgeGraph, type KnowledgeNode, type KnowledgeRequest, type KnowledgeStatus, type KnowledgeValidation } from "./knowledge-graph";
 
 type Stores = { accounts: Pick<AccountStore, "list">; topics: Pick<TopicStore, "visible">; relations: Pick<TopicRelationStore, "learnedAmong">; publications: Pick<PublicationStore, "agentMemory" | "get"> };
 
@@ -78,9 +78,18 @@ export async function knowledgeGraph(viewer: string, request: KnowledgeRequest, 
       if (agent && knows(agent, r.source) && knows(agent, r.target)) byAgent.set(agent, [...byAgent.get(agent) ?? [], e]);
     }
     return { ...r, byAgent };
-  }).filter(r => r.byAgent.size);
+  }).filter(r => r.byAgent.size).map(r => {
+    // Human decision > automatic validation > proposal. The stored status may come from another agent's evidence (or
+    // one not selected): without a human decision, each agent's status rests on its own evidence only.
+    const human = humanDecision(r) !== null || r.status === "excluded";
+    const status = (evidence: Learned["evidence"]): { status: KnowledgeStatus; validation: KnowledgeValidation } =>
+      human ? { status: r.status, validation: r.status === "proposed" ? null : "human" }
+        : r.status === "accepted" && evidence.some(e => e.explicit) ? { status: "accepted", validation: "auto" } : { status: "proposed", validation: null };
+    const perAgent = new Map([...r.byAgent].map(([agent, evidence]) => [agent, status(evidence)]));
+    return { ...r, perAgent, effective: status([...r.byAgent.values()].flat()) };
+  });
   // Exclusions (global or personal) never pass for validated relations: hidden unless explicitly requested.
-  const rejected = (r: (typeof relations)[number]) => r.status === "excluded" || r.hidden;
+  const rejected = (r: (typeof relations)[number]) => r.effective.status === "excluded" || r.hidden;
   const shown = relations.filter(r => request.excluded || !rejected(r));
   const neighbours = new Map<string, Set<string>>();
   for (const r of shown) for (const [a, b] of [[r.source, r.target], [r.target, r.source]]) neighbours.set(a, (neighbours.get(a) ?? new Set()).add(b));
@@ -107,21 +116,24 @@ export async function knowledgeGraph(viewer: string, request: KnowledgeRequest, 
     };
   });
   const edges: KnowledgeEdge[] = shown.filter(r => displayed.has(r.source) && displayed.has(r.target)).map(r => {
-    const correction = r.history.findLast(entry => entry.action === "type_changed");
-    const decision = r.history.findLast(entry => entry.action === "accepted" || entry.action === "excluded" || entry.action === "restored");
+    const human = r.history.filter(isHumanDecision);
+    const correction = human.findLast(entry => entry.action === "type_changed");
+    const decision = human.findLast(entry => entry.action === "accepted" || entry.action === "excluded" || entry.action === "restored");
     // Excerpts are capped per relation, shared between its agents: each one keeps at least one.
     const each = Math.max(1, Math.floor(KNOWLEDGE_LIMITS.evidence / r.byAgent.size));
     const provenance = selected.filter(agent => r.byAgent.has(agent.id)).map(agent => {
       const own = r.byAgent.get(agent.id)!;
-      return { agent: agent.id, count: own.length, evidence: own.slice(0, each).map(e => ({ publication: e.publication!, excerpt: e.excerpt ?? null, ...evidenceLink(r, e, topics) })) };
+      // Explicit evidence first: what validated the relation is what is shown.
+      const shown = [...own].sort((a, b) => Number(!!b.explicit) - Number(!!a.explicit)).slice(0, each);
+      return { agent: agent.id, count: own.length, ...r.perAgent.get(agent.id)!, evidence: shown.map(e => ({ publication: e.publication!, excerpt: e.excerpt ?? null, ...evidenceLink(r, e, topics), explicit: !!e.explicit })) };
     });
     const labels = new Map<string, { text: string; subject: string | null }>();
-    for (const e of [...r.byAgent.values()].flat()) {
+    for (const e of [...r.byAgent.values()].flat().sort((a, b) => Number(!!b.explicit) - Number(!!a.explicit))) {
       const { label, subject } = evidenceLink(r, e, topics);
       if (label && labels.size < KNOWLEDGE_LIMITS.labels) labels.set(`${subject}|${label.toLowerCase()}`, { text: label, subject });
     }
     return {
-      id: r.id, type: r.type, source: r.source, target: r.target, directed: r.directed, status: r.status, hidden: r.hidden,
+      id: r.id, type: r.type, source: r.source, target: r.target, directed: r.directed, ...r.effective, hidden: r.hidden,
       origin: r.origin, createdBy: r.createdBy, confidence: r.confidence, justification: r.justification, createdAt: r.createdAt,
       correction: correction ? { from: correction.from ?? "", to: correction.to ?? "", at: correction.at, reason: correction.reason ?? null } : null,
       decision: decision ? { action: decision.action as "accepted" | "excluded" | "restored", at: decision.at, reason: decision.reason ?? null } : null,
@@ -131,7 +143,7 @@ export async function knowledgeGraph(viewer: string, request: KnowledgeRequest, 
   const active = relations.filter(r => !rejected(r));
   return {
     ...base, nodes, edges,
-    counts: { concepts: concepts.size, publications: publications.size, accepted: active.filter(r => r.status === "accepted").length, proposed: active.filter(r => r.status === "proposed").length, excluded: relations.length - active.length },
+    counts: { concepts: concepts.size, publications: publications.size, accepted: active.filter(r => r.effective.status === "accepted").length, proposed: active.filter(r => r.effective.status === "proposed").length, excluded: relations.length - active.length },
     truncated: displayed.size < concepts.size,
   };
 }

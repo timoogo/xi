@@ -31,6 +31,22 @@ export const INDEX_EVIDENCE = ["cooccurrence", "shared_word", "shared_agent"] as
 export const AUTO_ACCEPT_CONFIDENCE = 0.8;
 const MIN_AUTOMATIC_JUSTIFICATION = 20;
 
+/**
+ * Author of automatic validations (and of their withdrawal) in a relation's history. Every other author of a decision
+ * is a human: human decision > automatic validation > model proposal, and nothing automatic overrides a human one.
+ */
+export const AUTO_VALIDATOR = "konstruktor:validation";
+const DECISIONS = new Set(["type_changed", "accepted", "excluded", "restored"]);
+/** A history entry recording a human decision: type correction, validation, exclusion or restoration. */
+export const isHumanDecision = (entry: TopicRelation["history"][number]) => DECISIONS.has(entry.action) && entry.by !== AUTO_VALIDATOR;
+/** The last human decision on a relation, or null. */
+export const humanDecision = (relation: Pick<TopicRelation, "history">) => relation.history.findLast(isHumanDecision) ?? null;
+/** Who settled the relation's current status: a human, Konstruktor's validation, or nobody yet (a proposal). */
+export function validatedBy(relation: Pick<TopicRelation, "history" | "status">): "human" | "auto" | null {
+  return humanDecision(relation) ? "human" : relation.status === "accepted" ? "auto" : null;
+}
+const autoReason = (evidence: Evidence[]) => `Validation automatique : la phrase citée relie explicitement les deux concepts${evidence.find(e => e.explicit && e.label) ? ` par « ${evidence.find(e => e.explicit && e.label)!.label} »` : ""}.`;
+
 const iso = z.iso.datetime();
 const actor = z.string().min(1).max(64);
 const evidenceSchema = z.object({
@@ -45,6 +61,11 @@ const evidenceSchema = z.object({
    */
   label: z.string().trim().min(1).max(200).optional(),
   subject: z.uuid().optional(),
+  /**
+   * Konstruktor's deterministic check passed: the excerpt states the relation explicitly, `subject` first, with these
+   * exact words (konstruktor/extraction.ts `explicitLink`). What allows an automatic validation; never set by a model.
+   */
+  explicit: z.literal(true).optional(),
 }).strict();
 const historySchema = z.object({
   at: iso, by: actor,
@@ -369,7 +390,13 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
     });
   }
 
-  /** An inferred relation stays private and proposed; citations retain their publication permissions. */
+  /**
+   * An inferred relation, private to its owner; citations retain their publication permissions. Validated
+   * automatically only with explicit evidence (`acceptable` and an `explicit` excerpt), and never when a human decided
+   * anything on the pair: an exclusion or a correction away from this type is returned as is (nothing is reproposed);
+   * a human decision on another relation of the pair keeps this one a proposal. Same relation again: new excerpts are
+   * added, an excerpt now checked explicit replaces its unchecked copy.
+   */
   async function proposePersonal(owner: string, input: unknown) {
     const data = automaticSchema.parse(input);
     if (data.source === data.target) throw new TopicError("Une relation relie deux topics distincts.");
@@ -381,19 +408,53 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
       if (!ids.has(data.source) || !ids.has(data.target)) throw new TopicError("Topic introuvable.", 404);
       const ends = normalize(data.type, data.source, data.target);
       const mine = await personalRelations(owner);
+      const pair = mine.filter(r => samePair(r, data.source, data.target));
       // An exclusion on the pair, or a human correction away from this type, is never undone by a later analysis.
-      const rejected = mine.find(r => samePair(r, data.source, data.target) && (r.status === "excluded" || r.history.some(h => h.action === "type_changed" && h.from === data.type)));
+      const rejected = pair.find(r => r.status === "excluded" || r.history.some(h => h.action === "type_changed" && h.from === data.type));
       if (rejected) return rejected;
+      const auto = data.acceptable && data.evidence.some(e => e.explicit) && !pair.some(r => humanDecision(r));
+      const at = now().toISOString();
+      const validate = (relation: TopicRelation): TopicRelation => auto && relation.status === "proposed"
+        ? { ...relation, status: "accepted", history: [...relation.history, { at, by: AUTO_VALIDATOR, action: "accepted", reason: autoReason(relation.evidence) }] } : relation;
       const existing = mine.find(r => r.type === data.type && r.source === ends.source && r.target === ends.target);
       if (existing) {
-        const fresh = data.evidence.filter(e => !existing.evidence.some(previous => previous.kind === e.kind && previous.ref === e.ref && previous.excerpt === e.excerpt));
-        if (!fresh.length || existing.evidence.length >= 20) return existing;
-        const updated = { ...existing, evidence: [...existing.evidence, ...fresh].slice(0, 20), updatedAt: now().toISOString() };
+        const evidence = [...existing.evidence];
+        for (const item of data.evidence) {
+          const same = evidence.findIndex(previous => previous.kind === item.kind && previous.ref === item.ref && previous.excerpt === item.excerpt);
+          if (same < 0) evidence.push(item);
+          else if (item.explicit && !evidence[same].explicit) evidence[same] = item;
+        }
+        const next = validate({ ...existing, evidence: evidence.slice(0, 20) });
+        if (JSON.stringify(next) === JSON.stringify(existing)) return existing;
+        const updated = { ...next, updatedAt: at };
         await save(updated); return updated;
       }
-      const at = now().toISOString();
-      const relation: TopicRelation = { id: randomUUID(), ...ends, type: data.type, owner, status: "proposed", origin: data.origin, createdBy: data.createdBy, confidence: data.confidence, justification: data.justification, evidence: data.evidence, ...(data.assessment ? { assessment: data.assessment } : {}), createdAt: at, updatedAt: at, history: [{ at, by: data.createdBy, action: "created" }] };
+      const relation = validate({ id: randomUUID(), ...ends, type: data.type, owner, status: "proposed", origin: data.origin, createdBy: data.createdBy, confidence: data.confidence, justification: data.justification, evidence: data.evidence, ...(data.assessment ? { assessment: data.assessment } : {}), createdAt: at, updatedAt: at, history: [{ at, by: data.createdBy, action: "created" }] });
       await save(relation); return relation;
+    });
+  }
+
+  /**
+   * After a new analysis of one publication: its evidence that the analysis no longer gives (`kept`: relation id and
+   * excerpt) is withdrawn from the owner's automatic relations, and an automatic validation resting on no explicit
+   * evidence any more goes back to a proposal, traced. Relations a human decided on keep everything they had.
+   */
+  async function retractPublication(owner: string, publication: string, kept: ReadonlySet<string>) {
+    return exclusive(async () => {
+      let changed = 0;
+      for (const relation of await personalRelations(owner)) {
+        if (relation.origin === "human" || humanDecision(relation)) continue;
+        const evidence = relation.evidence.filter(e => e.publication !== publication || kept.has(`${relation.id}\n${e.excerpt}`));
+        if (evidence.length === relation.evidence.length) continue;
+        const at = now().toISOString();
+        const next: TopicRelation = { ...relation, evidence, updatedAt: at, history: [...relation.history] };
+        if (validatedBy(relation) === "auto" && !evidence.some(e => e.explicit)) {
+          next.status = "proposed";
+          next.history.push({ at, by: AUTO_VALIDATOR, action: "reproposed", reason: "Validation automatique retirée : la nouvelle analyse de la publication ne l’établit plus." });
+        }
+        await save(next); changed++;
+      }
+      return changed;
     });
   }
 
@@ -414,7 +475,10 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
         if (pool.some(r => r.id !== id && r.status !== "excluded" && r.type === next.type && r.source === next.source && r.target === next.target)) throw new TopicError("Une relation identique existe déjà.", 409);
         next.history.push({ at, by: viewer, action: "type_changed", from: relation.type, to: change.type, ...(change.reason ? { reason: change.reason } : {}) });
       }
-      if (change.status && change.status !== relation.status) {
+      // Confirming an automatic validation is a human decision of its own: from then on, it is theirs.
+      if (change.status === "accepted" && relation.status === "accepted" && validatedBy(relation) === "auto") {
+        next.history.push({ at, by: viewer, action: "accepted", ...(change.reason ? { reason: change.reason } : {}) });
+      } else if (change.status && change.status !== relation.status) {
         next.status = change.status;
         next.history.push({ at, by: viewer, action: change.status === "excluded" ? "excluded" : relation.status === "excluded" ? "restored" : "accepted", ...(change.reason ? { reason: change.reason } : {}) });
       }
@@ -510,6 +574,6 @@ export function createTopicRelationStore({ vault, db, topics, readable = async (
       .filter(r => r.evidence.length > 0);
   }
 
-  return { relationsOf, create, propose, proposePersonal, correct, hide, readableStructure, networkEdges, learnedAmong, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
+  return { relationsOf, create, propose, proposePersonal, retractPublication, correct, hide, readableStructure, networkEdges, learnedAmong, reindex: async () => exclusive(async () => { project(await sharedRelations()); }) };
 }
 export type TopicRelationStore = ReturnType<typeof createTopicRelationStore>;

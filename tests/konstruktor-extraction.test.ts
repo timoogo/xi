@@ -115,11 +115,12 @@ test("Konstruktor : texte anglais, nom affiché conservé, relation prouvée par
   const llm = () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async ({ prompt }: { prompt: string }) => { prompts.push(prompt); return JSON.stringify(answer); } } });
   const services = { db, topics, accounts: { watchAgents: async () => [{ id: agent, owner: "alice" }] }, publications, relations };
   const result = await KNOWLEDGE_TASK.run({ owner: "alice", input: { publication: id, agent, revision: "r1" }, services, llm, log: () => {} } as never);
-  assert.deepEqual(result, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 1, relations: 1, kept: 0 });
+  assert.deepEqual(result, { outcome: "done", concepts: 2, reused: 0, created: 2, ignored: 1, relations: 1, validated: 1, kept: 0 });
   assert.equal(prompts[0].split(X59).length - 1, 1, "le résumé identique au message n’est envoyé qu’une fois");
   const mine = (await topics.visible("alice")).personal;
   assert.deepEqual(mine.map(topic => [topic.tag, topic.name]).sort(), [["mike-lippert", "Mike Lippert"], ["x-59", "X-59"]]);
-  const [relation] = (await relations.relationsOf("alice", mine.find(topic => topic.tag === "x-59")!.id)).proposed;
+  const [relation] = (await relations.relationsOf("alice", mine.find(topic => topic.tag === "x-59")!.id)).visible;
   assert.equal(relation.evidence[0].excerpt, X59);
-  assert.match(relation.justification, /« successfully completed a flight of the »/);
+  // The label is the sentence's exact span, without the object's article.
+  assert.match(relation.justification, /« successfully completed a flight of »/);
 });

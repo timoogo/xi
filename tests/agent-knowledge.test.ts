@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { openVault } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
-import { createTopicRelationStore } from "../src/lib/topics/relations";
+import { AUTO_VALIDATOR, createTopicRelationStore } from "../src/lib/topics/relations";
 import { createJobQueue } from "../src/lib/watch/jobs";
 import { KNOWLEDGE_TASK } from "../src/lib/konstruktor/knowledge";
 import { createKnowledgePipelines } from "../src/lib/konstruktor/pipelines";
@@ -41,16 +41,17 @@ test("Konstruktor enrichit les topics privés à partir de citations, sans doubl
   assert.equal(other.personal.length, 0);
   assert.equal((db.prepare("SELECT count(*) AS n FROM xi_agent_knowledge").get() as { n: number }).n, 2);
   assert.ok((db.prepare("SELECT excerpt FROM xi_agent_knowledge").all() as { excerpt: string }[]).every(row => row.excerpt === quote));
-  const proposals = await relations.relationsOf("alice", mine.personal[0].id);
-  assert.equal(proposals.proposed.length, 1);
-  assert.equal(proposals.proposed[0].evidence[0].publication, id);
-  assert.equal(proposals.proposed[0].status, "proposed");
+  // « observe la région » stands between the two concepts: stated explicitly, validated automatically, traced as such.
+  const learned = await relations.relationsOf("alice", mine.personal[0].id);
+  assert.deepEqual([learned.visible.length, learned.proposed.length], [1, 0]);
+  assert.equal(learned.visible[0].evidence[0].publication, id);
+  assert.deepEqual([learned.visible[0].status, learned.visible[0].evidence[0].explicit, learned.visible[0].history.at(-1)?.by], ["accepted", true, AUTO_VALIDATOR]);
   await assert.rejects(relations.relationsOf("bob", mine.personal[0].id));
   const different = { ...publication, id: randomUUID(), revision: "revision-2", contentRevision: "revision-2", messages: [{ body: "Perseverance, Tinga." }] };
   const weakServices = { ...services, publications: { ...publications, get: async () => different } };
   const weakAnswer = { concepts: [{ name: "Perseverance" }, { name: "Tinga" }], relations: [{ from: "Perseverance", link: ",", to: "Tinga", type: "influences", confidence: 0.9 }] };
   await KNOWLEDGE_TASK.run({ owner: "alice", input: { publication: different.id, agent, revision: different.contentRevision }, services: weakServices, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(weakAnswer) } }), log: () => {} } as never);
-  assert.equal((await relations.relationsOf("alice", mine.personal[0].id)).proposed.length, 1);
+  assert.deepEqual(Object.values(await relations.relationsOf("alice", mine.personal[0].id)).map(list => list.length), [1, 0, 0, 0]);
 });
 
 test("les contributions et citations privées ne sont lisibles que par le propriétaire", async t => {
@@ -98,11 +99,11 @@ test("concepts existants réutilisés, relations exclues ou corrigées jamais re
   const answer = (type: string) => ({ concepts: [{ name: "PERSEVERANCE" }, { name: "perseverance" }, { name: "Tinga" }, { name: "NASA" }], relations: [relation(type)] });
   const run = (type: string, owner = "alice") => KNOWLEDGE_TASK.run({ owner, input: { publication: current.id, agent, revision: current.contentRevision }, services, llm: () => ({ ok: true, resolved: { model: "local" }, inference: { complete: async () => JSON.stringify(answer(type)) } }), log: () => {} } as never);
 
-  assert.deepEqual(await run("related_to"), { outcome: "done", concepts: 3, reused: 1, created: 2, ignored: 0, relations: 1, kept: 0 });
+  assert.deepEqual(await run("related_to"), { outcome: "done", concepts: 3, reused: 1, created: 2, ignored: 0, relations: 1, validated: 1, kept: 0 });
   const mine = await topics.visible("alice");
   assert.deepEqual(mine.personal.map(topic => topic.tag).sort(), ["nasa", "perseverance", "tinga"]);
   assert.ok(mine.personal.some(topic => topic.id === existing.id), "le topic existant est réutilisé, sans doublon de casse");
-  const [proposed] = (await relations.relationsOf("alice", existing.id)).proposed;
+  const [proposed] = (await relations.relationsOf("alice", existing.id)).visible;
   assert.equal(proposed.type, "related_to");
 
   // Human decisions: exclusion of the pair, then a later publication proposing it again, with any type.

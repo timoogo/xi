@@ -8,6 +8,7 @@ import { assess, explicitConcepts, topicKeys, typeCue } from "../topics/discover
 import { KNOWLEDGE_SYSTEM, knowledgeAnswerSchema, screenKnowledge } from "./extraction";
 import type { PublicationStore } from "../publications/store";
 import type { TopicStore } from "../topics/store";
+import { humanDecision } from "../topics/relations";
 
 /** Private provenance index; concepts and relations themselves remain in the existing topic stores. */
 export function migrateAgentKnowledge(db: Database.Database) {
@@ -51,7 +52,9 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       log("warn", "Publication modifiée pendant l’analyse : rien n’est enregistré.");
       return { outcome: "obsolete" };
     }
-    let created = 0, reused = 0, proposed = 0, kept = 0;
+    let created = 0, reused = 0, proposed = 0, validated = 0, kept = 0;
+    /** What this analysis still finds in the publication: relation id and excerpt (older evidence of it is withdrawn). */
+    const supported = new Set<string>();
     const ignored = screened.rejected.length;
     for (const item of screened.concepts) {
       const key = conceptKey(item.name), tag = normalizeTag(item.name);
@@ -71,19 +74,33 @@ export const KNOWLEDGE_TASK: SystemTask<z.infer<typeof schema>> = {
       // The model's proposal remains unverified and requires a substantive citation and human review.
       if (score.assessment.evidence < 1 || score.assessment.type < 0.7) { log("info", `Relation ${label} ignorée : preuve insuffisante.`); continue; }
       // Grounded justification: the linking words the text uses, never a free paraphrase by the model.
-      const justification = knowledgeJustification(item.from, item.to, item.link);
-      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt: item.quote.slice(0, 600), label: item.link.slice(0, 200), subject: a.id }], acceptable: false });
+      // The label is the sentence's own words; checked explicit, the exact span between the concepts. The subject is the
+      // concept the sentence names first, so the label reads as the text does, whatever the model's order.
+      const words = item.explicit?.label ?? item.link;
+      const justification = knowledgeJustification(item.from, item.to, words);
+      const subject = conceptKey(item.subject) === conceptKey(item.from) ? a : b;
+      const excerpt = item.quote.slice(0, 600);
+      log("info", item.explicit ? `Relation ${label} explicite dans la phrase (« ${words} »).` : `Relation ${label} non démontrée (${item.why ?? "lien implicite"}) : simple proposition.`);
+      const relation = await services.relations.proposePersonal(owner, { source: a.id, target: b.id, type: item.type, origin: "inference", createdBy: `local-model:${binding.resolved.model}`.slice(0, 64), confidence: score.confidence, assessment: score.assessment, justification, evidence: [{ kind: "publication", ref: `publication:${publication.id}`, publication: publication.id, excerpt, label: words.slice(0, 200), subject: subject.id, ...(item.explicit ? { explicit: true as const } : {}) }], acceptable: !!item.explicit });
+      supported.add(`${relation.id}\n${excerpt}`);
+      const decided = humanDecision(relation);
       if (relation.status === "excluded" || relation.type !== item.type) { kept++; log("info", `Relation ${label} non reproposée : exclue ou corrigée par une décision humaine.`); }
-      else { proposed++; log("info", `Relation ${label} ${relation.status === "accepted" ? "déjà acceptée : preuve conservée" : "proposée, à examiner"}.`); }
+      else if (decided) { kept++; log("info", `Relation ${label} : décision humaine conservée (${relation.status === "accepted" ? "validée" : "proposée"}), preuve ajoutée.`); }
+      // Validated by this analysis only when its own evidence is explicit (an earlier one may be withdrawn below).
+      else if (relation.status === "accepted" && item.explicit) { validated++; log("info", `Relation ${label} validée automatiquement.`); }
+      else { proposed++; log("info", `Relation ${label} proposée, à examiner.`); }
     }
+    // Evidence an earlier analysis of this publication gave and this one does not is withdrawn (human decisions excepted).
+    const withdrawn = await services.relations.retractPublication(owner, publication.id, supported);
+    if (withdrawn) log("info", `${withdrawn} relation(s) : preuves d’une analyse antérieure de cette publication retirées.`);
     migrateAgentKnowledge(services.db);
     services.db.transaction(() => {
       services.db.prepare("DELETE FROM xi_agent_knowledge WHERE owner = ? AND agent = ? AND publication = ?").run(owner, agent.id, publication.id);
       const insert = services.db.prepare("INSERT OR IGNORE INTO xi_agent_knowledge VALUES (?, ?, ?, ?, ?, ?)");
       for (const item of resolved.values()) insert.run(owner, agent.id, publication.id, publication.contentRevision, item.id, item.quote);
     })();
-    log("info", `Terminé : ${resolved.size} concepts (${reused} réutilisés, ${created} créés, ${ignored} ignorés), ${proposed} relations proposées, ${kept} décisions conservées.`);
-    return { outcome: "done", concepts: resolved.size, reused, created, ignored, relations: proposed, kept };
+    log("info", `Terminé : ${resolved.size} concepts (${reused} réutilisés, ${created} créés, ${ignored} ignorés), ${validated} relations validées automatiquement, ${proposed} proposées, ${kept} décisions humaines conservées.`);
+    return { outcome: "done", concepts: resolved.size, reused, created, ignored, relations: proposed + validated, validated, kept };
   },
 };
 
