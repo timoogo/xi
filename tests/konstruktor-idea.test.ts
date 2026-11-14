@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { BUILTIN_PRESETS } from "../src/lib/accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../src/lib/bloub/config";
-import { IDEA_MIN_TIMEOUT_MS, type IdeaPlan } from "../src/lib/konstruktor/idea";
+import { accountDraftSchema } from "../src/lib/accounts/types";
+import { IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, type IdeaPlan } from "../src/lib/konstruktor/idea";
 import { ideaSteps, type IdeaTaskView } from "../src/lib/konstruktor/idea-steps";
 import { InferenceUnavailableError } from "../src/lib/watch/inference";
 import type { LLMBindOptions } from "../src/lib/watch/llm-binding";
@@ -11,7 +12,13 @@ import { files, json, model, seed, setup } from "./helpers/konstruktor";
 
 type App = Awaited<ReturnType<typeof setup>>;
 const topic = (name: string, domain: string, extra: Record<string, unknown> = {}) => ({ name, scope: `Actualité : ${name.toLowerCase()}.`, domain, ...extra });
-const domain = (name: string, extra: Record<string, unknown> = {}) => ({ name, description: `Veille ${name.toLowerCase()}.`, ...extra });
+/** Invented ΞAgent names of the simulated answers, by domain. */
+const NAMES: Record<string, string> = {
+  "Neurotechnologies médicales": "Neurolys", "Autonomie et handicap": "Libravie", Neurotechnologies: "Synapsia", "Filière hydrogène": "Hydrion", Hydrogène: "Hydrion",
+  Cyclisme: "Pédalix", Jazz: "Swingo", Volcanologie: "Magmatik", Fiscalité: "Taxomètre", Échecs: "Roquette", "Énergies marines": "Marémotrix", "Musique baroque": "Clavelune",
+  Énergie: "Voltaire", Apiculture: "Butinette", Saké: "Kōjiro", "Astronomie amateur": "Orbitelle", "Sciences humaines": "Agora", "Santé publique": "Vigisan",
+};
+const domain = (name: string, extra: Record<string, unknown> = {}) => ({ name, agent: NAMES[name], description: `Veille ${name.toLowerCase()}.`, ...extra });
 
 async function generate(app: App, owner = "alice", text = "Une idée de veille") {
   const requestId = randomUUID();
@@ -66,14 +73,15 @@ test("konstruktor idea: the real case — no off-topic ΞAgent or topic reused, 
   const { request, plan } = await generate(app, "alice", "IA, robotique et interfaces cerveau-machine pour la médecine et l’autonomie des personnes handicapées.");
   assert.equal(request.state, "done");
   assert.deepEqual(tags(plan), [
-    ["new", "neurotechnologies-medicales", ["+ia-pour-le-diagnostic-medical", "+interfaces-cerveau-machine-pour-la-reeducation-motrice", "+informatique-des-neuroprotheses"]],
-    ["new", "autonomie-et-handicap", ["+robotique-assistance-aux-personnes-handicapees", "+exosquelettes-pour-la-mobilite"]],
+    ["new", "neurolys", ["+ia-pour-le-diagnostic-medical", "+interfaces-cerveau-machine-pour-la-reeducation-motrice", "+informatique-des-neuroprotheses"]],
+    ["new", "libravie", ["+robotique-assistance-aux-personnes-handicapees", "+exosquelettes-pour-la-mobilite"]],
   ]);
   const reused = new Set(plan.groups.flatMap(group => group.agent.type === "existing" ? [group.agent.id] : []));
   for (const id of [astronoxi, hackxing, politiks, gaia]) assert.ok(!reused.has(id), "Astronoxi (science), HackXing (compétitivité), @politiks (informatique), gaïa: never reused");
   assert.ok(plan.groups.flatMap(group => group.topics).every(item => !item.existing), "no generic or unrelated topic reused (« Informatique des neuroprothèses » ≠ #informatique; nothing ≈ X-59)");
   const prompt = requests[0].prompt;
-  for (const absent of ["X 59", "science", "compétitivité", "astronoxi", "politiks", "T1", "A1"]) assert.ok(!prompt.includes(absent), `${absent} is not offered to the model`);
+  for (const absent of ["X 59", "science", "compétitivité", "informatique", "\"T1\"", "\"A1\""]) assert.ok(!prompt.includes(absent), `${absent} is not offered to the model`);
+  assert.match(prompt, /Noms d’ΞAgents déjà pris, à ne pas reprendre ni imiter de près :\n\[.*"Astronoxi".*"HackXing".*\]/, "existing ΞAgents: their names only, as names to avoid");
   assert.deepEqual(await files(app.root), before, "nothing written by the generation");
 });
 
@@ -87,11 +95,12 @@ test("konstruktor idea: a ΞAgent is not reused for its name alone; a generic sh
   await seed(app);
   const informatique = await newTopic(app, "alice", "informatique", "Informatique");
   await newTopic(app, "alice", "recherche-aeronautique", "Recherche aéronautique");
-  const homonym = await agent(app, "alice", "neurotechnologies", "Neurotechnologies", [informatique.id]);
+  await agent(app, "alice", "neurotechnologies", "Neurotechnologies", [informatique.id]);
+  // Bob already holds the handle the invented name gives.
+  await agent(app, "bob", "synapsia", "Le Synapsia de Bob", [informatique.id]);
   const { plan } = await generate(app);
   const [group] = plan.groups;
-  assert.deepEqual(group.agent, { type: "new", name: "Neurotechnologies", handle: "neurotechnologies-2", about: "Veille neurotechnologies.", note: "@neurotechnologies porte un nom proche mais ne suit aucun de ces topics : il n’est pas réutilisé." });
-  assert.notEqual((group.agent as { id?: string }).id, homonym);
+  assert.deepEqual(group.agent, { type: "new", name: "Synapsia", handle: "synapsia-2", about: "Veille neurotechnologies.", note: null }, "the ΞAgent named after the domain is not reused; the taken handle gets a suffix");
   assert.equal(group.topics.find(item => item.name === "Recherche aéronautique supersonique")!.existing, null, "« recherche aéronautique » in common is not the same subject");
 });
 
@@ -126,7 +135,7 @@ test("konstruktor idea: 5 linked topics → 1 new ΞAgent; nothing before confir
   const before = await files(app.root);
   const catalogBefore = (await app.topics.list()).length;
   const { requestId, plan } = await generate(app);
-  assert.deepEqual(tags(plan), [["new", "filiere-hydrogene", ["+hydrogene-vert", "+electrolyseurs-industriels", "+stations-hydrogene", "+piles-a-combustible", "+stockage-hydrogene"]]]);
+  assert.deepEqual(tags(plan), [["new", "hydrion", ["+hydrogene-vert", "+electrolyseurs-industriels", "+stations-hydrogene", "+piles-a-combustible", "+stockage-hydrogene"]]]);
   assert.deepEqual(await files(app.root), before);
   await assert.rejects(app.konstruktor.createFromIdea("bob", { requestId }), { status: 404 }, "another user's plan is unknown");
   assert.deepEqual((await app.konstruktor.createFromIdea("alice", { requestId })).results.map(result => result.status), ["completed"]);
@@ -147,8 +156,8 @@ test("konstruktor idea: independent topics → several ΞAgents; mixed case → 
   assert.ok(first.plan.groups.every(group => group.agent.type === "new" && group.topics.length === 1));
   const second = await generate(app);
   assert.deepEqual(tags(second.plan), [
-    ["new", "energies-marines", ["+eoliennes-en-mer", "+hydroliennes-fluviales", "+energie-houlomotrice"]],
-    ["new", "musique-baroque", ["+opera-baroque", "+repertoire-de-clavecin"]],
+    ["new", "maremotrix", ["+eoliennes-en-mer", "+hydroliennes-fluviales", "+energie-houlomotrice"]],
+    ["new", "clavelune", ["+opera-baroque", "+repertoire-de-clavecin"]],
   ]);
   assert.deepEqual((await app.konstruktor.createFromIdea("alice", { requestId: second.requestId })).results.map(result => result.status), ["completed", "completed"]);
 });
@@ -227,19 +236,89 @@ test("konstruktor idea: an existing ΞAgent that already follows everything is l
   const production = await newTopic(app, "alice", "production-d-hydrogene-vert", "Production d’hydrogène vert");
   const veille = await agent(app, "alice", "veille-h2", "Veille H2", [production.id]);
   const { requestId, plan } = await generate(app);
-  assert.deepEqual(plan.groups.map(group => group.agent.handle), ["veille-h2", "apiculture", "sake"]);
+  assert.deepEqual(plan.groups.map(group => group.agent.handle), ["veille-h2", "butinette", "kojiro"]);
   // Between preview and confirmation, someone takes the last handle.
-  await agent(app, "bob", "sake", "Saké", [astronomy.id]);
+  await agent(app, "bob", "kojiro", "Kojiro", [astronomy.id]);
   const first = await app.konstruktor.createFromIdea("alice", { requestId });
   assert.deepEqual(first.results.map(result => result.status), ["unchanged", "completed", "failed"]);
   assert.equal(first.results[0].agentId, veille);
-  assert.match(first.results[2].error!, /Le handle @sake est déjà réservé/);
+  assert.match(first.results[2].error!, /Le handle @kojiro est déjà réservé/);
   const catalog = await app.topics.list();
   assert.ok(catalog.some(item => item.tag === "frelons-asiatiques"));
   assert.ok(!catalog.some(item => item.tag === "rizieres-en-terrasses"), "nothing of the failed group is written");
   const second = await app.konstruktor.createFromIdea("alice", { requestId });
   assert.deepEqual(second.results.map(result => result.status), ["unchanged", "completed", "failed"]);
   assert.equal(second.results[1].agentId, first.results[1].agentId);
-  assert.deepEqual((await ownAgents(app)).map(item => item.handle).sort(), ["apiculture", "veille-astro", "veille-h2"]);
+  assert.deepEqual((await ownAgents(app)).map(item => item.handle).sort(), ["butinette", "veille-astro", "veille-h2"]);
   assert.equal((await app.topics.list()).length, catalog.length, "no duplicate on retry");
+});
+
+test("konstruktor idea: no quota — a simple intention gives few topics, a vast one more than five; creative, distinct names and valid unique handles; confirmation with any count", { timeout: 30_000 }, async t => {
+  const simple = { topics: [topic("Comètes visibles à l’œil nu", "Astronomie amateur"), topic("Pluies d’étoiles filantes", "Astronomie amateur")], domains: [domain("Astronomie amateur")] };
+  const vast = {
+    topics: [
+      topic("Interfaces cerveau-machine pour la rééducation", "Neurotechnologies médicales"), topic("Implants cochléaires connectés", "Neurotechnologies médicales"), topic("IA pour le diagnostic médical", "Neurotechnologies médicales"),
+      topic("Exosquelettes pour la mobilité", "Autonomie et handicap"), topic("Domotique pour personnes handicapées", "Autonomie et handicap"), topic("Fauteuils roulants autonomes", "Autonomie et handicap"),
+      topic("Éthique de l’augmentation humaine", "Sciences humaines"), topic("Droit des neurodonnées", "Sciences humaines"),
+    ],
+    domains: [domain("Neurotechnologies médicales"), domain("Autonomie et handicap"), domain("Sciences humaines")],
+  };
+  let call = 0;
+  const { binding, requests } = model(() => json(call++ === 0 ? simple : vast));
+  const app = await setup(t, binding);
+  await seed(app);
+  const prompt = (await generate(app), requests[0].prompt + requests[0].system);
+  assert.doesNotMatch(prompt, /exactement|5 topics|cinq/, "no fixed number asked");
+  assert.match(prompt, /N’ajoute jamais un topic pour faire du nombre/);
+
+  const big = await generate(app);
+  const first = app.tasks.list("alice", "konstruktor").at(-1)!;
+  const small = first.result as IdeaPlan;
+  assert.deepEqual(tags(small), [["new", "orbitelle", ["+cometes-visibles-a-oeil-nu", "+pluies-etoiles-filantes"]]]);
+  assert.deepEqual([small.groups[0].agent.name, (small.groups[0].agent as { about: string }).about, small.groups[0].domain], ["Orbitelle", "Veille astronomie amateur.", "Astronomie amateur"], "name: identity; about: mission; domain: grouping");
+  assert.equal(big.plan.groups.reduce((sum, group) => sum + group.topics.length, 0), 8, "a vast intention: more than five topics");
+  assert.deepEqual(big.plan.groups.map(group => [group.agent.name, group.agent.handle, group.topics.length]), [["Neurolys", "neurolys", 3], ["Libravie", "libravie", 3], ["Agora", "agora", 2]]);
+  for (const group of big.plan.groups) assert.ok(accountDraftSchema.shape.handle.safeParse(group.agent.handle).success);
+
+  const catalogBefore = (await app.topics.list()).length;
+  for (const requestId of [first.requestId, big.requestId]) assert.ok((await app.konstruktor.createFromIdea("alice", { requestId })).results.every(result => result.status === "completed"));
+  assert.equal((await app.topics.list()).length, catalogBefore + 10);
+  const handles = (await ownAgents(app)).map(item => item.handle).sort();
+  assert.deepEqual(handles, ["agora", "libravie", "neurolys", "orbitelle", "veille-astro"]);
+  const names = (await ownAgents(app)).map(item => item.name);
+  assert.equal(new Set(names).size, names.length);
+});
+
+test("konstruktor idea: descriptive, shared, existing or same-prefix ΞAgent names are sent back once for correction; the technical ceiling is enforced", { timeout: 30_000 }, async t => {
+  const topics = [topic("Comètes visibles à l’œil nu", "Astronomie amateur"), topic("Vaccination des adolescents", "Santé publique")];
+  const named = (a: string, b: string) => json({ topics, domains: [{ ...domain("Astronomie amateur"), agent: a }, { ...domain("Santé publique"), agent: b }] });
+  const tooMany = json({ topics: Array.from({ length: IDEA_MAX_TOPICS + 1 }, (_, i) => topic(`Sujet précis numéro ${i + 1}`, "Astronomie amateur")), domains: [domain("Astronomie amateur")] });
+  const answers = [
+    named("Astronomie amateur", "Santé publique"), named("Orbitelle", "Vigisan"),
+    named("Xinova", "Xisanté"), named("Orbitelle", "Vigisan"),
+    named("Veille astro", "Vigisan"), named("Orbitelle", "Orbitelle"),
+    tooMany, tooMany,
+  ];
+  const { binding, requests } = model((_, n) => answers[n - 1]);
+  const app = await setup(t, binding);
+  await seed(app);
+
+  const descriptive = await generate(app);
+  assert.equal(descriptive.request.state, "done");
+  assert.match(requests[1].prompt, /Le nom « Astronomie amateur » décrit le domaine au lieu de donner une identité/);
+  assert.deepEqual(descriptive.plan.groups.map(group => group.agent.name), ["Orbitelle", "Vigisan"]);
+
+  const prefixed = await generate(app);
+  assert.equal(prefixed.request.state, "done");
+  assert.match(requests[3].prompt, /partagent le même préfixe ou suffixe/);
+
+  const taken = await generate(app);
+  assert.equal(taken.request.state, "failed", "still wrong after the correction: reported, nothing created");
+  assert.match(requests[4].prompt, /"Veille astro"/, "names already taken are listed");
+  assert.match(requests[5].prompt, /Le nom « Veille astro » est déjà celui d’un ΞAgent existant/);
+  assert.match(taken.request.message!, /Deux ΞAgents portent le même nom/);
+
+  const ceiling = await generate(app);
+  assert.equal(ceiling.request.state, "failed");
+  assert.match(ceiling.request.message!, /non conforme au format attendu/);
 });

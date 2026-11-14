@@ -6,9 +6,14 @@ Entrée « Créer à partir d'une idée » de la page Konstruktor (`/dashboard/k
 2. **Génération** : tâche système `plan-idea` de Konstruktor (`src/lib/konstruktor/idea.ts`), sur la file habituelle
    (`POST /api/system-agents/konstruktor/tasks`, suivie par son `requestId`), avec le modèle local de l'utilisateur.
    Le modèle ne reçoit **que l'intention** : ni le catalogue de topics, ni les ΞAgents existants (voir « Pourquoi »).
-   Il répond en JSON validé : exactement 5 topics, chacun rattaché à un domaine ; un domaine = un ΞAgent. Le nombre de
-   domaines vient du regroupement. Contrôles déterministes (`answerProblems`) : topic explicite (au moins deux mots
-   porteurs de sens : « production d'hydrogène », pas « production »), sujets distincts, domaines cohérents. Un
+   Il répond en JSON validé : les topics utiles à l'intention (pas de quota : peu pour une demande simple, davantage
+   pour une demande vaste ; 10 au plus, limite technique d'un déploiement et d'une réponse de petit modèle), chacun
+   rattaché à un domaine ; un domaine = un ΞAgent. Le nombre de domaines vient du regroupement. Pour chaque ΞAgent :
+   `agent` = nom inventé (identité courte et prononçable), `description` = mission ; le handle en est dérivé. Seuls les
+   **noms** des ΞAgents existants sont donnés au modèle, comme noms pris à éviter (jamais leurs topics ni de références). Contrôles déterministes (`answerProblems`) : topic explicite (au moins deux mots
+   porteurs de sens : « production d'hydrogène », pas « production »), sujets distincts, domaines cohérents ; nom
+   d'ΞAgent court (1 à 3 mots), qui ne soit pas une simple description (tous ses mots déjà dans le domaine ou les
+   topics), distinct des autres et des ΞAgents existants, sans préfixe ni suffixe commun à tous. Un
    problème → une seule correction demandée au modèle avec la liste des problèmes, puis erreur lisible. JSON illisible →
    une relance, puis erreur.
 3. **Réutilisation**, décidée par le code seul, contre le catalogue visible et les ΞAgents de l'utilisateur. Dans le

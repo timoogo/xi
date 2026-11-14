@@ -10,7 +10,7 @@ export type InferenceStage = (typeof INFERENCE_STAGES)[number];
  * attribution and verbatim quotes, about 110 to 140 tokens per claim. Draft: a thread of up to
  * 10 messages of 280 characters with their claim labels. Concepts (Konstruktor, topic discovery): up to
  * 12 concepts of about 55 tokens (label and one quoted sentence) and 8 relations of about 95 tokens. Idea
- * (Konstruktor, creation from an idea): 5 topics with a one-sentence scope and their domains.
+ * (Konstruktor, creation from an idea): up to 10 topics with a one-sentence scope, their domains and ΞAgent names.
  */
 export const STAGE_MIN_TOKENS: Record<InferenceStage, number> = {
   relevance: 512,
@@ -20,7 +20,7 @@ export const STAGE_MIN_TOKENS: Record<InferenceStage, number> = {
   draft: 1_536,
   consistency: 512,
   concepts: 1_536,
-  idea: 1_024,
+  idea: 1_536,
 };
 
 export const generationLimit = (maxTokens: number, stage?: InferenceStage) => Math.max(maxTokens, stage ? STAGE_MIN_TOKENS[stage] : 0);

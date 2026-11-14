@@ -30,7 +30,7 @@ function Group({ group, result }: { group: PlanGroup; result?: IdeaGroupResult }
   return <article aria-label={`ΞAgent ${agent.name}`} data-agent={agent.type} className="rounded-xl border p-4">
     <p className="text-xs font-medium uppercase text-muted-foreground">{agent.type === "new" ? "Nouveau ΞAgent" : "ΞAgent existant, réutilisé"} · {group.domain}</p>
     <h3 className="mt-1 break-words font-semibold">{agent.name} <span className="font-normal text-muted-foreground">@{agent.handle}</span></h3>
-    {group.description ? <p className="text-sm">{group.description}</p> : null}
+    {agent.type === "new" && agent.about ? <p className="text-sm"><span className="text-muted-foreground">Mission : </span>{agent.about}</p> : group.description ? <p className="text-sm">{group.description}</p> : null}
     {agent.note ? <p className="text-xs text-muted-foreground">{agent.note}</p> : null}
     <ul aria-label="Topics" className="mt-3 space-y-2">{group.topics.map(topic => <li key={topic.tag} data-topic={topic.existing ? (topic.attached ? "attached" : "existing") : "new"} className="text-sm">
       <span className="font-medium">{topic.name}</span> <span className="text-muted-foreground">#{topic.tag}</span>
@@ -54,7 +54,7 @@ function Pipeline({ view, now }: { view: IdeaTaskView; now: number }) {
   </section>;
 }
 
-/** « Créer à partir d'une idée » : intention → 5 topics grouped by ΞAgent (preview) → confirmation. */
+/** « Créer à partir d'une idée » : intention → the topics it needs, grouped by ΞAgent (preview) → confirmation. */
 export function IdeaPlanner() {
   const [text, setText] = useState("");
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -125,13 +125,13 @@ export function IdeaPlanner() {
       <Textarea aria-label="Votre idée" className="max-w-none" value={text} maxLength={MAX_INTENT} disabled={running || confirming} onChange={event => setText(event.target.value)}
         placeholder="Ex. : suivre la transition énergétique en Bretagne, les startups de l’hydrogène et la réglementation européenne sur les batteries." />
     </label>
-    <p className="text-sm text-muted-foreground">Konstruktor propose 5 topics et les regroupe en un ou plusieurs ΞAgents, avec votre modèle local (plusieurs minutes sur un petit modèle). Rien n’est créé avant votre confirmation.</p>
+    <p className="text-sm text-muted-foreground">Konstruktor propose les topics utiles à votre idée, les regroupe en un ou plusieurs ΞAgents et leur invente un nom, avec votre modèle local (plusieurs minutes sur un petit modèle). Rien n’est créé avant votre confirmation.</p>
     <Button onClick={generate} disabled={running || confirming || text.trim().length < 3}>{running ? "Génération en cours…" : plan ? "Régénérer" : "Générer"}</Button>
     {view ? <Pipeline view={view} now={now} /> : null}
     {view?.state === "failed" ? <p role="alert" className="text-sm text-destructive">{view.message ?? "La génération a échoué. Rien n’a été créé."}</p> : null}
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     {plan ? <div aria-label="Prévisualisation" className="space-y-3">
-      <h2 className="font-semibold">{plan.groups.length > 1 ? `${plan.groups.length} ΞAgents proposés` : "1 ΞAgent proposé"}</h2>
+      <h2 className="font-semibold">{(count => `${count} topic${count > 1 ? "s" : ""}`)(plan.groups.reduce((sum, group) => sum + group.topics.length, 0))}, {plan.groups.length > 1 ? `${plan.groups.length} ΞAgents proposés` : "1 ΞAgent proposé"}</h2>
       {plan.groups.map(group => <Group key={group.deploymentId} group={group} result={results?.find(result => result.deploymentId === group.deploymentId)} />)}
       {plan.notes.length ? <ul aria-label="Doublons écartés" className="list-disc pl-5 text-sm text-muted-foreground">{plan.notes.map(note => <li key={note}>{note}</li>)}</ul> : null}
       <p className="text-xs text-muted-foreground">Proposé par {plan.model}.</p>
