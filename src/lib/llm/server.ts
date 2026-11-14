@@ -4,6 +4,7 @@ import type { AccountStore } from "../accounts/store";
 import { getAppDatabase } from "../auth";
 import { createLocalInference, InferenceConfigError, inferenceConfigFromEnv, InferenceOutputError, InferenceUnavailableError, type Inference, type InferenceConfig } from "../watch/inference";
 import type { Fetcher } from "../watch/net";
+import type { LLMBindOptions } from "../watch/llm-binding";
 import { bindInference } from "./inference";
 import { createProviderFetch, destinationPolicyFromEnv } from "./network";
 import { createOllamaClient } from "./ollama";
@@ -72,10 +73,13 @@ export function createLLMRuntime({ db, env = process.env, fetch, now = () => new
     return bindInference({ type: instance.type, baseUrl: instance.baseUrl, policy, options, fetch: request });
   }
 
-  function bind(owner: string, agent: AgentLLMSettings | null): Binding {
+  /** `minTimeoutMs`: a longer deadline for one long operation only (never shorter than the configured one). */
+  function bind(owner: string, agent: AgentLLMSettings | null, { minTimeoutMs = 0 }: LLMBindOptions = {}): Binding {
     const resolution = resolve(owner, agent);
     if (!resolution.ok) return resolution;
-    return { ok: true, inference: inferenceFor(owner, resolution.value, resolution.value.options), resolved: resolution.value };
+    const options = { ...resolution.value.options, timeoutMs: Math.max(resolution.value.options.timeoutMs, minTimeoutMs) };
+    const resolved = { ...resolution.value, options };
+    return { ok: true, inference: inferenceFor(owner, resolved, options), resolved };
   }
 
   async function streamChat(owner: string, agent: AgentLLMSettings | null, system: string, prompt: string, onText: (text: string) => void) {
