@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { BUILTIN_PRESETS } from "../src/lib/accounts/types";
 import { DEFAULT_BLOUB_CONFIG } from "../src/lib/bloub/config";
 import { accountDraftSchema } from "../src/lib/accounts/types";
-import { answerProblems, IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, isSpecific, sameTopic, type IdeaPlan } from "../src/lib/konstruktor/idea";
+import { answerProblems, IDEA_MAX_TOPICS, IDEA_MIN_TIMEOUT_MS, isDescriptiveName, isSpecific, sameTopic, type IdeaPlan } from "../src/lib/konstruktor/idea";
 import { ideaSteps, type IdeaTaskView } from "../src/lib/konstruktor/idea-steps";
 import { InferenceUnavailableError } from "../src/lib/watch/inference";
 import type { LLMBindOptions } from "../src/lib/watch/llm-binding";
@@ -355,4 +355,48 @@ test("konstruktor idea: single-word topics — exact reuse of a precise one only
   const created = (await ownAgents(app)).find(item => item.handle === "orbitelle")!;
   assert.deepEqual([created.editorial!.primaryTopicId, ...created.editorial!.secondaryTopicIds].map(id => catalog.find(item => item.id === id)!.tag), ["cometes", "pluies-etoiles-filantes"]);
   assert.equal(catalog.filter(item => item.tag === "cometes").length, 1);
+});
+
+test("konstruktor idea: ΞAgent names that only add a function word to their domain are descriptive; invented names and wordplay are identities", () => {
+  const cases: [string, string[]][] = [
+    ["Agent Comète", ["Astronomie", "comète", "pluie d’étoiles filantes"]],
+    ["Bot Astronomie", ["Astronomie amateur", "Comètes"]],
+    ["Assistant Médical", ["Technologie médicale", "IA pour le diagnostic médical"]],
+    ["Veille Robotique", ["Robotique d’assistance", "Exosquelettes"]],
+    ["AI Agent", ["Intelligence artificielle", "Modèles de langage"]],
+    ["Assistant Science", ["Vulgarisation", "Musées"]],
+  ];
+  for (const [name, described] of cases) assert.ok(isDescriptiveName(name, described), `${name} is a job title`);
+  const creative: [string, string[]][] = [
+    ["Astronoxi", ["Astronomie", "Exoplanètes"]], ["HackXing", ["Cybersécurité", "Hacking éthique"]], ["Politiiks", ["Politique", "Élections"]],
+    ["Cybermed", ["Technologie médicale", "Robotique médicale"]], ["Humanova", ["Évolution humaine", "Capacités humaines"]], ["Orbitelle", ["Astronomie", "Comètes"]],
+  ];
+  for (const [name, described] of creative) assert.ok(!isDescriptiveName(name, described), `${name} is an identity`);
+  const answer = (agent: string) => ({ topics: [topic("Comètes", "Astronomie")], domains: [{ name: "Astronomie", agent, description: "Suivre les comètes." }] });
+  assert.deepEqual(answerProblems(answer("Agent Comète")), ["Le nom « Agent Comète » décrit le domaine au lieu de donner une identité : invente un nom original et évocateur."]);
+  assert.deepEqual(answerProblems(answer("Astronoxi"), ["Astronoxi"]), ["Le nom « Astronoxi » est déjà celui d’un ΞAgent existant : invente un autre nom."], "collision with an existing ΞAgent");
+  assert.deepEqual(answerProblems(answer("Orbitelle")), []);
+});
+
+test("konstruktor idea: a descriptive ΞAgent name gets one correction, then a readable error; topics and reuse rules are unchanged", { timeout: 30_000 }, async t => {
+  const topics = [topic("Comètes", "Astronomie"), topic("Pluies d’étoiles filantes", "Astronomie")];
+  const named = (agent: string) => json({ topics, domains: [{ name: "Astronomie", agent, description: "Suivre les comètes et les étoiles filantes." }] });
+  const answers = [named("Agent Comète"), named("Orbitelle"), named("Bot Astronomie"), named("Veille Comètes")];
+  const { binding, requests } = model((_, n) => answers[n - 1]);
+  const app = await setup(t, binding);
+  await seed(app);
+  await realCatalog(app);
+  // Bob holds the handle the corrected name gives: the handle stays valid and unique.
+  await agent(app, "bob", "orbitelle", "Orbitelle de Bob", [(await app.topics.list())[0].id]);
+  const corrected = await generate(app, "alice", "Je veux suivre les comètes et les pluies d’étoiles filantes.");
+  assert.equal(corrected.request.state, "done");
+  assert.match(requests[1].prompt, /Le nom « Agent Comète » décrit le domaine/);
+  assert.deepEqual(tags(corrected.plan), [["new", "orbitelle-2", ["+cometes", "+pluies-etoiles-filantes"]]], "same topics; no existing ΞAgent reused; handle with a suffix");
+  assert.equal(corrected.plan.groups[0].agent.name, "Orbitelle");
+  assert.equal((corrected.plan.groups[0].agent as { about: string }).about, "Suivre les comètes et les étoiles filantes.", "the mission stays apart from the name");
+
+  const failed = await generate(app);
+  assert.equal(failed.request.state, "failed", "a bad name is never accepted silently");
+  assert.match(failed.request.message!, /Proposition du modèle inutilisable : Le nom « Veille Comètes » décrit le domaine.*Rien n’a été créé/);
+  assert.equal(requests.length, 4, "one correction per generation, no more");
 });
