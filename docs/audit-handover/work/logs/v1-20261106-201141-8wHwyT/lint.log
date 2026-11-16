@@ -1,0 +1,10 @@
+
+/tmp/xi-audit-v1-a1POn5X4/project/prototypes/v0-xiagent/components/xi-dashboard.tsx
+  4:89  warning  'Clock3' is defined but never used  @typescript-eslint/no-unused-vars
+
+/tmp/xi-audit-v1-a1POn5X4/project/prototypes/v0-xiagent/components/xi-workspace.tsx
+  12:3  warning  'CircleHelp' is defined but never used           @typescript-eslint/no-unused-vars
+  38:7  warning  'candidates' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+✖ 3 problems (0 errors, 3 warnings)
+

@@ -8,9 +8,9 @@ import type { BloubConfig } from "../bloub/types";
  * - `id`: fixed UUID, the same on every instance and across restarts;
  * - `handle`: reserved, refused to editorial ΞAgents (accounts/store.ts);
  * - `capabilities`: what the agent does, as shown to users;
- * - `permissions`: the closed list of operations its code may perform. A system agent never writes
- *   an editorial ΞAgent or a Topic itself: changes it proposes are applied by the user, through the
- *   existing stores and their checks.
+ * - `permissions`: the closed list of operations its code may perform. Configuration changes are
+ *   applied by the user. Background knowledge tasks can create private personal topics and propose
+ *   evidenced private relations; they never modify the shared catalogue or publish an assertion.
  */
 export const SYSTEM_AGENT_PERMISSIONS = {
   "read-owner-context": "Lire la configuration des ΞAgents et des Topics de l’utilisateur qui le sollicite.",

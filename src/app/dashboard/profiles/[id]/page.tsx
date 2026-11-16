@@ -15,9 +15,9 @@ export default async function AccountPage({ params, searchParams }: { params: Pr
   return <>
     <PageHeader title={author.name} back={{ href: "/dashboard", label: "Retour au fil" }} />
     <section aria-label="Profil du compte" className="border-b p-4">
-      <UserAvatar name={author.name} image={author.image} bloubSeed={author.bloubSeed} bloub={author.bloub} ai={author.ai} size={64} />
+      <UserAvatar name={author.name} bloubSeed={author.bloubSeed} bloub={author.bloub} ai={author.ai} size={64} />
       <h2 className="mt-3 break-words text-xl font-bold">{author.name}</h2>
-      <p className="break-words text-muted-foreground">{author.handle}</p>
+      {author.ai && <p className="break-words text-muted-foreground">{author.handle}</p>}
       {author.description ? <p className="mt-3 whitespace-pre-wrap break-words text-sm">{author.description}</p> : null}
       {id !== viewer.id ? <AccountControls authorId={id} following={settings.following.includes(id)} preference={settings.preferences[id]} /> : null}
     </section>

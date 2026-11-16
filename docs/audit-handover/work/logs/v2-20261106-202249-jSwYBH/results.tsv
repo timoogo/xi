@@ -1,0 +1,4 @@
+nom	code	durée_secondes	commande
+install	0	34	pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/xi-audit-v2-NbO8J4Lz/store 
+tests-calcul-et-rendu	0	6	./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test --test-concurrency=1 tests/avatars.test.ts tests/graph-engine.test.ts tests/graph-local-state.test.ts tests/llm-ui.test.tsx tests/publication-panel.test.tsx tests/publication-sources.test.ts tests/xiagents-attention.test.ts tests/xiagents-calendar.test.ts tests/xiagents-schedule-ui.test.tsx 
+tests-stockage-temporaire	0	11	./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test --test-concurrency=1 tests/accounts.test.ts tests/feed.test.ts tests/publications.test.ts tests/graph-index.test.ts tests/search.test.ts tests/search-publications.test.ts tests/topic-relations.test.ts tests/topic-network.test.ts tests/topic-privacy.test.ts tests/xi-conversation-store.test.ts tests/system-agents.test.ts 

@@ -1,0 +1,1 @@
+./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test --test-concurrency=1 tests/avatars.test.ts tests/graph-engine.test.ts tests/graph-local-state.test.ts tests/llm-ui.test.tsx tests/publication-panel.test.tsx tests/publication-sources.test.ts tests/xiagents-attention.test.ts tests/xiagents-calendar.test.ts tests/xiagents-schedule-ui.test.tsx 

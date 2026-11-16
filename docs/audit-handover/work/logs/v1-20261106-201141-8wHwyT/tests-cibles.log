@@ -1,0 +1,33 @@
+✔ universal states render as specified with a black body and white eyes (12.694062ms)
+✔ state transitions and customisation change the rendered avatar (4.615835ms)
+✔ many avatars render independently without shared ids (15.277778ms)
+✔ identity avatars are always neutral: real activity never reaches profiles or publications (23.843574ms)
+✔ editor exposes the library catalogs, the four states and accessible controls (13.696535ms)
+✔ branches use stable message numbers independently of display order (4.286378ms)
+✔ cycles, missing parents and external replies never lose content (0.452638ms)
+✔ reply metadata accepts only immutable message references and preserves Markdown (10.436408ms)
+✔ mentions link to profiles without rewriting code, email or links (17.72633ms)
+✔ Markdown preview renders Obsidian links without unsafe HTML, scripts or remote images (5.995602ms)
+✔ feed rendering: long threads are shortened with a link, sources open in a panel, empty Sources headings hide (2105.149176ms)
+✔ thread preview keeps only three main messages with immutable permalink anchors (19.918401ms)
+✔ generator and human handles resolve equally with or without @ (1.203178ms)
+✔ real publication cards wire graph connections for published messages only (11.883181ms)
+✔ format limits: defaults, consistency, per-message lengths, threads, never truncated (8.158086ms)
+✔ global limits: per owner, optimistic revision, explained refusals, agent resolution (15.550168ms)
+✔ normalizeTerm : accents, casse, ponctuation, espaces (7.847782ms)
+✔ un seul mot connu ou inconnu (23.258269ms)
+✔ plusieurs mots-clés : Astronomie, NASA, JWST, exoplanètes (2.668028ms)
+✔ description longue : mots vides retirés, dédoublonnage, plafond (6.57815ms)
+✔ un topic existant est préféré à un nouveau (4.464457ms)
+✔ collision d’alias : le topic existant est réutilisé (1.457782ms)
+✔ aucun mot exploitable : aucune invention (0.361402ms)
+✔ proposalToPatch : sources indécises, topics et preset (0.824557ms)
+✔ enrichissement IA après règles après saisie manuelle : la valeur manuelle reste (1.314126ms)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3529.555846

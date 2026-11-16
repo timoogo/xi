@@ -7,7 +7,7 @@ Code : `src/lib/topics/relations.ts`. Interface : section « Topics liés » de 
 
 | Sorte | Source de vérité | Modifiable ici |
 |---|---|---|
-| Hiérarchie parent/enfant | `parentId` des fiches `topics/<uuid>.md` | non (fiche de gestion) |
+| Hiérarchie parent/enfant | `parentId` des fiches `topics/<tag>.md` | non (fiche de gestion) |
 | Relation déclarée (historique) | `relatedIds` des fiches, validée par le créateur de la fiche | masquage personnel seulement |
 | Relation enregistrée | `topic-relations/<uuid>.md` ou espace privé de l'utilisateur | oui |
 
@@ -37,6 +37,9 @@ Frontmatter YAML validé (fichier invalide ignoré, jamais réparé) :
 une justification d'au moins 20 caractères et au moins une preuve substantielle (`publication`, `source`, `claim`)
 avec extrait. Les indices `cooccurrence`, `shared_word`, `shared_agent` peuvent accompagner une preuve mais ne
 suffisent jamais. Confiance ≥ 0,8 : acceptée ; sinon proposée, visible et validable par les créateurs des deux Topics.
+
+`proposePersonal()` (Konstruktor, relations personnelles) ne valide jamais sur la confiance : seulement avec une preuve
+`explicit` et sans décision humaine sur la paire. Règles, priorité et réanalyse : `docs/konstruktor-relations.md`.
 
 ## Corrections et exclusions
 

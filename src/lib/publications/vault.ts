@@ -8,7 +8,7 @@ export type Vault = { root: string; postsDir: string };
 export const USER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 export const PUBLICATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const FOLDER_NAME = /^(post|thread)_(\d{8})_(\d{3,})$/;
-export const NUMBERED_FILE = /^(\d+)_[a-z0-9_]+\.md$/;
+export const NUMBERED_FILE = /^(\d+)_[a-z0-9_-]+\.md$/;
 
 export class VaultError extends Error {}
 
@@ -85,6 +85,58 @@ export async function exists(path: string) {
   return stat(path).then(() => true, () => false);
 }
 
+/**
+ * Records (topics, watch sources) keep their identity in the frontmatter `id`; the file name is only for people:
+ * `<stem>.md`, `<stem>--<8 first characters of the id>.md` when another file holds the stem. Any such name is read,
+ * so a record never depends on its path; dot files (journals, locks, temporaries) are never records.
+ */
+export const RECORD_FILE = /^[a-z0-9][a-z0-9._-]*\.md$/;
+const RECORD_STEM = /^[a-z0-9][a-z0-9._-]{0,119}$/;
+
+/** The frontmatter `id` of a record file, or null for a file that is not a record (e.g. relation-exclusions.md). */
+export function recordId(text: string) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
+  return frontmatter ? /^id:[ \t]*["']?([^\s"']+)["']?[ \t]*$/m.exec(frontmatter)?.[1] ?? null : null;
+}
+
+/** id → file name of the records of a directory. Two files claiming one id is refused: a record has one file. */
+export async function recordFiles(dir: string) {
+  const files = new Map<string, string>();
+  for (const entry of await listDir(dir)) {
+    if (!entry.isFile() || !RECORD_FILE.test(entry.name)) continue;
+    const id = recordId(await readFile(join(dir, entry.name), "utf8"));
+    if (!id) continue;
+    if (files.has(id)) throw new VaultError(`Deux fichiers pour l’enregistrement ${id} : ${files.get(id)} et ${entry.name}.`);
+    files.set(id, entry.name);
+  }
+  return files;
+}
+
+/**
+ * Name of a record's file: its current name while it still matches the stem (no churn), else `<stem>.md`, else the
+ * suffixed forms. Deterministic for a given directory content. An unusable stem falls back to the id.
+ */
+export function recordFileName(stem: string, id: string, taken: (name: string) => boolean, current?: string) {
+  const base = RECORD_STEM.test(stem) ? stem : id;
+  const own = [`${base}.md`, `${base}--${id.slice(0, 8)}.md`, `${base}--${id}.md`];
+  if (current && own.includes(current)) return current;
+  return own.find(name => !taken(name)) ?? own[2];
+}
+
+/**
+ * Writes a record under its readable name. A renamed record is moved first, in one rename, then rewritten: at no
+ * point do two files hold it. Callers hold the directory's writer lock.
+ */
+export async function writeRecord(dir: string, id: string, stem: string, content: string) {
+  const files = await recordFiles(dir);
+  const names = new Set((await listDir(dir)).map(entry => entry.name));
+  const current = files.get(id);
+  const target = recordFileName(stem, id, name => name !== current && names.has(name), current);
+  if (current && current !== target) await rename(join(dir, current), join(dir, target));
+  await writeAtomic(join(dir, target), content);
+  return target;
+}
+
 export async function listDir(path: string) {
   return readdir(path, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [];
@@ -109,5 +161,39 @@ export async function readMarkdownTree(dir: string) {
   await walk(dir, "");
   const hash = createHash("sha256");
   for (const [name, content] of files) hash.update(`${name}\0${content}\0`);
-  return { files, revision: hash.digest("hex") };
+  return { files, revision: hash.digest("hex"), contentRevision: contentRevision(basename(dir), files) };
+}
+
+/** Stable identity of a publication file: `index`, `m:<n>` for a message, `s:<n>` for a source; other files by name. */
+function fileKey(name: string) {
+  if (name === "index.md") return "index";
+  const source = name.startsWith("_sources/"), file = source ? name.slice(9) : name;
+  const match = !source && name.includes("/") ? null : NUMBERED_FILE.exec(file);
+  return match ? `${source ? "s" : "m"}:${Number(match[1])}` : name;
+}
+
+/**
+ * What a publication says, independent of where its files are: hashed by file identity (not name), with links to its
+ * own files written as that identity. Renaming a message or source file, or moving the folder (links rewritten), keeps
+ * it; any change of text, metadata, source, order or link to another note changes it. The exact `revision` (names and
+ * bytes) stays the token of optimistic concurrency, since an editor's copy names files.
+ */
+export function contentRevision(folder: string, files: Map<string, string>) {
+  const own = new Map([...files.keys()].map(name => [name.replace(/\.md$/, ""), fileKey(name)]));
+  // A file of this folder, by full path (`[[<…>/<folder>/[_sources/]<file>`) or by the short form Obsidian may write
+  // when it updates links after a rename (`[[<file>` or `[[_sources/<file>`).
+  const local = (target: string) => {
+    const parts = target.trim().split("/");
+    const sourceLink = parts.at(-2) === "_sources";
+    const prefix = parts.slice(0, sourceLink ? -2 : -1);
+    if (prefix.length && prefix.at(-1) !== folder) return null;
+    return own.get(sourceLink ? `_sources/${parts.at(-1)}` : parts.at(-1)!) ?? null;
+  };
+  const entries = [...files].map(([name, content]) => [fileKey(name), content.replace(/\[\[([^\]|#\n]+)/g, (link, target: string) => {
+    const key = local(target);
+    return key ? `[[@${key}` : link;
+  })] as const).sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  const hash = createHash("sha256");
+  for (const [key, content] of entries) hash.update(`${key}\0${content}\0`);
+  return hash.digest("hex");
 }

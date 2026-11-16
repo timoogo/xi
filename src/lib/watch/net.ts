@@ -30,7 +30,7 @@ export function isPublicAddress(address: string) {
 }
 
 export type FetchResponse = { status: number; url: string; headers: Record<string, string>; body: Buffer };
-export type FetchOptions = { method?: "GET" | "POST"; body?: string; headers?: Record<string, string>; maxBytes?: number; timeoutMs?: number; maxRedirects?: number; beforeRequest?: (url: URL) => Promise<void> };
+export type FetchOptions = { method?: "GET" | "POST"; body?: string; headers?: Record<string, string>; maxBytes?: number; timeoutMs?: number; maxRedirects?: number; beforeRequest?: (url: URL) => Promise<void>; onChunk?: (chunk: Buffer) => void };
 export type Fetcher = (url: string, options?: FetchOptions) => Promise<FetchResponse>;
 type Resolver = (host: string) => Promise<{ address: string; family: number }[]>;
 

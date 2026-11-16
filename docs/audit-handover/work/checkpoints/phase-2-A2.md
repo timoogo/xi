@@ -1,0 +1,9 @@
+# Checkpoint phase 2 — A2, 2026-11-06
+
+- HEAD confirmé au début : `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`, `main` ; seul `docs/audit-handover/` non suivi. Aucune exécution de tests, service, worker ou migration ; pas de lecture de données réelles.
+- A2 terminé : complément contrats, permissions, persistance, file, agents système, publication et mentions dans `../../02-ARCHITECTURE.md` ; registre reproductible `../evidence/phase-2-A2-contracts.md`. Les conclusions sont statiques, aucun statut fonctionnel VALIDÉE.
+- Résultats : contrôles de session et propriété côté serveur ; permissions du registre agents système déclaratives (`hasPermission` sans appel trouvé) ; `apply` Konstruktor vérifie proposition et cible, pas encore de preuve d'une correspondance de chaque champ spec/proposition. Arbitre distinct, mention interne persistée et transactionnellement mise en file ; décision ne publie pas directement.
+- Vault et SQLite : écritures distinctes, réconciliation et reprises ciblées ; pas d'atomicité globale démontrée ni perte constatée. Migration de candidat reconstruit une table malgré commentaire général additif ; index dérivés supprimés/reconstruits.
+- Queue : bail et jeton protègent les transitions, clés dédupliquées jusqu'à purge ; `Promise.race` ne démontre pas l'annulation d'un handler interrompu, heartbeat ignore son résultat : effets éventuels à vérifier, ne pas affirmer de défaut observé.
+- Développement : `watch-dev` force autopublish opérateur true et public false ; activations et gardes individuelles sont requises. Mentions Markdown transformées en liens, distinctes de la mention interne d'arbitrage ; aucune notification ou déclenchement social démontré.
+- Prochaine étape après autorisation : phase 3 F1 ; ne pas anticiper qualification, exécutions ou Linear. Relire l'état, ce checkpoint et le registre ; vérifier HEAD et statut. En cas de changement du commit, suspendre et demander une décision.

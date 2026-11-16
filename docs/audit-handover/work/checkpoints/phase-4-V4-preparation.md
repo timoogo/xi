@@ -1,0 +1,5 @@
+# Phase 4 V4 — préparation, 2026-11-06
+
+HEAD de référence : `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`. V3 analysé, preuves et anomalie indéterminée dans `../../06-VALIDATION-EVIDENCE.md`. Les 31 fichiers restants sont classés individuellement dans `../evidence/phase-4-V4-test-matrix.md` : 9 proposés, 22 reportés. `../../run-v4-checks.sh` prépare installation isolée puis 5 fichiers réseau simulé et 4 sous-processus, séparément, avec bubblewrap obligatoire. Build et E2E exclus ; aucune exécution par l'auditeur. Vérification statique `bash -n` uniquement.
+
+Reprise : lire état et matrice, vérifier HEAD et status ; si divergence demander décision. Attendre l'exécution utilisateur, analyser `context.txt`, `results.tsv`, `.log`, `.tee-code.txt` et statuts Git ; si isolation ou montage échoue, classer en incident d'environnement, ne pas contourner les protections. Relever tests/échecs/skips, étudier toute erreur, distinguer mocks et services réels. Ne pas qualifier les fonctionnalités automatiquement. La compatibilité effective bubblewrap, loopback, npx hors ligne et installation reste à établir.

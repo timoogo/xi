@@ -2,9 +2,10 @@ import { getAppDatabase } from "../auth";
 import { openVault, vaultPathFromEnv } from "../publications/vault";
 import { getAccountStore } from "../accounts/server";
 import { getLLMRuntime } from "../llm/server";
-import { getTopicStore } from "../topics/server";
+import { getTopicRelationStore, getTopicStore } from "../topics/server";
+import { getPublicationStore } from "../publications/server";
 import { getWatchServices } from "../watch/server";
-import { bindSafely } from "../watch/llm-binding";
+import { agentLLMSettings, bindSafely } from "../watch/llm-binding";
 import { inferenceConcurrency } from "../watch/orchestrator";
 import { modelChoices } from "../konstruktor/context";
 import { createSystemAgentStore, type SystemAgentStore } from "./store";
@@ -34,8 +35,8 @@ export function getSystemTasks() {
     tasksSingleton.xiSystemTasks = undefined;
     tasksSingleton.xiSystemTasksFactory = createSystemTasks;
   }
-  tasksSingleton.xiSystemTasks ??= Promise.all([getSystemAgentStore(), getAccountStore(), getTopicStore(), getWatchServices()]).then(([store, accounts, topics, { sources }]) => createSystemTasks({
-    db: getAppDatabase(), store, services: { accounts, topics, sources, models: owner => modelChoices(getLLMRuntime().store, owner) }, llm: owner => bindSafely(user => getLLMRuntime().bind(user, null), owner),
+  tasksSingleton.xiSystemTasks ??= Promise.all([getSystemAgentStore(), getAccountStore(), getTopicStore(), getWatchServices(), getPublicationStore(), getTopicRelationStore()]).then(([store, accounts, topics, { sources }, publications, relations]) => createSystemTasks({
+    db: getAppDatabase(), store, services: { accounts, topics, sources, publications, relations, agentLLM: agent => bindSafely(item => getLLMRuntime().bind(item.owner, agentLLMSettings(item)), agent), models: owner => modelChoices(getLLMRuntime().store, owner) }, llm: (owner, options) => bindSafely(user => getLLMRuntime().bind(user, null, options), owner),
     inferenceConcurrency: inferenceConcurrency(), autorun: process.env.XI_WATCH_DISABLED !== "true",
   })).catch(error => { tasksSingleton.xiSystemTasks = undefined; throw error; });
   return tasksSingleton.xiSystemTasks;

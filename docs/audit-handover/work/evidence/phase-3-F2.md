@@ -1,0 +1,3 @@
+# Preuves F2
+
+Référence `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`. Index F2-01 à F2-07 et preuves précises dans `../../03-FEATURE-INVENTORY.md`. Contrôle statique : `src/lib/topics/store.ts:153,249,283,347`, `src/lib/topics/relations.ts:301,335,367`, `src/lib/search/server.ts:19,42,55,60`, `src/lib/topics/discovery.ts:241,260,276`, `src/lib/graph/service.ts:30,37,55`; points d'entrée pages Topics/explore/graph et routes API. Scénarios de tests associés cités par entrée ; CI historique groupe core/graph seulement, aucun test lancé ici. Connaissance déclarée ≠ mémoire globale ; découverte conditionnelle au worker et modèle. H1/H2 et A1/A2 restent références historiques et techniques.

@@ -1,0 +1,65 @@
+✔ account store discards pre-HMR globals without getOwned and reuses the current implementation (199.750427ms)
+✔ Bloub migration preserves photos, is idempotent and supports legacy writers (10.50107ms)
+✔ seeds map deterministically onto library catalogs and keep their previous silhouette byte (2.697229ms)
+✔ configuration is validated against the library catalogs and versioned (0.680803ms)
+✔ activities map onto public bloub-react props; the activity always wins (0.413475ms)
+✔ ΞAgent activity: unavailable, working, idle and sleeping from real state (4.260649ms)
+✔ ΞAgent avatar: save, reload, concurrency, ownership and preservation by other writers (196.671903ms)
+[graph-perf] generate vault: 652 ms
+[graph-perf] vault: 32200 files, 200 generators, 3000 publications, 20000 relations (19030 validated)
+[graph-perf] cold reconcile + authorized graph: 5239 ms
+[graph-perf] first view (graph cached, engine cold): 960 ms
+[graph-perf] warm view: 933 ms
+[graph-perf] view after one file change: 1005 ms
+[graph-perf] connections page (between two roots): 903 ms
+[graph-perf] connections next page: 957 ms
+[graph-perf] capped view (60 expansions): 1163 ms
+✔ large vault: cold reconcile, warm view, view after one change, connections page, node cap (14026.794185ms)
+✔ oracle: each viewer observes exactly what a vault holding only their readable items would show (2244.667943ms)
+✔ counters: inaccessible relations are absent from node counts, edges and totals; the author still counts them (221.418801ms)
+✔ hidden generators: subtree hidden, publications re-homed to g:unassigned, belongs_to needs the author's read access (91.785939ms)
+✔ forged node ids, refs and cursors for inaccessible items answer exactly like nonexistent ones (404.342003ms)
+✔ disk edits revoke at once: visibility public→private, status change, trash, folder deletion, message file deletion (5196.873317ms)
+✔ generators: deleting the file or making it private hides the subtree and re-homes its publications without leaking counts (2840.741715ms)
+✔ relation writes: AI only proposes, never alters a validated relation; proposals stay invisible until a human validates (1768.138501ms)
+✔ symlinks: generators/ and relations/ entries or folders resolving elsewhere, even inside the vault, are refused (12.338755ms)
+✔ route guard: 401 before anything else without a session, 400 on invalid input, generic 404/500; oversized bodies are invalid (10.892822ms)
+✔ #topic submission creates one private personal topic, idempotently and under concurrency (151.172202ms)
+✔ creation only on a single unambiguous unknown #tag; shared topics win at creation and are never blocked (108.436971ms)
+✔ subscriptions: per user, persistent, idempotent, visible topics only, and nothing else is triggered (44.174266ms)
+Publication reconciliation failed TypeError
+✔ publication store discards pre-HMR globals; manual public publication from an existing ΞAgent works (425.858707ms)
+✔ SSE only reports differences of the authorized projection (1.153138ms)
+✔ SSE duplicates do not cause repeated updates; reconnect is an explicit state reset (0.268475ms)
+✔ the vault watcher sees direct edits to a file the store replaced atomically (344.55768ms)
+✔ explicit concepts: tags, former tags, names and hashtags; spelling variants never duplicate a topic (71.124924ms)
+✔ confidence calibration: positive, negative and ambiguous examples, each component assessed separately (0.628013ms)
+✔ pipeline: idempotent jobs, inferred associations, justified relations only, kept proposed until calibrated (113.691031ms)
+✔ calibrated operator switch accepts only above the threshold; exclusions and corrections are respected (127.324638ms)
+✔ model unavailable: explicit terms only, nothing invented, work kept for later; resumes after a crash (76.558607ms)
+✔ no cloud: a non-local inference server is refused before any request; deterministic only (33.306769ms)
+✔ candidates: recurrent concepts merged across spellings, never created; personal topics untouched; rebuild (95.25657ms)
+✔ subscribing plans nothing (24.665307ms)
+✔ global UUID topics: children preserve parent scope; transverse relations and duplicates (180.132975ms)
+✔ idempotence, explicit validation, owner permissions, cancellation and stale revisions (77.718875ms)
+✔ hierarchy rejects cycles, invalid parent tags and dangling/self relations (49.695312ms)
+✔ rename subtree preserves UUIDs/references; aliases reserved and SQLite fully reconstructible (76.55028ms)
+✔ concurrent stores serialize tag allocation and conflicting confirmations (68.5677ms)
+✔ resume after indexing failure and restart never repeats public creation (45.659888ms)
+✔ routing chooses appropriate specialization, contextual secondaries, and accepts human correction (114.573952ms)
+✔ externally corrupted Markdown refuses rebuild without destroying the previous index (24.784458ms)
+✔ failed analysis resumes without bypassing human confirmation (17.253111ms)
+✔ a crashed process releases the writer lock and a pending proposal can proceed (74.31377ms)
+✔ deterministic subjects strip request phrases and normalize known specializations (2.660249ms)
+✔ unknown and ambiguous subjects retain cautious editable flat proposals (34.184775ms)
+✔ missing parents require separate human confirmations; stable runs resume to child and account (259.799941ms)
+✔ nested missing parents, existing parent reuse and aliases preserve general scopes (173.614897ms)
+✔ parent creation failure and concurrent parent collision never create orphan children (129.217193ms)
+ℹ tests 47
+ℹ suites 0
+ℹ pass 47
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 36402.245542

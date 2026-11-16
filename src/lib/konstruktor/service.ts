@@ -14,6 +14,9 @@ import { loadContext, type ModelChoices } from "./context";
 import { previewStateSchema, type PreviewState } from "./preview";
 import { createSuggestionStore, findings, reviewRequestId, SUGGESTION_KINDS, type StoredSuggestion } from "./suggestions";
 import { createConversationStore, type Decision } from "./store";
+import { draftToSpec } from "../xiagents/draft";
+import { draftToEditSpec } from "../xiagents/edit";
+import { groupPicks, IDEA_TASK, ideaPlanSchema, newAgentDraft, subAgentProblem, type PlanGroup } from "./idea";
 import { MAX_MESSAGE, targetSchema, type KonstruktorSession, type KonstruktorTarget, type Proposal, type ProposalStatus, type TurnStatus } from "./types";
 
 const openSchema = z.object({ id: z.uuid(), target: targetSchema }).strict();
@@ -38,6 +41,9 @@ export type SuggestionView = Omit<StoredSuggestion, "agentIds" | "topicIds"> & {
 const suggestionFilter = z.object({ type: z.enum(["agent", "topic"]), id: z.uuid() }).strict();
 const suggestionAction = z.object({ action: z.enum(["refuse", "restore"]) }).strict();
 const reviewPoll = z.uuid();
+const ideaConfirmSchema = z.object({ requestId: z.uuid() }).strict();
+/** `unchanged`: an existing ΞAgent that already follows every topic of its group. */
+export type IdeaGroupResult = { deploymentId: string; domain: string; agentId: string | null; status: "completed" | "failed" | "unchanged"; error: string | null };
 function suggestionStatus(stored: StoredSuggestion, proposals: Proposal[]): SuggestionStatus {
   if (proposals.some(proposal => proposal.status === "applied")) return "applied";
   if (proposals.some(proposal => proposal.status === "accepted")) return "accepted";
@@ -248,6 +254,57 @@ export function createKonstruktor({ db, tasks, accounts, topics, sources, deploy
   }
   const reviewState = (owner: string, requestId: unknown) => tasks.get(owner, "konstruktor", reviewPoll.parse(requestId));
 
-  return { open, list, view, send, configuration, decide, apply, preview, savePreview, suggestions, decideSuggestion, review, reviewState };
+  /**
+   * Confirmation of a plan from an idea (idea.ts). The plan is the owner's own finished task result,
+   * read again on the server (never a plan sent by the client). Each ΞAgent is one deployment with
+   * the id chosen at preview: a new ΞAgent is a creation, an existing one an edit adding its new
+   * topics. The deployments' preflight rejects duplicates and stale targets before writing; a
+   * failed group does not stop the others, and confirming again resumes what is not completed.
+   */
+  async function createFromIdea(owner: string, input: unknown) {
+    const { requestId } = ideaConfirmSchema.parse(input);
+    const request = tasks.get(owner, "konstruktor", requestId);
+    if (request.task !== IDEA_TASK) throw new TopicError("Demande introuvable.", 404);
+    if (request.state === "failed") throw new TopicError("La génération a échoué : rien à créer. Régénérez la proposition.", 409);
+    if (request.state !== "done") throw new TopicError("La proposition n’est pas encore prête.", 409);
+    const plan = ideaPlanSchema.parse(request.result);
+    const presets = await accounts.listPresets(owner);
+    const results: IdeaGroupResult[] = [];
+    for (const group of plan.groups) {
+      const base = { deploymentId: group.deploymentId, domain: group.domain, agentId: group.agent.type === "existing" ? group.agent.id : null };
+      try {
+        let deployment = await deployments.get(owner, group.deploymentId).catch(error => { if (error instanceof TopicError && error.status === 404) return null; throw error; });
+        if (!deployment) {
+          const spec = await ideaSpec(owner, group, plan, presets);
+          if (!spec) { results.push({ ...base, status: "unchanged", error: null }); continue; }
+          deployment = await deployments.create(owner, group.deploymentId, spec);
+        }
+        if (deployment.state !== "completed") deployment = await deployments.run(owner, group.deploymentId);
+        const failed = deployment.steps.find(step => step.status === "failed");
+        results.push({ ...base, agentId: deployment.ids.agentId, status: deployment.state === "completed" ? "completed" : "failed", error: failed?.error ?? null });
+      } catch (error) {
+        const known = error instanceof TopicError || error instanceof z.ZodError;
+        if (!known) console.error("Konstruktor idea group failed", { group: group.deploymentId, error: error instanceof Error ? error.name : typeof error });
+        results.push({ ...base, status: "failed", error: error instanceof z.ZodError ? error.issues.map(issue => issue.message).join(" ; ") : known ? (error as Error).message : "Erreur interne : réessayez." });
+      }
+    }
+    return { results };
+  }
+  /** Deployment input of one group, built now from the current configuration; null when nothing is to be added. */
+  async function ideaSpec(owner: string, group: PlanGroup, plan: { intent: string; timeZone: string; model: string }, presets: Awaited<ReturnType<AccountStore["listPresets"]>>) {
+    if (group.agent.type === "new") {
+      // A sub-agent: its parent is checked again now (still the owner's, same handle, depth allowed).
+      const problem = group.agent.parent && subAgentProblem({ handle: group.agent.handle, parent: group.agent.parent }, await accounts.list(owner), owner);
+      if (problem) throw new TopicError(problem, 409);
+      return draftToSpec(newAgentDraft(group, plan.intent, plan.timeZone, plan.model, presets));
+    }
+    const { draft, base } = await exportAgentConfiguration({ owner, agentId: group.agent.id, accounts, topics, sources });
+    const attached = new Set(draft.topics.flatMap(pick => pick.type === "existing" ? [pick.id] : []));
+    const added = groupPicks(group).filter(pick => pick.type !== "existing" || !attached.has(pick.id));
+    if (!added.length) return null;
+    return draftToEditSpec(draft, { ...draft, topics: [...draft.topics, ...added], model: plan.model, provenance: { ...draft.provenance, topics: "ai" } }, base);
+  }
+
+  return { createFromIdea, open, list, view, send, configuration, decide, apply, preview, savePreview, suggestions, decideSuggestion, review, reviewState };
 }
 export type Konstruktor = ReturnType<typeof createKonstruktor>;

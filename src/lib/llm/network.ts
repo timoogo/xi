@@ -58,7 +58,7 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const MAX_ERROR_BYTES = 16_000;
 
 export function createProviderFetch(policy: DestinationPolicy, { resolve = (host: string) => dnsLookup(host, { all: true, verbatim: true }) }: { resolve?: (host: string) => Promise<{ address: string; family: number }[]> } = {}): Fetcher {
-  return async function providerFetch(input, { method = "GET", body, headers = {}, maxBytes = 1_000_000, timeoutMs = 15_000 } = {}) {
+  return async function providerFetch(input, { method = "GET", body, headers = {}, maxBytes = 1_000_000, timeoutMs = 15_000, onChunk } = {}) {
     let url: URL;
     try { url = new URL(input); } catch { throw new FetchError("blocked-url", "URL invalide."); }
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new FetchError("blocked-url", "URL non autorisée.");
@@ -103,7 +103,7 @@ export function createProviderFetch(policy: DestinationPolicy, { resolve = (host
             // An error explanation is simply cut; a successful body too large is refused.
             if (status >= 400) chunks.push(chunk.subarray(0, chunk.length - (total - limit)));
             else { response.destroy(); finish(new FetchError("too-large", "Réponse trop volumineuse.")); }
-          } else chunks.push(chunk);
+          } else { chunks.push(chunk); if (status === 200 && onChunk) { try { onChunk(chunk); } catch { response.destroy(); finish(new FetchError("network", "Réponse illisible.")); } } }
         });
         response.on("end", () => { ended = true; finish(null, { status, url: url.href, headers: responseHeaders, body: Buffer.concat(chunks) }); });
         response.on("error", error => finish(Object.assign(new InterruptedFetchError(), { cause: error })));

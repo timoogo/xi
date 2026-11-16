@@ -41,6 +41,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
     isPersonal(topic) ? [] : getDiscoveryRecords().then(store => store.associationsOf(topic.id)),
   ]);
   const experts = topicAgents(topic.id, agents);
+  const knowledgeSources = await getPublicationStore().then(store => store.agentKnowledgeSources(viewer.id, topic.id));
   const personal = isPersonal(topic);
   const subscribed = settings.topics.includes(topic.id);
   const known = settings.knowledge.includes(topic.id);
@@ -86,6 +87,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
         {personal ? null : <Link href={`/dashboard/topics?topic=${topic.id}`} className="font-medium text-primary hover:underline">Fiche de gestion</Link>}
       </p>
     </section>
+    {knowledgeSources.length > 0 && <section aria-label="Publications sources" className="space-y-2 border-b p-4"><h2 className="font-semibold">Publications sources</h2><p className="text-sm text-muted-foreground">Concepts repérés automatiquement dans vos publications : les extraits restent à vérifier.</p>{knowledgeSources.map(source => <p key={`${source.publication}:${source.agent}`} className="text-sm"><Link className="text-primary hover:underline" href={`/dashboard/publications/${source.publication}`}>Voir la publication</Link> · « {source.excerpt} »</p>)}</section>}
     <ResultSection id="topic-hierarchy" title="Hiérarchie">
       {parent || children.length ? <ul>
         {parent ? <TopicItem topic={parent} note="parent" /> : null}

@@ -1,0 +1,1 @@
+./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test --test-concurrency=1 tests/account-store-cache.test.ts tests/bloub.test.ts tests/graph-perf.test.ts tests/graph-security.test.ts tests/personal-topics.test.ts tests/publication-store-cache.test.ts tests/realtime-events.test.ts tests/topic-discovery.test.ts tests/topics.test.ts 

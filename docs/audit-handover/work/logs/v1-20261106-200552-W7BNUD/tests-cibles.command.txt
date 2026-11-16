@@ -1,0 +1,1 @@
+pnpm exec tsx --tsconfig tests/tsconfig.json --test tests/conversation.test.ts tests/markdown-view.test.tsx tests/xiagents-suggest.test.ts tests/watch-format.test.ts tests/bloub-avatar.test.tsx 

@@ -1,0 +1,3 @@
+# Preuves F4
+
+SHA `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`. F4-01 à F4-10 référencées dans `../../03-FEATURE-INVENTORY.md`. Points d'entrée et appels : création `src/components/xiagents/create/create-xiagent.tsx`, `src/lib/xiagents/draft.ts:66`, `suggest.ts:162`; déploiement `deployments.ts:185,301,345`; YAML `yaml.ts:376,480`; système `src/lib/system-agents/registry.ts:28`, `store.ts:115`; Konstruktor `src/lib/konstruktor/service.ts:67,122,176,208`, `suggestions.ts:281,314`; Arbitre `src/lib/arbiter/arbitration.ts:145`, `decide.ts:42`; supervision `src/lib/xiagents/supervision.ts:108,263`. Preuves de CI H2 : `phase-1-H2-github.md`. Tests de domaine présents mais non lancés et mocks/non-mocks non caractérisés ; garanties de sélection et cancellation à approfondir.

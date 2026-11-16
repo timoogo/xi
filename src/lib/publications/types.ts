@@ -27,7 +27,10 @@ export type PublicationSnapshot = PublicationMeta & {
   messages: { file: string; body: string; replyTo?: string | null; createdAt?: string; updatedAt?: string; deleted?: boolean; replyCount?: number }[];
   parentContext?: { publicationId: string; ref: string; excerpt: string } | null;
   sources: SourceSummary[];
+  /** Exact token (file names and bytes): optimistic concurrency of editors and drafts. */
   revision: string;
+  /** What the publication says, whatever its file names: the revision analyses (Konstruktor, discovery) refer to. */
+  contentRevision: string;
   /** A published analysis is immutable: it changes through dated corrections. */
   analysis?: boolean;
   /** The publication this one corrects, when the viewer may read it. */

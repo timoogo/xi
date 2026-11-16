@@ -17,7 +17,7 @@ export default async function SettingsPage() {
   const [instances, settings] = await Promise.all([llm.store.list(user.id), llm.store.settings(user.id)]);
   return <>
     <PageHeader title="Paramètres du compte" back={{ href: "/dashboard/profile", label: "Retour au profil" }} />
-    <AvatarSettings name={user.name} image={user.image} avatar={user.avatar} />
+    <AvatarSettings name={user.name} avatar={user.avatar} />
     <LLMSettings initial={{ instances, settings, environment: llm.environment() }} />
     <PublicationFormatSettings initial={ownerFormat(getAppDatabase(), user.id)} />
   </>;

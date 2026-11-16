@@ -1,0 +1,7 @@
+# Complément de clôture phases 4–7
+
+Référence `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`, HEAD vérifié. Nouvelle demande : compléter le dossier existant, sans tests supplémentaires. `../evidence/phase-4-ci-file-matrix.md` enrichie des jobs, types dominants, dépendances et reports pour 88 fichiers ; classification statique avec limites explicites. Ruleset 26676970 relu, cinq checks exigés et E2E non exigé ; protection classique 403. TypeError toujours indéterminé. `../../05-MILESTONES.md` enrichi de repères historiques et blocages ; `../../07-TECHNICAL-DEBT-AND-RISKS.md` et `../../08-LINEAR-BACKLOG-CANDIDATES.md` priorisés. V4 demeure suspendu ; pas de modification Linear. Contrôle final : compter les lignes de matrice et statuts, vérifier liens, HEAD et diff Git ; consigner toute limite.
+
+## Contrôle final
+
+88 fichiers suivis comparés aux 88 lignes uniques de la matrice, aucun manquant ; 47 identifiants inventoriés et 47 lignes de correspondance, aucun manquant. Dix candidats portent une priorité proposée. Liens Markdown relatifs des 13 documents de premier niveau vérifiés sans lien manquant. HEAD identique à la référence ; `git status --short --branch` ne montre que le dossier d’audit non suivi et `git diff --name-only` est vide. Les données ignorées ne sont pas vérifiées par ce constat. Aucun test lancé ni résultat de V4 produit. Les classifications de types sont dominantes et ne certifient pas chaque assertion ou dépendance transitive.

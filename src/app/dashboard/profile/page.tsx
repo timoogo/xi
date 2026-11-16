@@ -14,11 +14,10 @@ export default async function ProfilePage({ searchParams }: { searchParams: Prom
       <PageHeader title={user.name} subtitle="Votre profil" />
       <section aria-label="Votre profil" className="border-b px-4 pb-4 pt-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <UserAvatar image={user.image} bloubSeed={user.bloubSeed} name={user.name} size={88} />
+          <UserAvatar bloubSeed={user.bloubSeed} name={user.name} size={88} />
           <Link href="/dashboard/settings" className="inline-flex min-h-11 items-center rounded-full border px-4 text-sm font-semibold hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Modifier le profil</Link>
         </div>
         <h2 className="mt-3 break-words text-xl font-extrabold leading-6">{user.name}</h2>
-        <p className="text-[15px] text-muted-foreground">{user.handle}</p>
         <dl className="mt-3 text-[15px]">
           <dt className="sr-only">Email du compte</dt>
           <dd className="break-all">{user.email}</dd>

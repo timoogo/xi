@@ -5,12 +5,16 @@ import type { TopicStore } from "../topics/store";
 import { TopicError } from "../topics/types";
 import { InferenceConfigError, InferenceUnavailableError } from "../watch/inference";
 import { createJobQueue, type Job } from "../watch/jobs";
-import { describeLLM, type LLMBinding } from "../watch/llm-binding";
+import { describeLLM, type LLMBindOptions, type LLMBinding } from "../watch/llm-binding";
 import type { ModelChoices } from "../konstruktor/context";
-import { admit, drainLimits, jobRuns, SYSTEM_TASK_KIND, type RunRecord } from "../watch/orchestrator";
+import { admit, drainLimits, jobRuns, logRun, SYSTEM_TASK_KIND, type RunLog, type RunRecord } from "../watch/orchestrator";
 import { drainJobs, type DrainControl, type Handler } from "../watch/worker";
 import { KONSTRUKTOR_TASKS } from "../konstruktor/converse";
 import { REVIEW_TASK } from "../konstruktor/suggestions";
+import { KNOWLEDGE_TASK } from "../konstruktor/knowledge";
+import type { PublicationStore } from "../publications/store";
+import type { TopicRelationStore } from "../topics/relations";
+import type { WatchAgent } from "../accounts/types";
 import { ARBITER_TASKS } from "../arbiter/decide";
 import type { SourceStore } from "../watch/sources";
 import { enqueueSystemTask, payloadSchema, systemTaskKey, type SystemTaskPayload } from "./queue";
@@ -31,9 +35,10 @@ import type { SystemAgent, SystemAgentStore } from "./store";
 
 /** Stores a task may read, always on behalf of its requester (`owner`); writes stay with the user (L5). */
 /** Stores a system task may read; `models`: the owner's local instances and models (none known when absent). */
-export type SystemServices = { db: Database.Database; accounts: AccountStore; topics: TopicStore; sources?: SourceStore; models?: (owner: string) => ModelChoices };
+export type SystemServices = { db: Database.Database; accounts: AccountStore; topics: TopicStore; publications?: PublicationStore; relations?: TopicRelationStore; agentLLM?: (agent: WatchAgent) => LLMBinding; sources?: SourceStore; models?: (owner: string) => ModelChoices };
 /** What a task gets: its requester, the agent (enabled), validated input, the requester's model and the stores. */
-export type SystemTaskContext<I> = { owner: string; agent: SystemAgent; input: I; llm: () => LLMBinding; now: () => number; services: SystemServices; jobId: string };
+/** `log`: a structured line in this attempt's history (`xiagent_run`), readable by the requester only. */
+export type SystemTaskContext<I> = { owner: string; agent: SystemAgent; input: I; llm: (options?: LLMBindOptions) => LLMBinding; now: () => number; services: SystemServices; jobId: string; log: (level: RunLog["level"], message: string) => void };
 /**
  * `run` is a method (bivariant): a task with its own input type fits the registries below.
  * `internal`: only requested by Ξ's own services (e.g. a conversation turn), never through the generic API.
@@ -55,7 +60,7 @@ const probeModel: SystemTask<null> = {
 
 const COMMON_TASKS: Record<string, SystemTask> = { "probe-model": probeModel };
 /** Each agent's own tasks (Konstruktor's conversations, the arbiter's decisions) are declared here. */
-const AGENT_TASKS: Partial<Record<SystemAgentKind, Record<string, SystemTask>>> = { konstruktor: { ...KONSTRUKTOR_TASKS, review: REVIEW_TASK }, "priority-arbiter": ARBITER_TASKS };
+const AGENT_TASKS: Partial<Record<SystemAgentKind, Record<string, SystemTask>>> = { konstruktor: { ...KONSTRUKTOR_TASKS, review: REVIEW_TASK, "publication-knowledge": KNOWLEDGE_TASK }, "priority-arbiter": ARBITER_TASKS };
 export const systemTask = (kind: string, task: string): SystemTask | null =>
   Object.hasOwn(AGENT_TASKS[kind as SystemAgentKind] ?? {}, task) ? AGENT_TASKS[kind as SystemAgentKind]![task]
     : Object.hasOwn(COMMON_TASKS, task) && systemAgentDefinition(kind) ? COMMON_TASKS[task] : null;
@@ -84,7 +89,7 @@ export const MAX_INTERACTIVE_WAIT = 15 * 60_000;
 const MAX_SERVER_DELAY = 15 * 60_000;
 
 /** Executes system tasks: the agent must still exist and be enabled when the task starts. */
-export function systemTaskHandler({ store, llm, services, now = Date.now }: { store: SystemAgentStore; llm: (owner: string) => LLMBinding; services: SystemServices; now?: () => number }): Handler {
+export function systemTaskHandler({ store, llm, services, now = Date.now }: { store: SystemAgentStore; llm: (owner: string, options?: LLMBindOptions) => LLMBinding; services: SystemServices; now?: () => number }): Handler {
   return async job => {
     const payload = payloadSchema.parse(job.payload);
     const agent = await store.get(payload.kind);
@@ -92,7 +97,10 @@ export function systemTaskHandler({ store, llm, services, now = Date.now }: { st
     const task = systemTask(payload.kind, payload.task);
     if (!task) throw new TopicError("Tâche inconnue pour cet agent système.", 400);
     try {
-      return { status: "done", result: await task.run({ owner: payload.owner, agent, input: task.input.parse(payload.input), llm: () => llm(payload.owner), now, services, jobId: job.id }) };
+      // drainJobs records attempt `${job.id}:${job.attempts}` when it keeps a history; otherwise nothing is written.
+      // Logging never fails the task (no history table in a bare test database, for instance).
+      const log = (level: RunLog["level"], message: string) => { try { logRun(services.db, `${job.id}:${job.attempts}`, { at: now(), level, message }); } catch { /* diagnostic only */ } };
+      return { status: "done", result: await task.run({ owner: payload.owner, agent, input: task.input.parse(payload.input), llm: options => llm(payload.owner, options), now, services, jobId: job.id, log }) };
     } catch (error) {
       if (!(error instanceof InferenceUnavailableError)) throw error;
       const waited = Math.max(0, now() - job.createdAt);
@@ -106,7 +114,7 @@ export function systemTaskHandler({ store, llm, services, now = Date.now }: { st
 }
 
 export function createSystemTasks({ db, store, llm, services, now = Date.now, inferenceConcurrency = 1, autorun = true }: {
-  db: Database.Database; store: SystemAgentStore; llm: (owner: string) => LLMBinding; services: Omit<SystemServices, "db">; now?: () => number; inferenceConcurrency?: number;
+  db: Database.Database; store: SystemAgentStore; llm: (owner: string, options?: LLMBindOptions) => LLMBinding; services: Omit<SystemServices, "db">; now?: () => number; inferenceConcurrency?: number;
   /** False keeps requests queued for the periodic worker (XI_WATCH_DISABLED, tests). */
   autorun?: boolean;
 }) {

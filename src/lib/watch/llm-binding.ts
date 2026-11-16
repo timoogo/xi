@@ -11,6 +11,8 @@ export type LLMBinding =
   | { ok: true; inference: Inference; resolved: ResolvedLLM }
   | { ok: false; code: ResolutionProblemCode | LLMErrorCode; message: string };
 export type BindLLM = (agent: WatchAgent) => LLMBinding;
+/** Per-call binding options: `minTimeoutMs` raises the deadline of one long operation only. */
+export type LLMBindOptions = { minTimeoutMs?: number };
 
 /** The agent's `llm` key, or for agents saved before it, their legacy model reference as a model override. */
 export function agentLLMSettings(agent: Pick<WatchAgent, "modelRef"> & { llm?: AgentLLMSettings }): AgentLLMSettings {
