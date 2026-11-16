@@ -9,7 +9,7 @@ Les chemins ci-dessous sont ceux du projet actuel. v0 doit les traiter comme des
 - `src/app/dashboard/_components/discovery-panel.tsx` — recherche désactivée, widget ΞAgents, placeholders découverte.
 - `src/components/page-header.tsx` — header sticky, titre/sous-titre, retour, logo mobile.
 - `src/components/xi-logo.tsx` — marque Ξ en SVG minimal à trois traits.
-- `src/components/user-avatar.tsx` — résolution d’identité Bloub/photo/fallback.
+- `src/components/user-avatar.tsx` — résolution d’identité Bloub configuré/graine/fallback.
 - `src/components/empty-state.tsx` — états vides du feed et des listes.
 
 ## Bloubs

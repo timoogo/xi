@@ -80,7 +80,7 @@ export function InlineComments({ publicationId, viewerId, share, focusedCommentI
           <div className="relative flex w-10 shrink-0 justify-center">
             {c.parent && <span aria-hidden="true" className="absolute -top-2 left-1/2 h-3 w-px bg-border/80" />}
             {hasChildren && <span aria-hidden="true" className="absolute -bottom-2 left-1/2 top-10 w-px bg-border/80" />}
-            <UserAvatar name={c.author} size={40} image={author.image} bloubSeed={author.bloubSeed} bloub={author.bloub} />
+            <UserAvatar name={c.author} size={40} bloubSeed={author.bloubSeed} bloub={author.bloub} />
           </div>
           <div className="min-w-0 flex-1 pb-3.5 text-[15px] leading-5">
             <div className="flex flex-wrap items-baseline gap-x-1.5"><span className="font-semibold">{author.name}</span>{c.agent && <span className="text-muted-foreground">{handle(author.handle)}</span>}<span aria-hidden="true" className="text-muted-foreground">·</span><a href={commentHref(c.id)} aria-label={`Ouvrir le commentaire de ${author.name}`} className="text-[13px] text-muted-foreground hover:underline"><time dateTime={new Date(c.created).toISOString()}>{timeLabel(c.created)}</time></a></div>
@@ -162,9 +162,9 @@ function CommentForm({ agents, viewer, submit, replyingTo, initiallyOpen = false
     spans.push(value.slice(offset, ref.start), <span key={ref.start} data-reference={ref.kind} className="text-chart-2">{ref.text}</span>); offset = ref.end;
   }
   spans.push(value.slice(offset), "\n");
-  if (!open) return <button type="button" className="flex w-full items-center gap-2.5 rounded-md py-2 text-left text-[15px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring" onClick={() => setOpen(true)}><UserAvatar name={viewer.name} size={40} image={viewer.image} bloubSeed={viewer.bloubSeed} bloub={viewer.bloub} /><span>Écrire un commentaire…</span></button>;
+  if (!open) return <button type="button" className="flex w-full items-center gap-2.5 rounded-md py-2 text-left text-[15px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring" onClick={() => setOpen(true)}><UserAvatar name={viewer.name} size={40} bloubSeed={viewer.bloubSeed} bloub={viewer.bloub} /><span>Écrire un commentaire…</span></button>;
   return <form className="flex gap-2.5 py-2" onSubmit={async e => { e.preventDefault(); if (!value.trim() || busy) return; setBusy(true); if (await submit(value)) close(); setBusy(false); }}>
-    <UserAvatar name={viewer.name} size={40} image={viewer.image} bloubSeed={viewer.bloubSeed} bloub={viewer.bloub} />
+    <UserAvatar name={viewer.name} size={40} bloubSeed={viewer.bloubSeed} bloub={viewer.bloub} />
     <div ref={composer} className="relative min-w-0 flex-1">
       {replyingTo && <p className="pt-0.5 text-xs text-muted-foreground">En réponse à <span className="text-chart-2">{replyingTo}</span></p>}
       <div className="relative">

@@ -53,12 +53,15 @@ test("publication design: connected threads, mobile, media privacy and still ide
     const count = Math.min(i + 1, 3);
     assert.equal(await card.locator("[data-bloub]").count(), count);
     assert.equal(await card.locator("[data-thread-connector]").count(), count - 1);
-    assert.equal(await card.getByRole("button", { name: "Répondre", exact: true }).count(), 1);
+    assert.equal(await card.getByRole("button", { name: "Commentaires", exact: true }).count(), 1);
     assert.equal(await card.getByRole("button", { name: "Partager", exact: true }).count(), 1);
     assert.equal(await card.locator('[data-animating="true"]').count(), 0);
   }
   assert.equal(mediaRequests, 0);
   const card = page.locator(`[data-feed-id="${ids[2]}"]`);
+  await card.getByRole("button", { name: "Commentaires", exact: true }).click();
+  await card.getByRole("button", { name: "Écrire un commentaire…" }).waitFor();
+  await card.getByRole("button", { name: "Commentaires", exact: true }).click();
   await card.scrollIntoViewIfNeeded();
   const avatar = card.locator("[data-bloub]").first();
   await page.emulateMedia({ reducedMotion: "no-preference" });

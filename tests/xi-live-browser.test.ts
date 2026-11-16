@@ -176,8 +176,8 @@ test("browser regressions: handles, graph connections, multi-page bursts, reconn
   await returnCard.scrollIntoViewIfNeeded();
   const scrollBefore = await page.evaluate(() => window.scrollY);
   await returnCard.locator(".xi-markdown").first().click();
-  await page.waitForURL(`${app.origin}/dashboard/publications/${returnId}/conversation/1`);
-  await page.getByRole("button",{name:"← Retour",exact:true}).click();
+  await page.waitForURL(`${app.origin}/dashboard/publications/${returnId}`);
+  await page.goBack();
   await page.waitForURL(`${app.origin}/dashboard?tab=following`);
   await page.waitForFunction(expected => Math.abs(window.scrollY-expected)<8,scrollBefore,{timeout:15_000});
   assert.equal(await page.locator(`[data-feed-id="${returnId}"]`).count(),1);

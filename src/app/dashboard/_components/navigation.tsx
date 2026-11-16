@@ -20,7 +20,7 @@ import { Logout } from "@/lib/apis/auth";
 import type { CurrentUser } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
-type User = Pick<CurrentUser, "name" | "image" | "handle" | "bloubSeed">;
+type User = Pick<CurrentUser, "name" | "handle" | "bloubSeed">;
 type NavItem = { label: string; icon: LucideIcon; href: string };
 
 const NAV_ITEMS: NavItem[] = [
@@ -119,7 +119,7 @@ function AccountMenu({ user }: { user: User }) {
     <DropdownMenu>
       <DropdownMenuTrigger aria-label="Compte et réglages"
         className="flex w-full items-center gap-3 rounded-full p-2 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 xl:p-3">
-        <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={40} />
+        <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={40} />
         <span className="hidden min-w-0 flex-1 xl:block">
           <span className="block truncate text-[15px] font-bold leading-5">{user.name}</span>
         </span>
@@ -167,14 +167,14 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger asChild>
             <button type="button" aria-label="Ouvrir le menu" className="flex h-14 flex-1 items-center justify-center">
-              <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={30} />
+              <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={30} />
             </button>
           </SheetTrigger>
           <SheetContent side="left" className="w-[85vw] max-w-xs gap-0 overflow-y-auto p-0">
             <SheetTitle className="sr-only">Menu Ξ</SheetTitle>
             <SheetDescription className="sr-only">Votre compte, vos pages et vos réglages</SheetDescription>
             <div className="border-b p-4">
-              <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={44} />
+              <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={44} />
               <p className="mt-2 truncate font-bold">{user.name}</p>
             </div>
             <nav aria-label="Menu du compte" className="flex flex-col py-2">

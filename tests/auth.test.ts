@@ -111,6 +111,12 @@ test("real Next.js authentication with temporary SQLite and process restart", { 
     const otherCookie = cookieFrom(other.response);
     const firstUser = (await session(cookie)).user;
     const otherUser = (await session(otherCookie)).user;
+    const avatarDb = new Database(databasePath, { readonly: true });
+    const seedFor = (id: string) => (avatarDb.prepare("SELECT seed FROM user_avatar WHERE user_id = ?").get(id) as { seed: string }).seed;
+    const firstSeed = seedFor(firstUser.id);
+    const otherSeed = seedFor(otherUser.id);
+    avatarDb.close();
+    assert.notEqual(firstSeed, otherSeed);
     const paths = ["/dashboard", "/dashboard/profile", "/dashboard/notifications", "/dashboard/communites", "/dashboard/explore", "/dashboard/about-us", "/dashboard/terms"];
     const demo = /Ramy Esam|ramyesam|Jesus For Ever|AIDailyNews|Lorem ipsum|Retweeted|Recommended People|Post has been published|images\.unsplash\.com/;
     for (const path of paths) {
@@ -133,6 +139,12 @@ test("real Next.js authentication with temporary SQLite and process restart", { 
       assert.ok(!otherHtml.includes(registration.name));
       assert.ok(!firstHtml.includes(otherCredentials.email));
       assert.ok(!otherHtml.includes(credentials.email));
+      assert.match(firstHtml, /role="img" aria-label="Avatar Bloub de Xi Test"/);
+      assert.match(otherHtml, /role="img" aria-label="Avatar Bloub de Xi Other"/);
+      assert.ok(firstHtml.includes(`data-seed="${firstSeed}"`));
+      assert.ok(otherHtml.includes(`data-seed="${otherSeed}"`));
+      assert.ok(!firstHtml.includes(`data-seed="${otherSeed}"`));
+      assert.ok(!otherHtml.includes(`data-seed="${firstSeed}"`));
       for (const html of [firstHtml, otherHtml]) {
         assert.doesNotMatch(html, demo);
         assert.ok(!html.includes('href="/dashboard/communites"'));
@@ -169,7 +181,10 @@ test("real Next.js authentication with temporary SQLite and process restart", { 
     try { db.prepare('UPDATE "user" SET image = ? WHERE id = ?').run("/xi.svg", otherUser.id); }
     finally { db.close(); }
     const withAvatar = await fetch(`${origin}/dashboard/profile`, { headers: { Cookie: otherCookie } });
-    assert.match(await withAvatar.text(), /alt="Xi Other[^"]*avatar"/);
+    const avatarHtml = await withAvatar.text();
+    assert.match(avatarHtml, /role="img" aria-label="Avatar Bloub de Xi Other"/);
+    assert.ok(avatarHtml.includes(`data-seed="${otherSeed}"`));
+    assert.doesNotMatch(avatarHtml, /<img\b[^>]*\bsrc="\/xi\.svg"/);
     const ownSession = await fetch(`${origin}/api/auth/get-session?userId=${otherUser.id}`, { headers: { Cookie: cookie } });
     const ownPayload = await ownSession.json();
     assert.equal(ownPayload.user.email, credentials.email);
