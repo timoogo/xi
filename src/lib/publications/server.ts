@@ -47,7 +47,7 @@ export function getAuthors(ids: string[]): Map<string, Author> {
   const unique = [...new Set(ids)];
   if (!unique.length) return new Map();
   const rows = getAppDatabase()
-    .prepare(`SELECT u.id, u.name, u.image, CASE WHEN a.mode = 'bloub' THEN a.seed END AS bloubSeed FROM "user" u LEFT JOIN user_avatar a ON a.user_id = u.id WHERE u.id IN (${unique.map(() => "?").join(", ")})`)
+    .prepare(`SELECT u.id, u.name, u.image, a.seed AS bloubSeed FROM "user" u LEFT JOIN user_avatar a ON a.user_id = u.id WHERE u.id IN (${unique.map(() => "?").join(", ")})`)
     .all(...unique) as { id: string; name: string; image: string | null; bloubSeed: string | null }[];
   return new Map(rows.map((row) => [row.id, { ...row, ai: false, handle: handleFor(row.id) }]));
 }

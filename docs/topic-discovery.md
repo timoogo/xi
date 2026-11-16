@@ -3,6 +3,66 @@
 Code : `src/lib/topics/discovery.ts`. Job `enrich-publication` de la queue `watch_job`, exécuté par le worker
 (`scripts/watch-worker.ts`), jamais par une requête web : publier ne bloque jamais sur l'analyse.
 
+## Connaissances des ΞAgents
+
+À chaque passage, le worker planifie aussi une tâche interne Konstruktor `publication-knowledge` pour chaque
+publication réelle d’ΞAgent, publique ou privée, et chaque révision.
+
+Ces tâches sont regroupées en **pipelines** (`src/lib/konstruktor/pipelines.ts`, page *Konstruktor → Pipelines*) :
+un run automatique par ΞAgent quand le worker trouve du travail nouveau, ou un run manuel (publications
+manquantes, ou réanalyse complète). Un run n’est qu’un plan persistant (`konstruktor_pipeline_run`,
+`konstruktor_pipeline_job`) sur la même file `watch_job` : états, tentatives, baux et logs restent ceux du moteur
+(`xiagent_run`). Un seul run actif par ΞAgent ; « Relancer les échecs » crée de nouvelles tâches pour les seules
+publications en échec, le worker ne relance jamais un échec de lui-même. Après un redémarrage, une tentative dont
+le bail expire est marquée `interrupted` puis reprise. Une réponse tronquée par la limite de génération
+échoue dès la première tentative (le décodage est déterministe : un nouvel essai identique serait coupé au
+même endroit) ; on augmente `maxTokens` de l’ΞAgent puis on relance les échecs.
+
+**Graphe → Connaissances** montre ce que les ΞAgents choisis ont appris (un par défaut, plusieurs ou tous :
+`?agents=<id>,<id>` ou `agents=all` ; l’ancien `?agent=<id>` reste lu), pour leur propriétaire seul
+(`src/lib/konstruktor/knowledge-graph*.ts`, `src/components/graph/knowledge-network.tsx`). Plusieurs agents donnent
+une vue agrégée, jamais une fusion de ce qui est stocké : un concept (un topic) est dessiné une fois avec les agents
+qui le connaissent ; une relation est une arête, ses preuves séparées par agent, et un agent n’y figure que si l’une
+de ses propres publications la prouve entre deux concepts qu’il a lui-même appris. Statut, correction et exclusion
+restent ceux du propriétaire (communs à ses agents) ; deux relations contradictoires sur une paire restent deux arêtes.
+Chaque preuve garde les mots du texte qui relient les concepts et le concept sujet (`label`, `subject`, champs
+optionnels) : l’arête affiche « développe → » ou « est un → » sans multiplier les cinq types. Pour les preuves
+antérieures, ces mots sont relus dans la justification de Konstruktor (première preuve seulement), jamais devinés. Les concepts sont les
+topics de `xi_agent_knowledge` lus par `agentMemory` (publications de l’agent lisibles, publiées, à leur révision
+de contenu courante, hors contenu de test) ; les relations sont les relations personnelles du propriétaire entre ces concepts
+dont une preuve vient d’une publication de cet agent (`relations.learnedAmong`), preuves d’autres publications
+retirées. Statuts, corrections de type et masques personnels sont affichés tels qu’enregistrés ; les relations
+exclues ou masquées n’apparaissent que sur demande (« Exclues »). Les publications, citations et sources web d’un
+concept sont chargées à sa sélection, agent par agent (`GET /api/xiagents/[id]/knowledge/[topicId]`). Le graphe démarre avec les
+40 concepts les plus reliés et s’étend par voisinage, comme le réseau des topics. Lecture seule : valider, corriger
+ou exclure se fait sur la fiche du topic. Runs et logs ne sont lisibles que par leur propriétaire. Les publications de test sont exclues.
+La clé de tâche associe propriétaire, ΞAgent, publication et révision ; une relance ne duplique ni topic ni relation.
+Extraction (`src/lib/konstruktor/extraction.ts`, prompt propre à Konstruktor, distinct de la découverte de topics) :
+le modèle local du ΞAgent (ou celui hérité du propriétaire) ne donne que des **noms** (`{name, kind}`, au plus 10)
+et des **relations** `{from, link, to, type}` (au plus 8), où `link` sont les mots du texte entre les deux concepts.
+Le code fait le reste, de façon déterministe : la citation est la phrase de la publication qui contient le nom (accents,
+casse, ponctuation et pluriels repliés), jamais un texte du modèle ; sont écartés les noms absents du texte, les
+fragments (plus de six mots), les verbes et actions (« moderniser les données »), les dates. Une relation exige
+les deux concepts dans une même phrase avec `link` entre eux, sans simple coordination (« et ») ni attribution
+(« selon », « according to ») ; elle fonctionne en français comme en anglais. Un type orienté (`part_of`,
+`influences`) ou de nature (`similar_to`, `opposes`) n’est gardé que si la phrase en porte l’indice, et suit le sens
+de la phrase ; sinon la relation est enregistrée `related_to`. La justification cite `link`. Un résumé identique au
+message n’est envoyé qu’une fois. Les concepts déjà visibles sont réutilisés ; les autres deviennent des topics
+personnels nommés comme dans le texte (« X-59 »), jamais des topics partagés. Les relations restent au statut
+**proposé**, sans être présentées comme des faits vérifiés ; exclusions et corrections humaines ne sont jamais
+défaites. Elles restent privées et leur preuve suit les permissions de la publication.
+
+L’index SQLite `xi_agent_knowledge` conserve l’association ΞAgent–publication–topic et l’extrait source ; le
+réseau des topics affiche ces contributions au propriétaire. Les citations sont visibles sur la fiche du topic,
+uniquement tant que la publication est lisible et à la révision analysée. Les publications ne sont jamais bloquées
+par ce traitement ; les erreurs restent dans les tâches du worker. Le worker doit être actif pour les traiter.
+
+Quand le propriétaire sollicite son ΞAgent en commentaire, `generate()` ajoute au contexte du modèle au plus 20
+extraits de cet index dont le concept est nommé dans la conversation (tags, alias, noms ; pas d’embeddings), avec
+leur publication source et la mention « non nécessairement vérifiés ». Le filtrage est fait côté serveur avant le
+prompt : jamais pour un autre utilisateur, sources publiées, lisibles et à la révision analysée, et uniquement des
+sources publiques hors d’une conversation privée. La rédaction de publications n’utilise pas cette mémoire.
+
 ## Ce qui est analysé
 
 Uniquement les publications **publiques, publiées, hors contenus de test** : leur texte (résumé et messages, hors

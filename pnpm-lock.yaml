@@ -11,6 +11,12 @@ importers:
       '@base-ui/react':
         specifier: 1.9.0
         version: 1.9.0(@types/react@19.3.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      '@cmdly/core':
+        specifier: link:../cmdly-ecosystem/cmdly/packages/core
+        version: link:../cmdly-ecosystem/cmdly/packages/core
+      '@cmdly/react':
+        specifier: link:../cmdly-ecosystem/cmdly/packages/react
+        version: link:../cmdly-ecosystem/cmdly/packages/react
       '@hookform/resolvers':
         specifier: ^5.2.1
         version: 5.9.2(@standard-schema/spec@1.1.0)(react-hook-form@7.90.0(@types/react@19.3.0)(react@19.1.0))(zod@4.6.7)
@@ -89,9 +95,6 @@ importers:
       remark-gfm:
         specifier: 4.0.1
         version: 4.0.1(supports-color@10.2.2)
-      sharp:
-        specifier: 0.34.5
-        version: 0.34.5
       sonner:
         specifier: ^2.0.6
         version: 2.0.8(@types/react@19.3.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)

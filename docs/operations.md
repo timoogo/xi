@@ -14,7 +14,7 @@ que `XI_WATCH_AUTOPUBLISH` n’est pas explicitement passé à `true`.**
 | Élément | Emplacement | Contenu |
 |---|---|---|
 | Base SQLite | `AUTH_DATABASE_PATH` (défaut `./data/xi-auth.sqlite`, avec `-wal` et `-shm`) | Comptes et sessions (Better Auth), file `watch_job`, collectes, candidats, faits vérifiés, décisions, queue éditoriale, arbitrages, runs, conversations Konstruktor, index dérivés. |
-| Avatars importés | `data/avatars/` (à côté de la base) | Photos de profil WebP. |
+| Photos historiques | `data/avatars/` (à côté de la base) | Anciennes photos de profil conservées, non affichées ; aucune suppression automatique. |
 | Vault Obsidian | `XI_VAULT_PATH` | Source de vérité : publications Markdown, ΞAgents (YAML), Topics, catalogues de sources, agents système (`system-agents/*.md`), journaux de déploiement. |
 
 Les index `publication*`, `topic_*`, `graph_*`, `feed_*` se reconstruisent

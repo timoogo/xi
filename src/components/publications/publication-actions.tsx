@@ -46,11 +46,11 @@ export function NewPublicationButton({ compact = false, className }: { compact?:
 }
 
 /** "Quoi de neuf ?" at the top of the home feed: a shortcut to the Markdown editor, not a second editor. */
-export function Composer({ user }: { user: { name: string; bloubSeed?: string | null; image?: string | null } }) {
+export function Composer({ user }: { user: { name: string; bloubSeed?: string | null } }) {
   const { pending, create } = useCreatePublication();
   return (
     <section aria-label="Nouvelle publication" className="flex gap-3 border-b px-4 pb-3 pt-4">
-      <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={40} />
+      <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={40} />
       <div className="min-w-0 flex-1">
         <button type="button" onClick={create} disabled={pending}
           className="w-full rounded-md py-1.5 text-left text-xl text-muted-foreground outline-none transition-colors hover:text-foreground/70 focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-wait">

@@ -1,0 +1,4 @@
+Commit : 4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2
+Logs : /home/timogo/dev/labs/xi/docs/audit-handover/work/logs/v1-20261106-200552-W7BNUD
+Copie temporaire : /tmp/xi-audit-v1-asbWtZCw
+La copie temporaire reste disponible pour inspection après la fin.

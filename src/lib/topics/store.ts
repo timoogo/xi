@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { assertWithin, USER_ID, writeAtomic, type Vault } from "../publications/vault";
+import { assertWithin, RECORD_FILE, recordId, USER_ID, writeAtomic, writeRecord, type Vault } from "../publications/vault";
 import { deterministicAnalyzer, routeRequest, type TopicAnalyzer } from "./analysis";
 import { locked } from "./lock";
 import { draftSchema, personalTopicSchema, STEP_NAMES, tagSchema, TopicError, topicSchema, type PersonalTopic, type Run, type Topic } from "./types";
@@ -59,13 +59,25 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
     await assertWithin(vault.root, personalDir);
   }
   async function read(path: string) { await assertWithin(vault.root, path); return decode(await readFile(path, "utf8")); }
-  async function all(): Promise<Topic[]> {
-    const names = (await readdir(directory)).filter(name => /^[0-9a-f-]{36}\.md$/.test(name));
-    const topics = await Promise.all(names.map(async name => {
-      const topic = topicSchema.parse(await read(join(directory, name)));
-      if (`${topic.id}.md` !== name) throw new TopicError("UUID et fichier incohérents.");
-      return topic;
+  /**
+   * The topic files of a directory. Identity is the frontmatter `id`, never the file name (`<tag>.md`, or a legacy
+   * `<uuid>.md`); files without an id (relation-exclusions.md) are not topics. One id in two files is refused.
+   */
+  async function records(dir: string) {
+    const texts = await Promise.all((await readdir(dir)).filter(name => RECORD_FILE.test(name)).map(async name => {
+      const path = join(dir, name);
+      await assertWithin(vault.root, path);
+      return readFile(path, "utf8");
     }));
+    const found = texts.filter(text => recordId(text) !== null).map(decode);
+    const ids = found.map(item => (item as { id?: unknown }).id);
+    if (new Set(ids).size !== ids.length) throw new TopicError("Topic dupliqué : deux fichiers pour un même identifiant.", 409);
+    return found;
+  }
+  /** Saved as `<tag>.md`: the tag is unique and readable, and a renamed tag moves the file. */
+  const save = (dir: string, topic: Topic) => writeRecord(dir, topic.id, topic.tag, encode(topic));
+  async function all(): Promise<Topic[]> {
+    const topics = (await records(directory)).map(item => topicSchema.parse(item));
     validateTopics(topics);
     return topics.sort((a, b) => a.tag.localeCompare(b.tag));
   }
@@ -76,16 +88,16 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
   /** The owner's personal topics, from Markdown. An invalid or foreign file blocks the read rather than leaking. */
   async function personal(owner: string): Promise<PersonalTopic[]> {
     const dir = ownerDir(owner);
-    let names: string[];
-    try { names = (await readdir(dir)).filter(name => /^[0-9a-f-]{36}\.md$/.test(name)); }
+    let found: unknown[];
+    try { found = await records(dir); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-    const topics = await Promise.all(names.map(async name => {
-      const topic = personalTopicSchema.parse(await read(join(dir, name)));
-      if (`${topic.id}.md` !== name || topic.owner !== owner) throw new TopicError("Topic personnel incohérent.");
+    const topics = found.map(item => {
+      const topic = personalTopicSchema.parse(item);
+      if (topic.owner !== owner) throw new TopicError("Topic personnel incohérent.");
       // Hierarchy and relations are decided at promotion: a personal topic stays a standalone root.
       if (topic.parentId || topic.relatedIds.length) throw new TopicError("Un topic personnel n’a ni parent ni relation.");
       return topic;
-    }));
+    });
     const tags = topics.flatMap(topic => [topic.tag, ...topic.aliases]);
     if (new Set(tags).size !== tags.length || new Set(topics.map(t => t.id)).size !== topics.length) throw new TopicError("Topic personnel dupliqué.", 409);
     return topics.sort((a, b) => a.tag.localeCompare(b.tag));
@@ -96,7 +108,7 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
     try { pending = z.array(topicSchema).parse(await read(journal)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
     validateTopics(pending);
-    for (const topic of pending) await writeAtomic(join(directory, `${topic.id}.md`), encode(topic));
+    for (const topic of pending) await save(directory, topic);
     await rm(journal);
   }
   async function exclusive<T>(task: () => Promise<T>) {
@@ -220,7 +232,7 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
         const at = new Date().toISOString();
         const topic: Topic = { ...run.draft, id: run.topicId, aliases: [], createdBy: run.owner, updatedBy: run.owner, createdAt: at, updatedAt: at, revision: randomUUID() };
         validateTopics([...topics, topic]);
-        await writeAtomic(join(directory, `${topic.id}.md`), encode(topic));
+        await save(directory, topic);
         return topic.id;
       });
       await step(run, 8, async () => { index(await all(), false); return "Index reconstruit depuis Markdown."; });
@@ -328,7 +340,7 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       const at = new Date().toISOString();
       const topic: Topic = { ...draft, id, aliases: [], createdBy: owner, updatedBy: owner, createdAt: at, updatedAt: at, revision: randomUUID() };
       validateTopics([...topics, topic]);
-      await writeAtomic(join(directory, `${topic.id}.md`), encode(topic));
+      await save(directory, topic);
       const saved = await all();
       index(saved, false);
       refreshRouting(saved);
@@ -344,7 +356,8 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
    * (owner, tag) and serialized by the writer lock, so concurrent requests return the same UUID. A shared topic
    * holding the tag (current or former) always wins at creation: no personal duplicate of a shared topic is made.
    */
-  async function openPersonal(owner: string, rawTag: string): Promise<{ topic: Topic; created: boolean }> {
+  /** `name`: display name of a topic created here (as written, e.g. « X-59 »); by default derived from the tag. */
+  async function openPersonal(owner: string, rawTag: string, name?: string): Promise<{ topic: Topic; created: boolean }> {
     const tag = tagSchema.parse(rawTag);
     ownerDir(owner);
     return exclusive(async () => {
@@ -356,12 +369,12 @@ export function createTopicStore({ vault, db, analyzer = deterministicAnalyzer, 
       const words = tag.slice(tag.lastIndexOf(".") + 1).replace(/-/g, " ");
       const at = new Date().toISOString();
       const topic: PersonalTopic = {
-        id: randomUUID(), tag, name: words.charAt(0).toLocaleUpperCase("fr-FR") + words.slice(1), description: "",
+        id: randomUUID(), tag, name: name?.trim().slice(0, 160) || words.charAt(0).toLocaleUpperCase("fr-FR") + words.slice(1), description: "",
         scope: `Fiche personnelle créée depuis la recherche « #${tag} ». Périmètre à préciser.`, parentId: null, relatedIds: [],
         aliases: [], owner, createdBy: owner, updatedBy: owner, createdAt: at, updatedAt: at, revision: randomUUID(),
       };
       await mkdir(ownerDir(owner), { recursive: true, mode: 0o700 });
-      await writeAtomic(join(ownerDir(owner), `${topic.id}.md`), encode(topic));
+      await save(ownerDir(owner), topic);
       return { topic, created: true };
     });
   }

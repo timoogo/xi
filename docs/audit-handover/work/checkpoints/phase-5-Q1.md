@@ -1,0 +1,3 @@
+# Phase 5 Q1 — qualification des fonctionnalités
+
+Référence `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2` vérifiée avant lot. Les 47 identifiants F1–F6 sont conservés ; 43 implémentées non validées, 2 expérimentales, 1 partielle, 1 planifiée, 0 validée. Résultats locaux et CI et classification des tests : `../../06-VALIDATION-EVIDENCE.md`, `../evidence/phase-4-feature-test-matrix.md`. La qualification porte sur les capacités entières, non sur les scénarios individuels, et ne nie pas les scénarios réussis. Les points de confiance et références code sont dans chaque entrée de `../../03-FEATURE-INVENTORY.md`. Reprise : croiser les regroupements de capacités avec `05-MILESTONES.md`, sans présenter des regroupements comme jalons historiques officiels.

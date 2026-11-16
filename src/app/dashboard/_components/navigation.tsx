@@ -6,6 +6,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CommandBubble } from "@/components/commands/command-bubble";
+import { CommandMenu, CommandRailButton, useCommandMenu } from "@/components/commands/command-menu";
 import { NewPublicationButton } from "@/components/publications/publication-actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +20,7 @@ import { Logout } from "@/lib/apis/auth";
 import type { CurrentUser } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
-type User = Pick<CurrentUser, "name" | "image" | "handle" | "bloubSeed">;
+type User = Pick<CurrentUser, "name" | "handle" | "bloubSeed">;
 type NavItem = { label: string; icon: LucideIcon; href: string };
 
 const NAV_ITEMS: NavItem[] = [
@@ -41,6 +43,8 @@ const SECONDARY_ITEMS: NavItem[] = [
 ];
 const THEMES = [{ value: "light", label: "Clair", icon: Sun }, { value: "dark", label: "Sombre", icon: Moon }, { value: "system", label: "Système", icon: Monitor }];
 
+// The editor has its own sticky actions: no floating compose button there.
+const isEditing = (pathname: string) => pathname.endsWith("/edit");
 const isActive = (pathname: string, href: string) => href === "/dashboard" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
 
 function useLogout(onDone?: () => void) {
@@ -69,6 +73,11 @@ function useLogout(onDone?: () => void) {
  */
 export function Navigation({ user }: { user: User }) {
   const pathname = usePathname();
+  const commands = useCommandMenu();
+  const openCommands = () => commands.setOpen(true);
+  // Mobile: on the compose button's row, left of it (inside the space the main column already
+  // keeps free above the tab bar); in its place where it is hidden. Tablet and desktop: bottom right.
+  const composing = !isEditing(pathname);
   return (
     <>
       <header className="sticky top-0 hidden h-dvh w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto px-2 py-2 sm:flex xl:w-[275px] xl:items-stretch xl:px-3">
@@ -78,11 +87,15 @@ export function Navigation({ user }: { user: User }) {
         <nav aria-label="Navigation principale" className="flex flex-col items-center gap-1 xl:items-stretch">
           {NAV_ITEMS.map((item) => <RailLink key={item.href} item={item} active={isActive(pathname, item.href)} />)}
         </nav>
+        <CommandRailButton onOpen={openCommands} className="mt-1" />
         <NewPublicationButton className="mt-4 hidden h-[52px] w-full rounded-full text-[17px] font-bold xl:inline-flex" />
         <NewPublicationButton compact className="mt-4 size-[52px] rounded-full xl:hidden" />
         <div className="mt-auto pt-4 xl:w-full"><AccountMenu user={user} /></div>
       </header>
       <MobileBar user={user} pathname={pathname} />
+      <CommandBubble onOpen={openCommands}
+        className={cn("bottom-[calc(4.75rem+env(safe-area-inset-bottom))] sm:bottom-6 sm:right-6", composing ? "right-[5.25rem]" : "right-4")} />
+      <CommandMenu open={commands.open} onOpenChange={commands.setOpen} />
     </>
   );
 }
@@ -106,10 +119,9 @@ function AccountMenu({ user }: { user: User }) {
     <DropdownMenu>
       <DropdownMenuTrigger aria-label="Compte et réglages"
         className="flex w-full items-center gap-3 rounded-full p-2 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 xl:p-3">
-        <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={40} />
+        <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={40} />
         <span className="hidden min-w-0 flex-1 xl:block">
           <span className="block truncate text-[15px] font-bold leading-5">{user.name}</span>
-          <span className="block truncate text-[15px] leading-5 text-muted-foreground">{user.handle}</span>
         </span>
         <MoreHorizontal aria-hidden="true" className="hidden size-5 shrink-0 xl:block" />
       </DropdownMenuTrigger>
@@ -138,8 +150,7 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
   const { theme, setTheme } = useTheme();
   const { pending, logOut } = useLogout(() => setOpen(false));
   const tabs = NAV_ITEMS.filter((item) => item.href !== "/dashboard/profile" && item.href !== "/dashboard/topics" && item.href !== "/dashboard/xiagents" && item.href !== "/dashboard/sources");
-  // The editor has its own sticky actions: a floating button there would hide them.
-  const editing = pathname.endsWith("/edit");
+  const editing = isEditing(pathname);
   return (
     <>
       {editing ? null : <NewPublicationButton compact className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] right-4 z-40 size-14 rounded-full shadow-lg sm:hidden" />}
@@ -156,16 +167,15 @@ function MobileBar({ user, pathname }: { user: User; pathname: string }) {
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger asChild>
             <button type="button" aria-label="Ouvrir le menu" className="flex h-14 flex-1 items-center justify-center">
-              <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={30} />
+              <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={30} />
             </button>
           </SheetTrigger>
           <SheetContent side="left" className="w-[85vw] max-w-xs gap-0 overflow-y-auto p-0">
             <SheetTitle className="sr-only">Menu Ξ</SheetTitle>
             <SheetDescription className="sr-only">Votre compte, vos pages et vos réglages</SheetDescription>
             <div className="border-b p-4">
-              <UserAvatar name={user.name} image={user.image} bloubSeed={user.bloubSeed} size={44} />
+              <UserAvatar name={user.name} bloubSeed={user.bloubSeed} size={44} />
               <p className="mt-2 truncate font-bold">{user.name}</p>
-              <p className="truncate text-sm text-muted-foreground">{user.handle}</p>
             </div>
             <nav aria-label="Menu du compte" className="flex flex-col py-2">
               {[NAV_ITEMS[4], NAV_ITEMS[6], NAV_ITEMS[7], NAV_ITEMS[8], ...SECONDARY_ITEMS].map(({ label, icon: Icon, href }) => (

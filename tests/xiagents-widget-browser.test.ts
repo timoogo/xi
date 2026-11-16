@@ -62,8 +62,9 @@ test("ΞAgents widget: real activity, refresh, reduced motion, pins persisted pe
   // Pins: saved server-side, restored after reload, isolated per user.
   const pin = row.getByRole("button", { name: "Épingler Politique" });
   assert.equal(await pin.getAttribute("aria-pressed"), "false");
+  const pinResponse = page.waitForResponse(response => response.url().endsWith(`/api/xiagents/${agentId}/pin`) && response.ok());
   await pin.click();
-  await page.waitForResponse(response => response.url().endsWith(`/api/xiagents/${agentId}/pin`) && response.ok());
+  await pinResponse;
   await page.reload();
   await row.waitFor();
   assert.equal(await row.getByRole("button", { name: "Épingler Politique" }).getAttribute("aria-pressed"), "true");

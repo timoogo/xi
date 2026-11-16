@@ -81,7 +81,7 @@ test("generator and human handles resolve equally with or without @", async () =
 
 test("real publication cards wire graph connections for published messages only", async () => {
  const {PublicationCard}=await import("../src/components/publications/publication-card");
- const publication={id:"00000000-0000-4000-8000-000000000001",authorId:"alice",authorType:"human",status:"published",visibility:"public",type:"post",createdAt:"2026-10-20T12:00:00Z",updatedAt:"2026-10-20T12:00:00Z",publishedAt:"2026-10-20T12:00:00Z",score:null,summary:"",sources:[],revision:"",messages:[{file:"1_message.md",body:"Texte"}]} as import("../src/lib/publications/types").PublicationSnapshot;
+ const publication={id:"00000000-0000-4000-8000-000000000001",authorId:"alice",authorType:"human",status:"published",visibility:"public",type:"post",createdAt:"2026-10-20T12:00:00Z",updatedAt:"2026-10-20T12:00:00Z",publishedAt:"2026-10-20T12:00:00Z",score:null,summary:"",sources:[],revision:"",contentRevision:"",messages:[{file:"1_message.md",body:"Texte"}]} as import("../src/lib/publications/types").PublicationSnapshot;
  assert.match(renderToStaticMarkup(<PublicationCard publication={publication} viewerId="bob" />),/Connexions et corrections/);
  assert.doesNotMatch(renderToStaticMarkup(<PublicationCard publication={{...publication,status:"draft"}} viewerId="bob" />),/Connexions et corrections/);
 });

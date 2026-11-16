@@ -1,18 +1,21 @@
 "use client";
 
+import { createContext, useContext, useState, type MouseEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import type { MouseEvent, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const INTERACTIVE = "a, button, summary, details, input, textarea, select, label, [role=button], [role=group]";
+const CommentsContext = createContext<{ open: boolean; toggle: () => void } | null>(null);
+export const useArticleComments = () => useContext(CommentsContext);
 
 /**
  * A feed entry whose free space opens the publication, like a social feed.
  * Links, buttons, folded sources and text selection keep their own behaviour;
  * keyboard users reach the detail page through the date link.
  */
-export function FeedArticle({ href, label, className, children, id }: { href?: string; label: string; className?: string; children: ReactNode; id?: string }) {
+export function FeedArticle({ href, label, className, children, id, commentsInitiallyOpen = false }: { href?: string; label: string; className?: string; children: ReactNode; id?: string; commentsInitiallyOpen?: boolean }) {
   const router = useRouter();
+  const [openComments, setOpenComments] = useState(commentsInitiallyOpen);
   function open(event: MouseEvent<HTMLElement>) {
     if (!href || event.defaultPrevented || event.button !== 0) return;
     // React portals bubble through their owner even outside the article DOM.
@@ -24,9 +27,9 @@ export function FeedArticle({ href, label, className, children, id }: { href?: s
     else router.push(href);
   }
   return (
-    <article id={id} aria-label={label} onClick={href ? open : undefined}
+    <CommentsContext.Provider value={{ open: openComments, toggle: () => setOpenComments(value => !value) }}><article id={id} aria-label={label} onClick={href ? open : undefined}
       className={cn(className, href && "cursor-pointer transition-colors hover:bg-foreground/[0.025]")}>
       {children}
-    </article>
+    </article></CommentsContext.Provider>
   );
 }

@@ -1,0 +1,5 @@
+nom	code	durée_secondes	commande
+install	0	7	pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/xi-audit-v1-a1POn5X4/store 
+lint	0	7	./node_modules/.bin/eslint . 
+typecheck	0	9	./node_modules/.bin/tsc --noEmit --incremental false 
+tests-cibles	0	4	./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test tests/conversation.test.ts tests/markdown-view.test.tsx tests/xiagents-suggest.test.ts tests/watch-format.test.ts tests/bloub-avatar.test.tsx 

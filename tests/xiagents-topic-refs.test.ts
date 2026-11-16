@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import Database from "better-sqlite3";
 import { createAccountStore } from "../src/lib/accounts/store";
-import { openVault } from "../src/lib/publications/vault";
+import { openVault, recordFiles } from "../src/lib/publications/vault";
 import { createTopicStore } from "../src/lib/topics/store";
 import { TopicError } from "../src/lib/topics/types";
 import type { PoliteFetch } from "../src/lib/watch/net";
@@ -34,7 +34,7 @@ async function setup(t: TestContext) {
     name: "Veille test", handle: `veille-${randomUUID().slice(0, 8)}`, topics: topicIds.map(id => ({ type: "existing", id })),
   });
   /** Simulates a topic that disappeared from the vault (the store itself never deletes one). */
-  const vanish = (id: string) => rm(join(root, "topics", `${id}.md`));
+  const vanish = async (id: string) => rm(join(root, "topics", (await recordFiles(join(root, "topics"))).get(id)!));
   return { topics, accounts, sources, deployments, science, climat, espace, presets, draft, vanish };
 }
 const refused = (fn: () => unknown, pattern: RegExp) => assert.throws(fn, (error: unknown) => error instanceof TopicError && error.status === 409 && pattern.test(error.message));

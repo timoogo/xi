@@ -9,9 +9,9 @@ import { handleFor } from "./handle";
 export const getCurrentUser = cache(async () => {
   const session = await getAuth().api.getSession({ headers: await headers() });
   if (!session) redirect("/auth/login");
-  const { id, name, email, image } = session.user;
+  const { id, name, email } = session.user;
   const avatar = getAvatarPreference(getAppDatabase(), id);
-  return { id, name, email, image, avatar, bloubSeed: avatar.mode === "bloub" ? avatar.seed : null, handle: handleFor(id) };
+  return { id, name, email, avatar, bloubSeed: avatar.seed, handle: handleFor(id) };
 });
 
 export type CurrentUser = Awaited<ReturnType<typeof getCurrentUser>>;

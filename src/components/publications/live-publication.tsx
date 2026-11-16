@@ -8,7 +8,7 @@ import { messageHref } from "./message-links";
 import { useLiveSync } from "./live-sync";
 import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 type Author = { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null };
-export function LivePublication({ initial, initialAuthors, viewerId }: { initial: PublicationSnapshot; initialAuthors: Record<string, Author>; viewerId: string }) {
+export function LivePublication({ initial, initialAuthors, viewerId, focusedCommentId }: { initial: PublicationSnapshot; initialAuthors: Record<string, Author>; viewerId: string; focusedCommentId?: string }) {
   const [publication, setPublication] = useState<PublicationSnapshot | null>(initial);
   const [authors, setAuthors] = useState(initialAuthors);
   const generation = useRef(0);
@@ -44,5 +44,5 @@ export function LivePublication({ initial, initialAuthors, viewerId }: { initial
     return () => window.removeEventListener("hashchange", reveal);
   }, [initial.id, router]); // Refreshes preserve reading position; only navigation follows the anchor.
   if (!publication) return <p className="p-6 text-muted-foreground">Cette publication n’est plus disponible.</p>;
-  return <PublicationCard publication={publication} author={authors[publication.authorId]} viewerId={viewerId} full afterTrash="/dashboard/publications" />;
+  return <PublicationCard publication={publication} author={authors[publication.authorId]} viewerId={viewerId} focusedCommentId={focusedCommentId} full afterTrash="/dashboard/publications" />;
 }

@@ -99,7 +99,7 @@ export function explicitConcepts(parts: Segment[], topics: Topic[]): Concept[] {
   return [...found.values()];
 }
 
-const modelSchema = z.object({
+export const modelSchema = z.object({
   concepts: z.array(z.object({ label: z.string().trim().min(2).max(120), quote: z.string().trim().min(3).max(600) })).max(MAX_CONCEPTS),
   relations: z.array(z.object({
     from: z.string().trim().min(2).max(120), to: z.string().trim().min(2).max(120), type: z.enum(TOPIC_RELATION_TYPES),
@@ -107,21 +107,24 @@ const modelSchema = z.object({
   })).max(20),
 });
 type ModelAnswer = z.infer<typeof modelSchema>;
-const SYSTEM = `Tu identifies les concepts d’un texte d’actualité et les relations que le texte établit explicitement entre eux.
+export const DISCOVERY_SYSTEM = `Tu identifies les concepts d’un texte d’actualité et les relations que le texte établit explicitement entre eux.
 Réponds uniquement en JSON : {"concepts":[{"label":"…","quote":"…"}],"relations":[{"from":"…","to":"…","type":"related_to|similar_to|part_of|influences|opposes","justification":"…","quote":"…","confidence":0.0}]}.
 - label : le concept tel qu’il est nommé (groupe nominal court) ; quote : une phrase recopiée mot pour mot du texte.
 - Une relation n’existe que si une phrase du texte l’affirme ; deux concepts cités ensemble ne sont pas liés pour autant.
-- justification : pourquoi cette phrase établit cette relation ; confidence : ta certitude que le texte l’affirme.
+- justification : une phrase courte (moins de 20 mots) ; confidence : ta certitude que le texte l’affirme.
+- Sois concis : au plus 12 concepts, les plus importants, et au plus 8 relations ; chaque quote est une seule phrase.
 - N’invente rien : aucune relation plutôt qu’une relation douteuse.`;
 
 /** Words that make a relation type plausible in the quoted sentence (type coherence). related_to needs none. */
 const TYPE_CUES: Record<TopicRelationType, RegExp | null> = {
   related_to: null,
-  similar_to: /\b(comme|similaire|semblable|proche|analogue|equivalent|pareil)/,
-  part_of: /\b(fait partie|partie de|composante|parmi|inclu|compren|compos|secteur|branche|sous)/,
-  influences: /\b(entrain|provoqu|caus|influenc|impact|condui|redui|augment|favoris|affect|pes|fait (monter|baisser)|effet|consequence|depend)/,
-  opposes: /\b(oppos|contre|contrair|conflit|rival|antagon|incompatible|concurren)/,
+  similar_to: /\b(comme|similaire|semblable|proche|analogue|equivalent|pareil|similar|akin)/,
+  part_of: /\b(fait partie|partie de|composante|parmi|inclu|compren|compos|secteur|branche|sous|part of|member of|component|among)/,
+  influences: /\b(entrain|provoqu|caus|influenc|impact|condui|redui|augment|favoris|affect|pes|fait (monter|baisser)|effet|consequence|depend|lead to|leads to|drive|increas|reduc|boost)/,
+  opposes: /\b(oppos|contre|contrair|conflit|rival|antagon|incompatible|concurren|against|versus)/,
 };
+/** Whether a text carries a cue for this relation type (related_to needs none). */
+export const typeCue = (type: TopicRelationType, text: string) => TYPE_CUES[type]?.test(fold(text)) ?? true;
 const fold = (text: string) => text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const round = (value: number) => Math.round(value * 100) / 100;
 
@@ -178,8 +181,8 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
     return [...byTopic.values()];
   };
   /** SQLite projection of one record, if it still describes the current public content; else nothing. */
-  async function projectOne(record: DiscoveryRecord | null, publicationId: string, current: { revision: string } | undefined, known: Set<string>) {
-    const valid = record && current && record.revision === current.revision;
+  async function projectOne(record: DiscoveryRecord | null, publicationId: string, current: { contentRevision: string } | undefined, known: Set<string>) {
+    const valid = record && current && record.revision === current.contentRevision;
     publications.setInferredTopics(publicationId, valid ? associations(record).filter(c => known.has(c.topicId!)).map(c => ({ topic_id: c.topicId!, score: c.match === "explicit" ? 1 : 0.6 })) : []);
   }
   /**
@@ -204,7 +207,7 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
   /** Publications associated by inference with a topic, with their evidence, for public publications only. */
   async function associationsOf(topicId: string) {
     const current = new Map((await publications.publicPublications()).map(p => [p.id, p]));
-    return (await all()).filter(r => current.get(r.publication)?.revision === r.revision)
+    return (await all()).filter(r => current.get(r.publication)?.contentRevision === r.revision)
       .flatMap(r => associations(r).filter(c => c.topicId === topicId).map(c => ({ publicationId: r.publication, concept: c, mode: r.mode, model: r.model, analyzedAt: r.analyzedAt })))
       .sort((x, y) => y.analyzedAt.localeCompare(x.analyzedAt));
   }
@@ -218,7 +221,7 @@ export function createDiscoveryRecords({ vault, topics, publications }: { vault:
     const current = new Map((await publications.publicPublications()).map(p => [p.id, p]));
     const groups = new Map<string, { key: string; labels: Set<string>; evidence: { publicationId: string; author: string; excerpt: string; from: string }[] }>();
     for (const record of await all()) {
-      if (current.get(record.publication)?.revision !== record.revision) continue;
+      if (current.get(record.publication)?.contentRevision !== record.revision) continue;
       for (const concept of record.concepts) {
         if (concept.topicId || keys.has(concept.key)) continue;
         const group = groups.get(concept.key) ?? { key: concept.key, labels: new Set(), evidence: [] };
@@ -263,12 +266,12 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     for (const publication of await publications.publicPublications()) {
       const record = await read(publication.id);
       let key: string | null = null;
-      if (!record || record.revision !== publication.revision) key = `enrich:${publication.id}:${publication.revision}`;
+      if (!record || record.revision !== publication.contentRevision) key = `enrich:${publication.id}:${publication.contentRevision}`;
       else if (record.pendingInference) {
         const owner = await ownerOf(publication);
-        if (owner && llm(owner).ok) key = `enrich:${publication.id}:${publication.revision}:model`;
+        if (owner && llm(owner).ok) key = `enrich:${publication.id}:${publication.contentRevision}:model`;
       }
-      if (key && queue.enqueue({ kind: DISCOVERY_JOB, key, payload: { publicationId: publication.id, revision: publication.revision }, runAfter: at, maxAttempts: 3 }).created) planned++;
+      if (key && queue.enqueue({ kind: DISCOVERY_JOB, key, payload: { publicationId: publication.id, revision: publication.contentRevision }, runAfter: at, maxAttempts: 3 }).created) planned++;
     }
     return planned;
   }
@@ -282,7 +285,7 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
       return { status: "done", result: { outcome: "not-public" } };
     }
     const previous = await read(publicationId);
-    if (previous && previous.revision === publication.revision && previous.mode === "model") return { status: "done", result: { outcome: "already" } };
+    if (previous && previous.revision === publication.contentRevision && previous.mode === "model") return { status: "done", result: { outcome: "already" } };
     const catalogue = await topics.list();
     const parts = segments(publication);
     const explicit = explicitConcepts(parts, catalogue);
@@ -290,11 +293,11 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     const owner = await ownerOf(publication);
     const binding = owner ? llm(owner) : null;
     const base: DiscoveryRecord = {
-      publication: publicationId, revision: publication.revision, author, analyzedAt: now().toISOString(), pipeline: DISCOVERY_PIPELINE,
+      publication: publicationId, revision: publication.contentRevision, author, analyzedAt: now().toISOString(), pipeline: DISCOVERY_PIPELINE,
       mode: "deterministic", model: null, pendingInference: true, concepts: explicit, relations: [],
     };
     const known = new Set(catalogue.map(t => t.id));
-    const current = { revision: publication.revision };
+    const current = { contentRevision: publication.contentRevision };
     if (!binding?.ok) {
       // No model: explicit terms only, no relation, no justification, no confidence. The inference pass is planned
       // again as soon as the owner's local model is available.
@@ -306,7 +309,7 @@ export function createTopicDiscovery({ vault, topics, relations, publications, l
     const text = parts.map(p => p.text).join("\n").slice(0, MAX_TEXT);
     let answer: ModelAnswer;
     try {
-      answer = await askJson(binding.inference, { model: binding.resolved.model, system: SYSTEM, prompt: `Texte :\n${text}` }, modelSchema);
+      answer = await askJson(binding.inference, { model: binding.resolved.model, system: DISCOVERY_SYSTEM, prompt: `Texte :\n${text}`, stage: "concepts" }, modelSchema);
     } catch (error) {
       // The explicit matches are kept meanwhile; the job waits for the model (or retries), never a cloud fallback.
       await write(base);

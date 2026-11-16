@@ -1,0 +1,14 @@
+[ERR_PNPM_UNSAFE_MODULES_DIR] Refusing to remove the modules directory at "/home/timogo/dev/labs/xi/node_modules" because its resolved target is not a strict subdirectory of the project root at "/tmp/xi-audit-v1-asbWtZCw/project".
+[ERROR] Command failed with exit code 1: pnpm install
+
+pnpm: Command failed with exit code 1: pnpm install
+    at getFinalError (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:89024:14)
+    at makeError (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:91331:21)
+    at getSyncResult (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:93175:10)
+    at spawnSubprocessSync (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:93135:14)
+    at execaCoreSync (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:93065:23)
+    at callBoundExeca (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:95593:23)
+    at boundExeca (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:95570:49)
+    at sync2 (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:95725:14)
+    at runPnpmCli (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:269874:5)
+    at runDepsStatusCheck (file:///usr/lib/node_modules/pnpm/dist/pnpm.mjs:271638:7)

@@ -1,5 +1,7 @@
+import { migrateContentRevisions } from "../maintenance/content-revisions";
 import { labelTestMessage } from "./test-content";
 import { locked } from "../topics/lock";
+import { migrateAgentKnowledge } from "../konstruktor/knowledge";
 import { parseMessage } from "./message-metadata";
 import { threadNumbers } from "./conversation";
 import { effectiveSocial, readGenerators, readSocial, writeSocial, PREFERENCES, type Preference } from "./social";
@@ -76,6 +78,7 @@ type Folder = {
   sources: PublicationSnapshot["sources"];
   numbered: string[];
   revision: string;
+  contentRevision: string;
   indexMtime: number;
 };
 
@@ -153,7 +156,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
         return { ...source, file, title: source.title ?? file.replace(/\.md$/, "") };
       });
     return {
-      dir, doc: parsed.doc, meta: parsed.meta, generatorId: parsed.generatorId, summary, sources, numbered, revision: tree.revision, indexMtime,
+      dir, doc: parsed.doc, meta: parsed.meta, generatorId: parsed.generatorId, summary, sources, numbered, revision: tree.revision, contentRevision: tree.contentRevision, indexMtime,
       messages: order.map((file, i) => {
         const message = parseMessage(file, tree.files.get(file)!);
         const reply = parsed.doc.get("reply_to");
@@ -175,7 +178,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       visibility: meta.visibility, path: rel(folder.dir), original_path: trash?.originalPath ?? null,
       trashed_at: trash?.trashedAt ?? null, created_at: meta.createdAt, updated_at: meta.updatedAt,
       published_at: meta.publishedAt, score: meta.score, excerpt: excerpt(folder.summary || folder.messages[0]?.body || ""),
-      revision:folder.revision, generator_id: folder.generatorId, test_content: folder.doc.get("test_content") === true ? 1 : 0, reply_to: folder.messages[0]?.replyTo ?? null, index_mtime: folder.indexMtime,
+      revision:folder.revision, content_revision: folder.contentRevision, generator_id: folder.generatorId, test_content: folder.doc.get("test_content") === true ? 1 : 0, reply_to: folder.messages[0]?.replyTo ?? null, index_mtime: folder.indexMtime,
     };
   }
 
@@ -266,6 +269,9 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       for (const entry of await listDir(base)) if (entry.isDirectory() && USER_ID.test(entry.name)) users.add(entry.name);
     }
     for (const userId of users) await reconcileUser(userId);
+    // Once per database: analyses recorded against exact revisions move to content revisions (same content).
+    // A failure must not take the index down: it is retried at the next reconciliation (no flag written).
+    await migrateContentRevisions(db, vault.root).catch(error => console.error("Migration des révisions de contenu impossible", error));
     const insert = db.prepare("INSERT OR IGNORE INTO feed_follow (viewer_id, author_id) VALUES (?, ?)");
     const settings = await Promise.all([...users].map(async id => ({ id, effective: effectiveSocial(await readSocial(vault, {id}), await readGenerators(vault, {id})) })));
     db.transaction(() => {
@@ -332,7 +338,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   }
 
   function snapshot(folder: Folder): PublicationSnapshot {
-    return { ...folder.meta, summary: folder.summary, messages: folder.messages, sources: folder.sources, revision: folder.revision, analysis: folder.doc.get("analysis") === true };
+    return { ...folder.meta, summary: folder.summary, messages: folder.messages, sources: folder.sources, revision: folder.revision, contentRevision: folder.contentRevision, analysis: folder.doc.get("analysis") === true };
   }
 
   async function writeIndex(folder: Folder, meta: PublicationMeta, summary: string, order: string[]) {
@@ -1052,10 +1058,41 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
     await ensureIndexed();
     // The viewer's own agents: their private publications are readable by their owner.
     await authorized({ id: viewerId });
-    return db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
+    const declared = db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
       SELECT p.author_id AS agent_id, t.topic_id, COUNT(*) AS count FROM publication p JOIN publication_topic t ON t.publication_id = p.id AND t.origin = 'declared'
       WHERE p.author_type = 'ai' AND p.author_id IN (SELECT value FROM json_each(@agents)) AND p.status = 'published' AND p.test_content = 0 AND ${readablePublicationSql("p")}
       GROUP BY p.author_id, t.topic_id`).all({ viewer: viewerId, agents: JSON.stringify(agentIds) });
+    migrateAgentKnowledge(db);
+    const inferred = db.prepare<{ viewer: string; agents: string }, { agent_id: string; topic_id: string; count: number }>(`
+      SELECT k.agent AS agent_id, k.topic AS topic_id, COUNT(*) AS count FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.agent IN (SELECT value FROM json_each(@agents)) AND p.author_type = 'ai' AND p.author_id = k.agent AND p.content_revision = k.revision AND p.status = 'published' AND p.test_content = 0 AND ${readablePublicationSql("p")}
+      AND NOT EXISTS (SELECT 1 FROM publication_topic t WHERE t.publication_id = p.id AND t.topic_id = k.topic AND t.origin = 'declared')
+      GROUP BY k.agent, k.topic`).all({ viewer: viewerId, agents: JSON.stringify(agentIds) });
+    const merged = new Map(declared.map(row => [`${row.agent_id}:${row.topic_id}`, { ...row }]));
+    for (const row of inferred) { const key = `${row.agent_id}:${row.topic_id}`; const current = merged.get(key); if (current) current.count += row.count; else merged.set(key, row); }
+    return [...merged.values()];
+  }
+
+  /** Private provenance is only returned while its publication remains readable at the same revision. */
+  async function agentKnowledgeSources(viewerId: string, topicId: string) {
+    await ensureIndexed(); await authorized({ id: viewerId }); migrateAgentKnowledge(db);
+    return db.prepare<{ viewer: string; topic: string }, { publication: string; agent: string; excerpt: string }>(`
+      SELECT k.publication, k.agent, k.excerpt FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.topic = @topic AND p.author_type = 'ai' AND p.author_id = k.agent AND p.content_revision = k.revision AND p.status = 'published' AND ${readablePublicationSql("p")}
+      ORDER BY p.published_at DESC, p.id`).all({ viewer: viewerId, topic: topicId });
+  }
+
+  /**
+   * What an agent learned from its own publications, for its owner only. Same checks as `agentKnowledgeSources`
+   * (owner, readable, published, same revision, real content); a non-private audience only gets public sources.
+   */
+  async function agentMemory(ownerId: string, agentId: string, audience: "private" | "public") {
+    await ensureIndexed(); await authorized({ id: ownerId }); migrateAgentKnowledge(db);
+    return db.prepare<{ viewer: string; agent: string; audience: string }, { publication: string; topic: string; excerpt: string }>(`
+      SELECT k.publication, k.topic, k.excerpt FROM xi_agent_knowledge k JOIN publication p ON p.id = k.publication
+      WHERE k.owner = @viewer AND k.agent = @agent AND p.author_type = 'ai' AND p.author_id = k.agent AND p.content_revision = k.revision AND p.status = 'published' AND p.test_content = 0
+      AND (@audience = 'private' OR p.visibility = 'public') AND ${readablePublicationSql("p")}
+      ORDER BY p.published_at DESC, p.id`).all({ viewer: ownerId, agent: agentId, audience });
   }
 
   async function setSocial(viewer: Viewer, authorId: string, change: { following?: boolean; preference?: Preference | null }) {
@@ -1089,7 +1126,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
   async function publicPublications() {
     await ensureIndexed();
     return index.all().filter(row => !row.trashed_at && row.status === "published" && row.visibility === "public" && !row.test_content)
-      .map(row => ({ id: row.id, revision: row.revision ?? "", authorId: row.author_id, authorType: row.author_type, generatorId: row.generator_id }));
+      .map(row => ({ id: row.id, revision: row.revision ?? "", contentRevision: row.content_revision ?? "", authorId: row.author_id, authorType: row.author_type, generatorId: row.generator_id }));
   }
   /** The content of one such publication, or null once it is no longer public (trashed, private, fixture). */
   async function publicContent(id: string) {
@@ -1110,7 +1147,7 @@ export function createPublicationStore({ vault, db, now = () => new Date() }: { 
       .all({ viewer: viewerId, ids: JSON.stringify(wanted) }).map(row => row.id));
   }
 
-  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
+  return { publicPublications, publicContent, setInferredTopics, readableIds, setTopicKnowledge, agentContributions, agentKnowledgeSources, agentMemory, refreshAccess: authorized, publishGenerated, setTopicSubscription, saveWatchDraft, reviewWatchDraft, publishWatchDraft, retireWatchDraft, agentPublications, ensureIndexed, invalidatePath, conversation, realtimeState, replies, createCorrection, social, setSocial, generators, create, get, getEditable, save, publish, addSource, trash, restore, page, listTrash, reconcileAll };
 }
 
 export type PublicationStore = ReturnType<typeof createPublicationStore>;

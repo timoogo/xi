@@ -35,7 +35,7 @@ test("#topic submission creates one private personal topic, idempotently and und
   assert.equal(personal.length, 1);
   const topic = personal[0];
   assert.ok(isPersonal(topic));
-  assert.deepEqual([topic.owner, topic.tag, topic.name, topic.parentId, topic.relatedIds, `${topic.id}.md`], ["alice", "essence", "Essence", null, [], files[0]]);
+  assert.deepEqual([topic.owner, topic.tag, topic.name, topic.parentId, topic.relatedIds, files[0]], ["alice", "essence", "Essence", null, [], "essence.md"], "fichier nommé d’après le tag");
   assert.equal((await topics.openPersonal("alice", "essence")).topic.id, topic.id);
   assert.equal((await topics.openPersonal("alice", "essence")).created, false);
 

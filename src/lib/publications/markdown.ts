@@ -95,10 +95,22 @@ export function messageEmbedTarget(folder: string, file: string) {
   return `${folder}/${file.replace(/\.md$/, "")}`;
 }
 
+/**
+ * File-name words of a text: accents folded, lower case, French elisions (« l’ », « d’ ») and English possessives
+ * (« NASA’s ») dropped, hyphens inside a word kept (« x-59 »). At most ten words and 80 characters, never cut
+ * inside a word, so a name stays readable instead of ending on a fragment.
+ */
 export function slugify(text: string, fallback: string) {
-  const words = text.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean).slice(0, 6);
-  return words.join("_").slice(0, 48).replace(/_+$/, "") || fallback;
+  const words = text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/(^|[^a-z0-9])[cdjlmnst]['’]/g, "$1 ").replace(/['’]s(?![a-z0-9])/g, "")
+    .replace(/[^a-z0-9-]+/g, " ").split(" ").map(word => word.replace(/^-+|-+$/g, "")).filter(Boolean);
+  let slug = "";
+  for (const word of words.slice(0, 10)) {
+    const next = slug ? `${slug}_${word}` : word;
+    if (next.length > 80) break;
+    slug = next;
+  }
+  return slug || words[0]?.slice(0, 80) || fallback;
 }
 
 function firstLine(markdown: string) {

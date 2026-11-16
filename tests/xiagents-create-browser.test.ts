@@ -52,7 +52,7 @@ test("ΞAgent creation: unavailable AI said as such, manual review, calendars by
   await day.getByLabel("Fin de la plage 2").fill("06:00");
   await day.getByRole("button", { name: "Enregistrer", exact: true }).click();
   await day.waitFor({ state: "detached" });
-  await dialog.getByText("05:00–06:00, 07:00–23:00").waitFor();
+  await dialog.getByText("05:00–06:00, 07:00–23:00", { exact: true }).waitFor();
   const heatmap = dialog.getByRole("group", { name: "Calendrier de veille : heures programmées par date" });
   await heatmap.locator('button[tabindex="0"]').focus();
   await page.keyboard.press("ArrowRight");

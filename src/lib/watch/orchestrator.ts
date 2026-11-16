@@ -199,6 +199,9 @@ const toRun = (row: RunRow): RunRecord => ({
 export function startRun(db: Database.Database, input: { id: string; jobId?: string; agentId: string | null; owner: string; kind: string; trigger: Trigger; attempt?: number; maxAttempts?: number; log?: string }, now: number) {
   migrateOrchestrator(db);
   const logs: RunLog[] = [{ at: now, level: "info", message: input.log ?? "Démarrage." }];
+  // An earlier attempt still marked running was cut short (crash, restart, expired lease): say so explicitly.
+  if (input.jobId) db.prepare("UPDATE xiagent_run SET status = 'interrupted', finished_at = ?, logs = json_insert(logs, '$[#]', json(?)) WHERE job_id = ? AND status = 'running' AND id != ?")
+    .run(now, JSON.stringify({ at: now, level: "warn", message: "Tentative interrompue (redémarrage ou bail expiré) : reprise par une nouvelle tentative." }), input.jobId, input.id);
   db.prepare("INSERT OR REPLACE INTO xiagent_run (id, job_id, agent_id, owner, kind, trigger, status, attempt, max_attempts, started_at, logs) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)")
     .run(input.id, input.jobId ?? null, input.agentId, input.owner, input.kind, input.trigger, input.attempt ?? 1, input.maxAttempts ?? 1, now, JSON.stringify(logs));
   return input.id;

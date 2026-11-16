@@ -31,7 +31,7 @@ export function model(answer: (request: ChatRequest, call: number) => Promise<st
   const binding = (): LLMBinding => ({
     ok: true,
     inference: { complete: async request => { requests.push(request); return answer(request, requests.length); } },
-    resolved: { model: "qwen-test", instance: { name: "Ollama local" }, instanceSource: "global", modelSource: "global" } as never,
+    resolved: { model: "qwen-test", instance: { name: "Ollama local" }, instanceSource: "global", modelSource: "global", options: { temperature: 0, maxTokens: 2_048, contextSize: null, timeoutMs: 180_000 } } as never,
   });
   return { binding, requests };
 }

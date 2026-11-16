@@ -1,0 +1,7 @@
+# Checkpoint phase 3 — F1, 2026-11-06
+
+- HEAD vérifié en début de lot : `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`, `main`. Seul le dossier d'audit est non suivi ; aucune lecture de données réelles ni exécution de tests, services ou migrations.
+- F1 terminé : 12 entrées provisoires `F1-AUTH-01`–`03`, `F1-USER-01`–`02`, `F1-ACCOUNT-01`–`02`, `F1-AVATAR-01`–`03`, `F1-UI-01`–`02`, dans `../../03-FEATURE-INVENTORY.md` ; registre `../evidence/phase-3-F1.md`. Statuts de travail : 10 implémentées non validées, 1 expérimentale, 1 partielle ; chiffres limités au lot F1 et non au projet entier.
+- Contrôles : inspection ciblée des actions, formulaires, écrans, API et stores, noms et extraits de tests et historique de fichiers. Les jobs CI historiques ont été réutilisés depuis H2, pas relancés ; aucun détail de skip individuel déduit.
+- Découvertes : formulaire historique de création d'agent toujours raccordé via `/dashboard/xiagents`, proposition déterministe ; `/dashboard/accounts` redirige. Pages notifications/communautés affichent des placeholders ; texte communautés sur les abonnements à confronter à F3. Branchement de reset sur branches expérimentales uniquement, capacités natives non exclues.
+- Reste : F2–F6, puis V1–V2 et qualification Q1. F3 couvrira suivi ; F4 couvre autres créations d'agents, système et interactions avec Konstruktor. Avant prochain lot, lire état et checkpoint, comparer HEAD à la référence ; suspendre si divergence. Attendre autorisation pour F2.

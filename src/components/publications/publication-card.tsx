@@ -4,7 +4,7 @@ import type { PublicationSnapshot } from "@/lib/publications/types";
 import { FeedArticle } from "./feed-article";
 import { PublicationContent } from "./publication-content";
 import { PublicationPanel } from "./publication-panel";
-import { ReplyButton } from "./publication-actions";
+import { InlineComments } from "./inline-comments";
 
 import { ShareButton } from "./message-menu";
 import { messageAnchor } from "@/lib/publications/conversation";
@@ -13,13 +13,14 @@ import type { XiAgentBloub } from "@/lib/xiagents/avatar";
 type Author = { name: string; handle: string; bloubSeed?: string | null; bloub?: XiAgentBloub; image?: string | null };
 
 /** One publication as a social feed entry: used by the home feed, the profile, Publications and the detail page. */
-export function PublicationCard({ publication, author, viewerId, full = false, afterTrash, replies }: {
+export function PublicationCard({ publication, author, viewerId, full = false, afterTrash, replies, focusedCommentId }: {
   publication: PublicationSnapshot;
   author?: Author;
   viewerId: string;
   full?: boolean;
   afterTrash?: string;
   replies?: Record<string, { count: number; content: React.ReactNode }>;
+  focusedCommentId?: string;
 }) {
   const isAuthor = publication.authorId === viewerId;
   const isDraft = publication.status === "draft";
@@ -32,7 +33,7 @@ export function PublicationCard({ publication, author, viewerId, full = false, a
     publication.visibility === "followers" ? <Pill key="followers"><Users aria-hidden="true" className="size-3" />Abonnés</Pill> : null,
   ].filter(Boolean);
   return (
-    <FeedArticle href={full ? undefined : href} label={`Publication de ${name}`} className="xi-publication border-b px-3 py-2 sm:px-4">
+    <FeedArticle href={full && !focusedCommentId ? undefined : href} commentsInitiallyOpen={full} label={`Publication de ${name}`} className="xi-publication border-b px-3 py-2 sm:px-4">
       <div className="min-w-0 flex-1">
         {badges.length ? <p className="ml-[52px] mt-1 flex flex-wrap gap-1.5">{badges}</p> : null}
         <div className={full ? "mt-2 text-[17px] leading-7" : "mt-0.5 text-[15px] leading-6"}>
@@ -45,7 +46,7 @@ export function PublicationCard({ publication, author, viewerId, full = false, a
               const anchor = messageAnchor(message.file);
               return anchor ? [`${publication.id}/${anchor.slice(2)}`] : [];
             })}
-            author={{ name, image: author?.image, bloubSeed: author?.bloubSeed, bloub: author?.bloub, handle: author?.handle, id: publication.authorId, ai: publication.authorType === "ai" }}
+            author={{ name, bloubSeed: author?.bloubSeed, bloub: author?.bloub, handle: publication.authorType === "ai" ? author?.handle : undefined, id: publication.authorId, ai: publication.authorType === "ai" }}
             date={date}
             visibility={publication.visibility}
             summary={publication.summary}
@@ -56,11 +57,8 @@ export function PublicationCard({ publication, author, viewerId, full = false, a
           />
         </div>
         {publication.previousVersion ? <PublicationPanel sources={[]} previousVersion={publication.previousVersion} preview={publication.summary} /> : null}
-        <footer className="ml-[52px] flex items-center">
-          <div aria-label="Interactions" className="flex max-w-md flex-1 items-center justify-between">
-            {!isDraft && publication.messages[0] && messageAnchor(publication.messages[0].file) ? <ReplyButton messageRef={`${publication.id}/${messageAnchor(publication.messages[0].file)!.slice(2)}`} /> : null}
-            <ShareButton href={href} />
-          </div>
+        <footer>
+          {!isDraft ? <InlineComments publicationId={publication.id} viewerId={viewerId} focusedCommentId={focusedCommentId} share={<ShareButton href={href} />} /> : <div className="ml-[52px]"><ShareButton href={href} /></div>}
         </footer>
       </div>
     </FeedArticle>

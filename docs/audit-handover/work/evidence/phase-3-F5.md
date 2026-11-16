@@ -1,0 +1,3 @@
+# Preuves F5
+
+Référence `4d333e4a2d1c40670d71f8d7fb6d3771b16d59b2`. F5-01 à F5-07 avec entrées, données, historique, tests, résultats et limites : `../../03-FEATURE-INVENTORY.md`. Sources principales `src/lib/llm/resolve.ts:18`, `server.ts:40,74,81,102`, `src/lib/watch/inference.ts:43,58`, `src/lib/watch/jobs.ts:80,106,138,170`, `src/lib/watch/worker.ts:51,209`, `src/lib/system-agents/tasks.ts:87,128,170`, `src/app/api/events/route.ts:20`, `src/lib/maintenance/migration-check.ts:73`. `tests/llm-ollama.test.ts:50` utilise `fakeOllama` ; `tests/integration-pipeline.test.ts:42` injecte des flux et modèle doublés (voir ses lignes 45–54) : ne prouve pas de véritable serveur Ollama ou sources externes. Aucun test exécuté ; CI historique dans `phase-1-H2-github.md`.

@@ -1,6 +1,8 @@
 import { getAccountStore } from "../accounts/server";
 import { getAppDatabase } from "../auth";
-import { getSystemTasks } from "../system-agents/server";
+import { getSystemAgentStore, getSystemTasks } from "../system-agents/server";
+import { getPublicationStore } from "../publications/server";
+import { createKnowledgePipelines } from "./pipelines";
 import { getLLMRuntime } from "../llm/server";
 import { getTopicStore } from "../topics/server";
 import { getWatchServices } from "../watch/server";
@@ -18,4 +20,10 @@ export function getKonstruktor() {
     .then(([tasks, accounts, topics, { sources }, deployments]) => createKonstruktor({ db: getAppDatabase(), tasks, accounts, topics, sources, deployments, models: owner => modelChoices(getLLMRuntime().store, owner) }))
     .catch(error => { singleton.xiKonstruktor = undefined; throw error; });
   return singleton.xiKonstruktor;
+}
+
+/** Knowledge pipelines on the shared system-task queue; this process's task runner starts their jobs at once. */
+export async function getKnowledgePipelines() {
+  const [tasks, systemAgents, accounts, publications] = await Promise.all([getSystemTasks(), getSystemAgentStore(), getAccountStore(), getPublicationStore()]);
+  return createKnowledgePipelines({ db: getAppDatabase(), accounts, publications, systemAgents, kick: () => void tasks.kick() });
 }

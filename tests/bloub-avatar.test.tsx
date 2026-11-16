@@ -84,3 +84,18 @@ test("editor exposes the library catalogs, the four states and accessible contro
   assert.match(html, /aria-label="Encre \(par défaut\)" aria-pressed="true"/);
   assert.doesNotMatch(html, /aria-label="Crème"|aria-label="Gris"/);
 });
+
+test("identity avatar chooses configured Bloub, then seed, then the accessible default", () => {
+  const seed = "ab".repeat(16);
+  const agent = { config: { ...DEFAULT_BLOUB_CONFIG, shape: "goutte" as const }, activity: "idle" as const };
+  const configured = renderToStaticMarkup(<UserAvatar name="Alice" bloub={agent} bloubSeed={seed} />);
+  assert.equal(body(configured), body(render("idle", agent.config)));
+  assert.doesNotMatch(configured, /data-seed=|<img/);
+  const seeded = renderToStaticMarkup(<UserAvatar name="Alice" bloubSeed={seed} />);
+  assert.match(seeded, new RegExp(`data-seed="${seed}"`));
+  assert.match(seeded, /aria-label="Avatar Bloub de Alice"/);
+  const fallback = renderToStaticMarkup(<UserAvatar name="Alice" />);
+  assert.equal(body(fallback), body(render("idle", DEFAULT_BLOUB_CONFIG)));
+  assert.match(fallback, /aria-label="Avatar Bloub de Alice"/);
+  assert.doesNotMatch(fallback, /<img/);
+});
