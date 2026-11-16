@@ -1,0 +1,70 @@
+✔ creation 1: a single word gives a complete, valid draft (65.278441ms)
+✔ creation 2: several keywords map to known concepts, without duplicate topics (10.320179ms)
+✔ creation 3: a long description stays bounded and valid (17.415911ms)
+✔ creation 4: rules only (no AI) — suggestion → draftToSpec → real deployment (130.803049ms)
+✔ creation 5 & 14: full YAML import fills every field, then deploys (94.901869ms)
+✔ creation 6: a partial YAML import is completed by the rules and defaults (68.109795ms)
+✔ creation 6b: a tag inconsistent with its parent is caught before any deployment record (8.042079ms)
+✔ creation 7: invalid or hostile YAML gives clear errors, never a draft (10.210977ms)
+✔ creation 8: an edit after import survives a later suggestion (14.387184ms)
+✔ creation 9 & 10: export of a modified draft is portable and reimports identically (14.426661ms)
+✔ creation 10b & 12: deployed agent → exportAgentDraft → YAML → reimport keeps calendars and exceptions (329.268977ms)
+✔ creation 11: a taken handle is a preflight problem and a 422 at creation (101.653738ms)
+✔ creation 13: imported approved sources are undecided and never deployed unless approved (143.197859ms)
+✔ creation 15: owner isolation for deployments and export (504.598086ms)
+✔ compatibility: specs and records of the previous format still validate (24.277582ms)
+✔ deployment: an internal error at the topics step is diagnosed; resuming completes without duplicates (152.221749ms)
+✔ dev singletons: a topic store built by an older implementation is replaced, with the services holding it (353.891814ms)
+✔ deploy: a topic alone is created once, with its parent routing (61.464495ms)
+✔ deploy: full ΞAgent — topics, identity, charter, Bloub, sources approved/excluded, calendars, activation (184.396843ms)
+ΞAgent deployment step failed {
+  deployment: '1c34ef82-3c00-4ec5-b956-8f3dc66083ae',
+  step: 'sources',
+  error: 'Error',
+  code: null,
+  message: 'Réseau coupé (simulé).'
+}
+✔ deploy: a failure stops before activation, the retry resumes without duplicates (100.838669ms)
+✔ deploy: unusable source and taken handle are reported, never hidden (67.533825ms)
+✔ proposal: model output is validated, existing topics reused, handle reserved, bad sources dropped (15.779595ms)
+✔ exclusions: kept through edits, suggestions, export and re-import; re-authorised only explicitly; deployed as decided (265.952392ms)
+✔ handles: successive collisions stop at the first free variant (2.671691ms)
+✔ handles: an existing numeric suffix is stripped from the stem (0.204554ms)
+✔ handles: long handles are truncated and every candidate stays valid (0.996818ms)
+✔ handles: exhaustion throws HandleUnavailableError (409) after exactly MAX calls (0.610816ms)
+✔ handles: an invalid handle is refused (400) without any availability call (0.418064ms)
+✔ handles: proposeAgent surfaces exhaustion as the controlled error (3.062553ms)
+✔ handles: a handle taken by another owner is not available (72.480933ms)
+✔ handles: two concurrent deployments with the same handle create exactly one agent (145.850899ms)
+✔ queue: major events first, manual next, aging prevents starvation (9.865619ms)
+✔ queue: a mass re-evaluation never holds back drafting; major events, aging and the inference limit still apply (2.430333ms)
+✔ queue: the inference limit is shared by every claimer; other kinds still run (1.093212ms)
+✔ admission: calendars, grace deadline, grants, manual runs, major events, pause (6.063191ms)
+✔ drain: end of window interrupts cleanly; permanent errors are final; transient ones retried (65.523915ms)
+✔ catch-up: bounded by the agent limit and creation, idempotent, isolated per agent (5.930245ms)
+✔ retention: agent setting wins over the global one; running rows are kept (2.032817ms)
+✔ control: pause until a date with recorded resume choice, resume with catch-up, manual run never changes the mode (137.498816ms)
+✔ export: a missing secondary topic is never dropped (no promotion), the export is refused with an explicit error (50.989411ms)
+✔ export of a deployed agent whose topic vanished: unresolved in place, YAML refused (409) (462.974228ms)
+✔ import: an unknown bare tag stays an unresolved reference in place; it blocks deployment until corrected (89.39408ms)
+✔ import: correcting an unresolved reference by creating it as a new topic deploys it; existing tags stay compatible (87.880497ms)
+✔ widget selection: five by default, pinned first, every pinned agent kept, stable order (1.510802ms)
+✔ widget rendering: real activities, links, pin toggles, see-all and empty states (23.035186ms)
+✔ widget categories: selector, system agents linked to their card, see-all keeps the category (11.002458ms)
+✔ pins: owner-only, persisted per user, idempotent, independent of activation (151.582938ms)
+✔ yaml: full import resolves topics, preset, sources, calendars and appearance (17.890687ms)
+✔ yaml: partial import only patches the given fields; missing details are completed with warnings (1.548657ms)
+✔ yaml: unknown keys are warnings; invalid fields are located errors (2.719495ms)
+✔ yaml: refuses syntax errors, versions, types, size, custom tags and alias bombs (5.178435ms)
+✔ yaml: draft → yaml → import → applySuggestion gives an equal draft (14.185895ms)
+✔ export: a deployed ΞAgent exports to a portable YAML, owner-only (246.27465ms)
+✔ yaml llm: inherit, override, portable instance key, unresolved reference, legacy style.model, no secret (4.584394ms)
+✔ ΞAgents: local preview, private publication, ownership, Markdown, threads, retries and rebuild (330.573646ms)
+ℹ tests 55
+ℹ suites 0
+ℹ pass 55
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8433.898871

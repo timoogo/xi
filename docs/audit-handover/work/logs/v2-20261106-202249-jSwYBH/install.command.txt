@@ -1,0 +1,1 @@
+pnpm install --frozen-lockfile --ignore-scripts --store-dir /tmp/xi-audit-v2-NbO8J4Lz/store 

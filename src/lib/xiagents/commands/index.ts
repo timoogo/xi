@@ -1,4 +1,5 @@
 import { createCommandRegistry, type ContextualCommand } from "@cmdly/core";
+import { commandTags, type CommandTag } from "@/lib/commands/tags";
 import type { NavigationRuntime } from "@/lib/commands/types";
 import type { XiAgentCategory, XiAgentSummary } from "../summary";
 import { createPublicationForAgent } from "./create-publication";
@@ -10,7 +11,7 @@ export type XiAgentCommandRuntime = NavigationRuntime & {
   agents: { list: (category: XiAgentCategory) => Promise<XiAgentSummary[]> };
 };
 
-export type XiAgentCommand = ContextualCommand<undefined, XiAgentCommandRuntime>;
+export type XiAgentCommand = ContextualCommand<undefined, XiAgentCommandRuntime, CommandTag>;
 
-export const xiAgentCommands = createCommandRegistry<undefined, XiAgentCommandRuntime>({ shared: undefined, runtimeRequired: true });
+export const xiAgentCommands = createCommandRegistry<undefined, XiAgentCommandRuntime, CommandTag>({ shared: undefined, runtimeRequired: true, tags: commandTags });
 xiAgentCommands.registerMany([findAgent, createPublicationForAgent]);

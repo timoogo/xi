@@ -6,6 +6,7 @@ import type { XiAgentCommand } from ".";
  */
 export const createPublicationForAgent = {
   id: "create-publication",
+  tags: ["creation"],
   label: "Créer une publication pour un ΞAgent",
   steps: [{
     id: "agent",

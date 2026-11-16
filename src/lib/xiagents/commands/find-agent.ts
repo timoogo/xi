@@ -3,6 +3,7 @@ import { XIAGENT_CATEGORIES, xiAgentHref } from "../summary";
 
 export const findAgent = {
   id: "find",
+  tags: ["search"],
   label: "Rechercher un ΞAgent",
   steps: [{
     id: "agent",

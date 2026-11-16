@@ -12,11 +12,11 @@ importers:
         specifier: 1.9.0
         version: 1.9.0(@types/react@19.3.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       '@cmdly/core':
-        specifier: ^0.1.1
-        version: 0.1.1
+        specifier: link:../cmdly-ecosystem/cmdly/packages/core
+        version: link:../cmdly-ecosystem/cmdly/packages/core
       '@cmdly/react':
-        specifier: ^0.1.1
-        version: 0.1.1(react@19.1.0)
+        specifier: link:../cmdly-ecosystem/cmdly/packages/react
+        version: link:../cmdly-ecosystem/cmdly/packages/react
       '@hookform/resolvers':
         specifier: ^5.2.1
         version: 5.9.2(@standard-schema/spec@1.1.0)(react-hook-form@7.90.0(@types/react@19.3.0)(react@19.1.0))(zod@4.6.7)
@@ -268,16 +268,6 @@ packages:
 
   '@better-fetch/fetch@1.3.2':
     resolution: {integrity: sha512-Gs7n99b5tqUC6cQAPbV0uED3IraHB6xQbHLQ/C3l7ZFafHScOx9pQ+DYmP5blbLFShVWLqxNUlI9wi4xU/X+ow==}
-
-  '@cmdly/core@0.1.1':
-    resolution: {integrity: sha512-MgPLaKqMlrwpoOh1MG7Hx9k2mOjHIfxgdML6qu3S+7hobf+rPNbsqtjv1UCYtYwQXQfAoJWi5b12cYnugGnsIA==}
-    engines: {node: '>=18'}
-
-  '@cmdly/react@0.1.1':
-    resolution: {integrity: sha512-pASk/mIMpWM35IKlrY7K7tGfR7AO6i96usZ9ybFAgvYdv1Ni4UQ31wVRoAqpHqq5AYxM/O52IHEJxn2N+cuyOA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -3446,13 +3436,6 @@ snapshots:
       '@noble/hashes': 2.4.0
 
   '@better-fetch/fetch@1.3.2': {}
-
-  '@cmdly/core@0.1.1': {}
-
-  '@cmdly/react@0.1.1(react@19.1.0)':
-    dependencies:
-      '@cmdly/core': 0.1.1
-      react: 19.1.0
 
   '@emnapi/core@1.10.0':
     dependencies:

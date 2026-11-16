@@ -3,6 +3,7 @@ import { publicationsOverHttp } from "@/lib/publications/commands/client";
 import { publicationCommands, type PublicationCommandRuntime } from "@/lib/publications/commands";
 import { agentsOverHttp } from "@/lib/xiagents/commands/client";
 import { xiAgentCommands, type XiAgentCommandRuntime } from "@/lib/xiagents/commands";
+import { commandTags, type CommandTag } from "./tags";
 import type { NavigationRuntime } from "./types";
 
 /**
@@ -12,9 +13,22 @@ import type { NavigationRuntime } from "./types";
  */
 export type XiCommandRuntime = PublicationCommandRuntime & XiAgentCommandRuntime;
 
-export const xiCommands = createCommandRegistry<undefined, XiCommandRuntime>({ shared: undefined, runtimeRequired: true });
+export const xiCommands = createCommandRegistry<undefined, XiCommandRuntime, CommandTag>({ shared: undefined, runtimeRequired: true, tags: commandTags });
+
+xiCommands.register("*", {
+  id: "test-cmdly",
+  label: "🧪 Test Cmdly global",
+  tags: ["test", "global", "debug"],
+  run: () => {
+    console.log("[Cmdly] Commande globale exécutée !");
+  },
+});
+
+
 xiCommands.mount("publications", publicationCommands);
 xiCommands.mount("xiagents", xiAgentCommands);
+
+
 
 /** The browser runtime: the host's navigation plus each module's HTTP services. */
 export const createXiCommandRuntime = (navigation: NavigationRuntime): XiCommandRuntime =>

@@ -39,8 +39,16 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   // Simple command, found by typing, run with Enter.
   await open("/dashboard");
   assert.equal(await input.getAttribute("aria-label"), "Commandes");
+  for (const [label, badge] of [["Aller aux publications", "Publications"], ["Rechercher un ΞAgent", "ΞAgents"], ["🧪 Test Cmdly global", "Global"]]) {
+    assert.equal(await palette.getByRole("option", { name: label }).getByText(badge, { exact: true }).count(), 1);
+  }
+  assert.equal(await palette.getByRole("option", { name: "🧪 Test Cmdly global" }).count(), 1);
+  await input.fill("search");
+  assert.equal(await palette.getByRole("option", { name: "Rechercher une publication" }).count(), 1);
+  assert.equal(await palette.getByRole("option", { name: "Rechercher un ΞAgent" }).count(), 1);
+  assert.equal(await palette.getByRole("option", { name: "Aller aux publications" }).count(), 0);
   await input.fill("aller aux");
-  assert.deepEqual(await palette.getByRole("option").allTextContents(), ["Aller aux publications"]);
+  assert.equal(await palette.getByRole("option", { name: "Aller aux publications" }).count(), 1);
   await input.press("Enter");
   await page.waitForURL(`${app.origin}/dashboard/publications`);
   await palette.waitFor({ state: "detached" });
@@ -48,7 +56,7 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   // Conditional availability; steps; Escape goes back one step, then closes.
   await trigger.click();
   await input.waitFor();
-  assert.ok(!(await palette.getByRole("option").allTextContents()).includes("Aller aux publications"));
+  assert.equal(await palette.getByRole("option", { name: "Aller aux publications" }).count(), 0);
   await palette.getByRole("option", { name: "Rechercher une publication" }).click();
   await palette.getByText("Étape 1/2").waitFor();
   assert.equal(await input.getAttribute("aria-label"), "Où chercher ?");

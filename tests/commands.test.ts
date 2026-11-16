@@ -48,7 +48,7 @@ function engineFor<TRuntime>(registry: CommandRegistry<undefined, TRuntime, true
 
 test("composition: each module's commands are discovered under its namespace, without collisions", () => {
   const ids = xiCommands.list().map(command => command.id);
-  assert.deepEqual(ids, ["publications.go-to", "publications.find", "xiagents.find", "xiagents.create-publication"]);
+  assert.deepEqual(ids.filter(id => !id.endsWith("test-cmdly")), ["publications.go-to", "publications.find", "xiagents.find", "xiagents.create-publication"]);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(xiCommands.resolve("xiagents.find")?.runtimeRequired, true);
   // Collisions are refused by Cmdly itself: a namespace taken twice, an id registered twice.
@@ -184,4 +184,19 @@ test("publication labels: summary, else first live message, drafts marked", () =
   assert.equal(publicationLabel({ summary: "", status: "published", messages: [{ file: "1", body: "", deleted: false }, { file: "2", body: "## Titre\n\n**gras**" }] }), "Titre gras");
   assert.equal(publicationLabel({ summary: "", status: "draft", messages: [] }), "Brouillon · Sans titre");
   assert.equal(publicationLabel({ summary: "x".repeat(200), status: "published", messages: [] }).length, 90);
+});
+
+
+test("tags and global provenance survive unique display in an active registry", () => {
+  assert.ok(xiCommands.listByTag("search").some(command => command.id === "publications.find"));
+  assert.equal(xiCommands.resolve("xiagents.find")?.sourceRegistry, "xiagents");
+  assert.equal(xiCommands.resolve("publications.test-cmdly")?.isGlobal, true);
+  const engine = createCommandEngine({ registry: xiCommands, runtime: () => fakeRuntime().runtime, globalDisplay: "unique", activeRegistry: "publications" });
+  assert.equal(engine.getSnapshot().items.filter(item => item.label === "🧪 Test Cmdly global").length, 1);
+  engine.destroy();
+  const registry = createCommandRegistry({ tags: { search: { label: "Recherche" } } });
+  registry.register({ id: "find", label: "Find", tags: ["search"], tagOverrides: { search: { label: "Locale" } }, run: () => {} });
+  assert.equal(registry.resolveTagDefinition("search", registry.get("find")).label, "Locale");
+  // @ts-expect-error unknown tags must be rejected
+  if (false) registry.register({ id: "invalid", label: "Invalid", tags: ["unknown"], run: () => {} });
 });

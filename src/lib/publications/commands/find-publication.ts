@@ -13,6 +13,7 @@ export function publicationLabel(publication: Pick<PublicationSnapshot, "summary
 
 export const findPublication = {
   id: "find",
+  tags: ["search"],
   label: "Rechercher une publication",
   progress: "local",
   steps: [

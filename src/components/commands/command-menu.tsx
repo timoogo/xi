@@ -5,6 +5,8 @@ import { useCommandEngine } from "@cmdly/react";
 import { ArrowLeft, Command, Loader2, Search } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { Badge } from "@/components/ui/badge";
+import { commandTags, type CommandTag } from "@/lib/commands/tags";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { createXiCommandRuntime, xiCommands, type XiCommandRuntime } from "@/lib/commands/registry";
@@ -46,11 +48,11 @@ export function CommandRailButton({ onOpen, className }: { onOpen: () => void; c
  * step, loading, error, final). A Cmdly engine cannot be reopened after close, so each opening
  * creates one and closing destroys it: there is never more than one engine.
  */
-export function CommandMenu({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  return <Dialog open={open} onOpenChange={onOpenChange}>{open ? <PaletteSession onClose={() => onOpenChange(false)} /> : null}</Dialog>;
+export function CommandMenu({ open, onOpenChange, showBusinessTags = false }: { open: boolean; onOpenChange: (open: boolean) => void; showBusinessTags?: boolean }) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>{open ? <PaletteSession showBusinessTags={showBusinessTags} onClose={() => onOpenChange(false)} /> : null}</Dialog>;
 }
 
-function PaletteSession({ onClose }: { onClose: () => void }) {
+function PaletteSession({ onClose, showBusinessTags }: { onClose: () => void; showBusinessTags: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
   const location = useRef(pathname);
@@ -62,36 +64,41 @@ function PaletteSession({ onClose }: { onClose: () => void }) {
     setEngine(instance);
     return () => instance.destroy();
   }, [router]);
-  return engine ? <Palette engine={engine} onClose={onClose} /> : null;
+  return engine ? <Palette engine={engine} onClose={onClose} showBusinessTags={showBusinessTags} /> : null;
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : "La commande a échoué.";
 
-function Palette({ engine, onClose }: { engine: Engine; onClose: () => void }) {
+function Palette({ engine, onClose, showBusinessTags }: { engine: Engine; onClose: () => void; showBusinessTags: boolean }) {
   const { state, actions } = useCommandEngine(engine);
   const input = useRef<HTMLInputElement>(null);
+  const [tagQuery, setTagQuery] = useState("");
   const listId = useId();
   useEffect(() => { if (state.closed) onClose(); }, [state.closed, onClose]);
+  useEffect(() => { setTagQuery(""); }, [state.phase, state.step]);
   useEffect(() => { if (state.phase !== "final") input.current?.focus(); }, [state.phase, state.step, state.command]);
   useEffect(() => { document.getElementById(`${listId}-${state.active}`)?.scrollIntoView?.({ block: "nearest" }); }, [listId, state.active, state.items]);
 
   const title = state.step?.label ?? (state.canBack ? state.menuLabel : "Commandes");
   const busy = state.loading || state.running;
   const failed = state.loadFailed || state.status === "error";
-  const start = Math.floor(state.active / state.maxVisibleItems) * state.maxVisibleItems;
-  const visible = state.items.slice(start, start + state.maxVisibleItems);
+  const tag = state.phase === "menu" && tagQuery in commandTags ? tagQuery as CommandTag : null;
+  const indices = state.items.map((_, index) => index).filter(index => !tag || ("id" in state.items[index] && xiCommands.resolve((state.items[index] as { id: string }).id)?.command.tags?.includes(tag)));
+  const activePosition = Math.max(0, indices.indexOf(state.active));
+  const start = Math.floor(activePosition / state.maxVisibleItems) * state.maxVisibleItems;
+  const visible = indices.slice(start, start + state.maxVisibleItems);
   const showList = state.phase !== "final" && !busy && !state.loadFailed;
   const back = () => { actions.back(); input.current?.focus(); };
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    const count = state.items.length;
+    const count = indices.length;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (count) actions.setActive((state.active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
+      if (count) actions.setActive(indices[(activePosition + (event.key === "ArrowDown" ? 1 : count - 1)) % count]);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      actions.select(state.active);
-    } else if (event.key === "Backspace" && !state.query && state.canBack && !state.running) {
+      if (count) actions.select(indices[activePosition]);
+    } else if (event.key === "Backspace" && !state.query && !tagQuery && state.canBack && !state.running) {
       event.preventDefault();
       back();
     }
@@ -108,10 +115,10 @@ function Palette({ engine, onClose }: { engine: Engine; onClose: () => void }) {
         {state.canBack
           ? <Button type="button" variant="ghost" size="icon" className="size-8 rounded-full" aria-label="Étape précédente" onClick={back} disabled={state.running}><ArrowLeft aria-hidden="true" /></Button>
           : <Search aria-hidden="true" className="size-5 text-muted-foreground" />}
-        <input ref={input} autoFocus value={state.query} onChange={event => actions.setQuery(event.target.value)} onKeyDown={onKeyDown}
+        <input ref={input} autoFocus value={tagQuery || state.query} onChange={event => { const value = event.target.value; const isTag = state.phase === "menu" && value.toLowerCase() in commandTags; setTagQuery(isTag ? value.toLowerCase() : ""); actions.setQuery(isTag ? "" : value); }} onKeyDown={onKeyDown}
           disabled={state.running || state.phase === "final"} placeholder={title} aria-label={title}
           role="combobox" aria-expanded={showList} aria-controls={showList ? listId : undefined} aria-autocomplete="list"
-          aria-activedescendant={showList && state.items.length ? `${listId}-${state.active}` : undefined}
+          aria-activedescendant={showList && indices.length ? `${listId}-${indices[activePosition]}` : undefined}
           className="h-10 min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground disabled:opacity-60" />
         {state.progress && !state.progress.indeterminate && state.progress.total
           ? <span className="shrink-0 text-xs text-muted-foreground">Étape {Math.min(state.progress.current + 1, state.progress.total)}/{state.progress.total}</span> : null}
@@ -131,15 +138,23 @@ function Palette({ engine, onClose }: { engine: Engine; onClose: () => void }) {
         {state.phase === "final" && state.finalStep?.timing === "before" && state.status !== "loading" && !failed
           ? <div className="p-2"><Button type="button" onClick={() => void actions.execute()}>Confirmer</Button></div> : null}
         {showList ? (
-          state.items.length ? (
+          indices.length ? (
             <ul role="listbox" id={listId} aria-label={title} className="space-y-0.5">
-              {visible.map((item, offset) => {
-                const index = start + offset;
+              {visible.map(index => {
+                const item = state.items[index];
+                const resolved = state.phase === "menu" && "id" in item ? xiCommands.resolve(item.id) : undefined;
+                const origin = resolved?.isGlobal ? "" : resolved?.sourceRegistry;
+                const registryBadge = origin === "publications" ? { label: "Publications", className: "bg-blue-100 text-blue-900 dark:bg-blue-950 dark:text-blue-100" } : origin === "xiagents" ? { label: "ΞAgents", className: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-100" } : { label: "Global", className: "" };
                 return (
-                  <li key={"id" in item ? item.id : item.value} id={`${listId}-${index}`} role="option" aria-selected={index === state.active}
+                  <li key={"id" in item ? item.id : item.value} id={`${listId}-${index}`} role="option" aria-label={item.label} aria-selected={index === indices[activePosition]}
                     onClick={() => actions.select(index)} onMouseMove={() => { if (index !== state.active) actions.setActive(index); }}
-                    className="cursor-pointer truncate rounded-md px-3 py-2 text-[15px] aria-selected:bg-accent aria-selected:text-accent-foreground">
-                    {item.label}
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-[15px] aria-selected:bg-accent aria-selected:text-accent-foreground">
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                    {resolved ? <Badge className={registryBadge.className}>{registryBadge.label}</Badge> : null}
+                    {resolved && showBusinessTags ? resolved.command.tags?.map(key => {
+                      const def = { ...resolved.tagCatalog[key], ...resolved.command.tagOverrides?.[key] };
+                      return <Badge key={key} variant={def.variant} className={def.className} style={{ ...def.style, ...(def.color ? { color: def.color } : {}) }}>{def.label ?? key}</Badge>;
+                    }) : null}
                   </li>
                 );
               })}
