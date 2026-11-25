@@ -16,7 +16,7 @@ async function request<T>(url: string, method = "GET", data?: unknown): Promise<
   const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Requête impossible."); return result;
 }
 const selectClass = "w-full rounded-md border bg-background px-3 py-2";
-export function AccountManager({ owner, duplicateId }: { owner: string; duplicateId?: string }) {
+export function AccountManager({ owner, duplicateId, openCreate }: { owner: string; duplicateId?: string; openCreate?: boolean }) {
   const [catalog, setCatalog] = useState<Catalog>({ accounts: [], topics: [], presets: [] });
   const [topicId, setTopicId] = useState("");
   const [run, setRun] = useState<AccountRun | null>(null);
@@ -54,7 +54,7 @@ export function AccountManager({ owner, duplicateId }: { owner: string; duplicat
       <h2 id="create-account" className="font-semibold">Créer</h2>
       <p className="text-sm text-muted-foreground">Quelques mots-clés, un fichier YAML ou une saisie manuelle : Ξ prépare la configuration, vous la vérifiez, puis le déploiement la crée étape par étape.</p>
       <div className="flex flex-wrap gap-3">
-        {catalog.presets.length > 0 && <CreateXiAgent topics={catalog.topics} presets={catalog.presets} duplicateId={duplicateId} />}
+        {catalog.presets.length > 0 && <CreateXiAgent openCreate={openCreate} topics={catalog.topics} presets={catalog.presets} duplicateId={duplicateId} />}
         <Link href="/dashboard/xiagents/deployments" className="inline-flex items-center py-2 text-sm underline">Historique des déploiements</Link>
       </div>
       <div className="space-y-2 border-t pt-3">

@@ -92,12 +92,15 @@ function ReviewStep({ draft, setDraft, edit, topics, presets, issues, attempted,
   </div>;
 }
 
-export function CreateXiAgent({ topics, presets, duplicateId }: { topics: Topic[]; presets: Preset[]; duplicateId?: string }) {
-  const [open, setOpen] = useState(!!duplicateId);
-  return <Dialog open={open} onOpenChange={setOpen}>
+export function CreateXiAgent({ topics, presets, duplicateId, openCreate }: { topics: Topic[]; presets: Preset[]; duplicateId?: string; openCreate?: boolean }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(!!duplicateId || !!openCreate);
+  useEffect(() => { if (openCreate) setOpen(true); }, [openCreate]);
+  const changeOpen = (value: boolean) => { setOpen(value); if (!value && openCreate) router.replace("/dashboard/xiagents"); };
+  return <Dialog open={open} onOpenChange={changeOpen}>
     <DialogTrigger asChild><Button>Créer un ΞAgent ou un topic</Button></DialogTrigger>
     <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl" onInteractOutside={event => event.preventDefault()}>
-      <Wizard topics={topics} presets={presets} duplicateId={duplicateId} onClose={() => setOpen(false)} />
+      <Wizard topics={topics} presets={presets} duplicateId={duplicateId} onClose={() => changeOpen(false)} />
     </DialogContent>
   </Dialog>;
 }

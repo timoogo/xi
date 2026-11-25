@@ -39,7 +39,7 @@ export async function toggleTopicSubscription(form: FormData): Promise<void> {
   const topic = await setSubscription(id, String(form.get("topicId") ?? ""), form.get("subscribe") === "1");
   // The discovery panel lists subscriptions on every dashboard page.
   revalidatePath("/dashboard", "layout");
-  redirect(topicHref(topic.tag));
+  redirect(`${topicHref(topic.tag)}${form.get("exactTopic") === "1" ? `?topicId=${encodeURIComponent(topic.id)}` : ""}`);
 }
 
 /** Only same-app pages of the topic graph or a topic page: never an arbitrary redirection target. */
@@ -50,7 +50,7 @@ export async function toggleTopicKnowledge(form: FormData): Promise<void> {
   const id = await viewerId();
   const topic = await setKnowledge(id, String(form.get("topicId") ?? ""), form.get("known") === "1");
   const back = String(form.get("back") ?? "");
-  redirect(RETURN_PATH.test(back) ? back : topicHref(topic.tag));
+  redirect(RETURN_PATH.test(back) ? back : `${topicHref(topic.tag)}${form.get("exactTopic") === "1" ? `?topicId=${encodeURIComponent(topic.id)}` : ""}`);
 }
 
 /** Errors come back to the topic page as a fixed code (never free text in the URL). */

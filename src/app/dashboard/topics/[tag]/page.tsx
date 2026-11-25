@@ -20,18 +20,20 @@ export const metadata: Metadata = { title: "Ξ | Topic" };
 const VIA = { hashtag: "hashtag", tag: "tag", alias: "ancien tag", name: "nom du topic", model: "modèle" } as const;
 
 /** Permanent, read-only page of a topic, addressed by its current tag; former tags redirect to it. */
-export default async function TopicPage({ params, searchParams }: { params: Promise<{ tag: string }>; searchParams: Promise<{ cursor?: string; relation?: string }> }) {
-  const [{ tag: raw }, { cursor, relation: relationError }, viewer] = await Promise.all([params, searchParams, getCurrentUser()]);
+export default async function TopicPage({ params, searchParams }: { params: Promise<{ tag: string }>; searchParams: Promise<{ cursor?: string; relation?: string; topicId?: string }> }) {
+  const [{ tag: raw }, { cursor, relation: relationError, topicId }, viewer] = await Promise.all([params, searchParams, getCurrentUser()]);
   let decoded: string;
   try { decoded = decodeURIComponent(raw); } catch { notFound(); }
   const tag = normalizeTag(decoded);
   if (!tag) notFound();
   const [{ topics, agents }, settings] = await Promise.all([searchData(viewer.id), getPublicationStore().then(store => store.social(viewer))]);
-  const match = resolveTopic(topics, tag);
+  const selected = topicId ? topics.find(topic => topic.id === topicId) : undefined;
+  if (topicId && !selected) notFound();
+  const match = selected ? { topic: selected } : resolveTopic(topics, tag);
   // Unknown tag: the search page explains it and suggests close topics.
   if (!match) redirect(searchHref(`#${tag}`));
   const topic = match.topic;
-  if (topic.tag !== decoded) redirect(topicHref(topic.tag));
+  if (topic.tag !== decoded) redirect(`${topicHref(topic.tag)}${topicId ? `?topicId=${encodeURIComponent(topic.id)}` : ""}`);
 
   const parent = topics.find(t => t.id === topic.parentId);
   const children = topics.filter(t => t.parentId === topic.id);
@@ -52,6 +54,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
     <PageHeader title={topic.name} subtitle={`#${topic.tag}`} back={{ href: "/dashboard/explore", label: "Retour à l’exploration" }}>
       <form action={toggleTopicSubscription}>
         <input type="hidden" name="topicId" value={topic.id} />
+        {topicId ? <input type="hidden" name="exactTopic" value="1" /> : null}
         <input type="hidden" name="subscribe" value={subscribed ? "0" : "1"} />
         <button type="submit" aria-pressed={subscribed} title={subscribed ? "Se désabonner" : undefined}
           className={subscribed ? "rounded-full border px-4 py-1.5 text-sm font-bold hover:border-destructive hover:text-destructive" : "rounded-full bg-foreground px-4 py-1.5 text-sm font-bold text-background hover:opacity-90"}>
@@ -60,6 +63,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
       </form>
       <form action={toggleTopicKnowledge}>
         <input type="hidden" name="topicId" value={topic.id} />
+        {topicId ? <input type="hidden" name="exactTopic" value="1" /> : null}
         <input type="hidden" name="known" value={known ? "0" : "1"} />
         <button type="submit" aria-pressed={known} title={known ? "Retirer de mes connaissances" : undefined}
           className="rounded-full border px-4 py-1.5 text-sm font-bold hover:bg-accent aria-pressed:border-chart-2 aria-pressed:text-chart-2">
@@ -112,7 +116,7 @@ export default async function TopicPage({ params, searchParams }: { params: Prom
     </ResultSection>
     <KonstruktorPanel target={{ type: "topic", id: topic.id }} intro={`Affinez le topic #${topic.tag} : nom, périmètre ou description.`} />
     <h2 className="border-b px-4 pt-3 pb-2 text-lg font-bold">Publications déclarées</h2>
-    <PublicationFeed viewer={viewer} scope={{ kind: "search", topicIds: [topic.id], origin: "declared" }} cursor={cursor} path={topicHref(topic.tag)} label={`Publications déclarées sur ${topic.name}`}
+    <PublicationFeed viewer={viewer} scope={{ kind: "search", topicIds: [topic.id], origin: "declared" }} cursor={cursor} path={`${topicHref(topic.tag)}${topicId ? `?topicId=${encodeURIComponent(topic.id)}` : ""}`} label={`Publications déclarées sur ${topic.name}`}
       empty={{ title: "Aucune publication", description: "Aucune publication accessible ne déclare encore ce topic." }} />
   </>;
 }

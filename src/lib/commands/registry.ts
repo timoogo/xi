@@ -1,7 +1,8 @@
 import { createCommandRegistry } from "@cmdly/core";
 import { publicationsOverHttp } from "@/lib/publications/commands/client";
 import { publicationCommands, type PublicationCommandRuntime } from "@/lib/publications/commands";
-import { agentsOverHttp } from "@/lib/xiagents/commands/client";
+import { toast } from "sonner";
+import { agentsOverHttp, topicsOverHttp } from "@/lib/xiagents/commands/client";
 import { xiAgentCommands, type XiAgentCommandRuntime } from "@/lib/xiagents/commands";
 import { commandTags, type CommandTag } from "./tags";
 import type { NavigationRuntime } from "./types";
@@ -32,4 +33,4 @@ xiCommands.mount("xiagents", xiAgentCommands);
 
 /** The browser runtime: the host's navigation plus each module's HTTP services. */
 export const createXiCommandRuntime = (navigation: NavigationRuntime): XiCommandRuntime =>
-  ({ ...navigation, publications: publicationsOverHttp, agents: agentsOverHttp });
+  ({ ...navigation, publications: publicationsOverHttp, agents: agentsOverHttp, topics: topicsOverHttp, notice: (message, href) => toast(message, { action: { label: "Suivre", onClick: () => navigation.navigate(href) } }) });

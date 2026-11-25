@@ -47,7 +47,8 @@ test("inference client: Ollama and OpenAI-compatible local servers, deterministi
   });
   const ollama = createLocalInference(config(`http://127.0.0.1:${server.port}`));
   assert.equal(await ollama.complete(request), "{\"ok\": 1}");
-  const sent = server.requests[0].body as { model: string; stream: boolean; format: string; options: { temperature: number }; messages: { role: string; content: string }[] };
+  const sent = server.requests[0].body as { model: string; stream: boolean; think: boolean; format: string; options: { temperature: number }; messages: { role: string; content: string }[] };
+  assert.equal(sent.think, false);
   assert.deepEqual([server.requests[0].path, sent.model, sent.stream, sent.format, sent.options.temperature, sent.messages.map(m => m.role)], ["/api/chat", "local-model", false, "json", 0, ["system", "user"]]);
   const openai = createLocalInference(config(`http://127.0.0.1:${server.port}/`, { api: "openai" }));
   assert.equal(await openai.complete(request), "{\"ok\": 2}");
