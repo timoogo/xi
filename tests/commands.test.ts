@@ -24,7 +24,8 @@ function fakeRuntime(overrides: Partial<{ pathname: string; publications: Record
     pathname: overrides.pathname ?? "/dashboard",
     navigate: href => { visits.push(href); },
     publications: { list: scope => { listed.push(scope); return lists[scope](); } },
-    agents: { list: async category => { listed.push(category); return overrides.agents?.[category] ?? []; } },
+    agents: { list: async category => { listed.push(category); return overrides.agents?.[category] ?? []; }, scan: async () => ({ runId: "run", planned: 1 }) },
+    topics: { list: async () => [] }, notice: () => {},
   };
   return { runtime, visits, listed };
 }
@@ -48,7 +49,7 @@ function engineFor<TRuntime>(registry: CommandRegistry<undefined, TRuntime, true
 
 test("composition: each module's commands are discovered under its namespace, without collisions", () => {
   const ids = xiCommands.list().map(command => command.id);
-  assert.deepEqual(ids.filter(id => !id.endsWith("test-cmdly")), ["publications.go-to", "publications.find", "xiagents.find", "xiagents.create-publication"]);
+  assert.deepEqual(ids.filter(id => !id.endsWith("test-cmdly")), ["publications.go-to", "publications.find", "xiagents.find", "xiagents.create-publication", "xiagents.add", "xiagents.scan", "xiagents.find-topic"]);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(xiCommands.resolve("xiagents.find")?.runtimeRequired, true);
   // Collisions are refused by Cmdly itself: a namespace taken twice, an id registered twice.
@@ -199,4 +200,70 @@ test("tags and global provenance survive unique display in an active registry", 
   assert.equal(registry.resolveTagDefinition("search", registry.get("find")).label, "Locale");
   // @ts-expect-error unknown tags must be rejected
   if (false) registry.register({ id: "invalid", label: "Invalid", tags: ["unknown"], run: () => {} });
+});
+
+test("POC: creation opens the existing wizard and topic selection opens its route", async () => {
+  const { runtime, visits } = fakeRuntime();
+  runtime.topics.list = async () => [{ id: "t", name: "Climat", tag: "climat", personal: false }];
+  let flow = engineFor(xiCommands, runtime);
+  flow.choose("Ajouter un bot");
+  await flow.settled();
+  assert.equal(visits.pop(), "/dashboard/xiagents?create=agent");
+  flow = engineFor(xiCommands, runtime);
+  flow.choose("Se renseigner sur un topic");
+  await flow.settled();
+  flow.choose("Climat · #climat (partagé)");
+  await flow.settled();
+  assert.equal(visits.pop(), "/dashboard/topics/by-id?topicId=t");
+});
+
+test("POC: topics with the same tag keep distinct selection identities", async () => {
+  const { runtime, visits } = fakeRuntime();
+  runtime.topics.list = async () => [{ id: "personal-id", name: "Personnel", tag: "science", personal: true }, { id: "shared-id", name: "Commun", tag: "science", personal: false }];
+  for (const [label, id] of [["Personnel · #science (personnel)", "personal-id"], ["Commun · #science (partagé)", "shared-id"]]) {
+    const flow = engineFor(xiCommands, runtime);
+    flow.choose("Se renseigner sur un topic");
+    await flow.settled();
+    flow.choose(label);
+    await flow.settled();
+    assert.equal(visits.pop(), `/dashboard/topics/by-id?topicId=${id}`);
+  }
+});
+
+test("POC: scan uses the selected agent and reports planned work", async () => {
+  const { runtime } = fakeRuntime({ agents: { editorial: [agent("a", "Alpha")] } });
+  let scanned = "", notice = "";
+  runtime.agents.scan = async id => { scanned = id; return { runId: "r", planned: 2 }; };
+  runtime.notice = text => { notice = text; };
+  const flow = engineFor(xiCommands, runtime);
+  flow.choose("Demander un scan");
+  await flow.settled();
+  flow.choose("Alpha · @alpha");
+  await flow.settled();
+  assert.equal(scanned, "a");
+  assert.match(notice, /2 collecte\(s\) planifiée/);
+});
+
+test("POC: scan on an agent page skips the choice; empty plans and server refusals are reported", async () => {
+  const id = "0b7c2f4e-1d2a-4c3b-9e8f-123456789abc";
+  const { runtime, listed } = fakeRuntime({ pathname: `/dashboard/xiagents/${id}` });
+  let scanned = "", notice = "", href = "";
+  runtime.agents.scan = async agentId => { scanned = agentId; return { runId: "manual-watch:r", planned: 0 }; };
+  runtime.notice = (text, link) => { notice = text; href = link; };
+  let flow = engineFor(xiCommands, runtime);
+  flow.choose("Demander un scan");
+  await flow.settled();
+  assert.equal(scanned, id);
+  assert.ok(!listed.includes("editorial"), "no agent list is loaded when the page names the agent");
+  assert.match(notice, /Aucune source/);
+  assert.equal(href, `/dashboard/xiagents/${id}/runs/manual-watch%3Ar`);
+
+  runtime.agents.scan = async () => { throw new Error("ΞAgent en pause : reprenez-le avant une exécution manuelle."); };
+  notice = "";
+  flow = engineFor(xiCommands, runtime);
+  flow.choose("Demander un scan");
+  const snapshot = await flow.settled();
+  assert.equal(snapshot.status, "error");
+  assert.match(String((snapshot.error as Error)?.message), /en pause/);
+  assert.equal(notice, "");
 });

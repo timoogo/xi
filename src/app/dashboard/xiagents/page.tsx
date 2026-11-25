@@ -14,13 +14,13 @@ import { parseCategory } from "@/lib/xiagents/summary";
 export const metadata = { title: "Ξ | ΞAgents" };
 
 /** `?category=system` lists the instance's system agents; without it, the viewer's editorial agents (historical page). */
-export default async function XiAgentsPage({ searchParams }: { searchParams: Promise<{ duplicate?: string | string[]; category?: string | string[] }> }) {
+export default async function XiAgentsPage({ searchParams }: { searchParams: Promise<{ duplicate?: string | string[]; category?: string | string[]; create?: string }> }) {
   const user = await getCurrentUser();
-  const { duplicate, category: raw } = await searchParams;
+  const { duplicate, create, category: raw } = await searchParams;
   const category = parseCategory(typeof raw === "string" ? raw : undefined);
   if (!category) notFound();
   const header = <PageHeader title="ΞAgents" subtitle={category === "system" ? "Agents systèmes de l’instance" : "Vos identités éditoriales · validation humaine"}><XiAgentCategoryNav value={category} /></PageHeader>;
-  if (category === "editorial") return <>{header}<KonstruktorPanel target={{ type: "new-agent", id: null }} intro="Décrivez la veille souhaitée : Konstruktor propose un ΞAgent et ses topics." /><AccountManager owner={user.id} duplicateId={typeof duplicate === "string" && /^[0-9a-f-]{36}$/.test(duplicate) ? duplicate : undefined} /></>;
+  if (category === "editorial") return <>{header}<KonstruktorPanel target={{ type: "new-agent", id: null }} intro="Décrivez la veille souhaitée : Konstruktor propose un ΞAgent et ses topics." /><AccountManager openCreate={create === "agent"} owner={user.id} duplicateId={typeof duplicate === "string" && /^[0-9a-f-]{36}$/.test(duplicate) ? duplicate : undefined} /></>;
   try {
     const [agents, summaries] = await Promise.all([getSystemAgentStore().then(store => store.list()), systemAgentSummaries(user.id)]);
     // The viewer's own arbitrations only, on @arbitre's card.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import Database from "better-sqlite3";
 import { chromium, type Browser, type Locator } from "playwright-core";
 import { hydrated } from "./helpers/hydration";
 import { createTestServer } from "./helpers/next-server";
@@ -194,5 +195,104 @@ test("command palette: open, filter, simple command, multi-step workflows with r
   assert.ok(apart(editing, await box(phone.locator("nav.fixed"))) && editing.x + editing.width > 390 - 24);
   await mobile.close();
 
+  assert.deepEqual(errors, []);
+});
+
+test("Cmdly POC: creation, exact topic identity, scan and errors through Xi APIs", { timeout: 180_000 }, async t => {
+  const ollamaUrl = process.env.XI_CMDLY_REAL_OLLAMA_URL;
+  const app = await createTestServer(ollamaUrl ? { XI_INFERENCE_URL: ollamaUrl, XI_INFERENCE_API: "ollama", XI_INFERENCE_MODEL: "qwen3:1.7b" } : {});
+  const resources: { browser?: Browser } = {};
+  t.after(async () => { await resources.browser?.close(); await app.dispose(); });
+  await app.migrate(); await app.start();
+  const browser = resources.browser = await chromium.launch({ executablePath: process.env.XI_E2E_CHROME ?? "/usr/bin/google-chrome-stable", headless: true });
+  const alice = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const bob = await browser.newContext();
+  const headers = { Origin: app.origin };
+  for (const [context, name] of [[alice, "Alice"], [bob, "Bob"]] as const) {
+    assert.equal((await context.request.post(`${app.origin}/api/auth/sign-up/email`, { headers, data: { name, email: `${name}@cmdly-poc.test`, password: "commands test password" } })).status(), 200);
+  }
+  const page = await alice.newPage(); page.setDefaultTimeout(15_000);
+  const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+  // The personal topic exists first; a shared topic may subsequently acquire the same tag.
+  await page.goto(`${app.origin}/dashboard/explore`);
+  const search = page.locator("#main-content").getByRole("searchbox", { name: /Rechercher/ });
+  await hydrated(search); await search.fill("#homonyme"); await search.press("Enter");
+  await page.waitForURL(`${app.origin}/dashboard/topics/homonyme`);
+  await page.getByText("Topic personnel", { exact: true }).waitFor();
+  const post = async (path: string, data: unknown) => {
+    const response = await alice.request.post(app.origin + path, { headers, data });
+    assert.equal(response.status(), 200, await response.text()); return response.json();
+  };
+  const { run: topic } = await post("/api/topics/runs", { intent: "Homonyme partagé" });
+  await post(`/api/topics/runs/${topic.id}`, { action: "resume" });
+  await post(`/api/topics/runs/${topic.id}`, { action: "confirm", relationsConfirmed: true, draft: { tag: "homonyme", name: "Homonyme partagé", description: "Sujet commun", scope: "Périmètre partagé", parentId: null, relatedIds: [] } });
+  const catalog = await (await alice.request.get(`${app.origin}/api/commands/topics`)).json();
+  const twins = catalog.topics.filter((entry: { tag: string }) => entry.tag === "homonyme");
+  assert.equal(twins.length, 2);
+  const personal = twins.find((entry: { personal: boolean }) => entry.personal);
+  const shared = twins.find((entry: { personal: boolean }) => !entry.personal);
+  assert.notEqual(personal.id, shared.id);
+  const { run: allocated } = await post("/api/accounts/runs", { topicId: topic.topicId });
+  const { run: ready } = await post(`/api/accounts/runs/${allocated.id}`, { action: "resume" });
+  const { run: complete } = await post(`/api/accounts/runs/${allocated.id}`, { action: "confirm", draft: ready.draft, confirmed: true });
+  const agentId: string = complete.accountId;
+  const watchPath = `/api/xiagents/${agentId}/watch`;
+  const watch = await (await alice.request.get(app.origin + watchPath)).json();
+  const enabled = await alice.request.patch(app.origin + watchPath, { headers, data: { revision: watch.revision, policy: { ...watch.policy, enabled: true } } });
+  assert.equal(enabled.status(), 200, await enabled.text());
+  if (ollamaUrl) {
+    const env = (await (await alice.request.get(`${app.origin}/api/llm/instances`)).json()).environment;
+    assert.equal(env.configured, true); assert.equal(env.defaultModel, "qwen3:1.7b");
+    const tags = await (await fetch(new URL("/api/tags", ollamaUrl))).json() as { models: { name: string }[] };
+    assert.ok(tags.models.some(model => model.name === "qwen3:1.7b"));
+    const source = await post(`/api/xiagents/${agentId}/sources`, { url: "https://www.nature.com/subjects/machine-learning.rss" });
+    assert.equal(source.source.status, "proposed");
+  }
+  const palette = page.getByRole("dialog", { name: "Palette de commandes" });
+  const open = async () => { await page.getByRole("button", { name: "Commandes", exact: true }).click(); await palette.getByRole("combobox").waitFor(); };
+  await page.goto(`${app.origin}/dashboard`); await hydrated(page.getByRole("button", { name: "Commandes", exact: true }));
+  await open(); await palette.getByRole("option", { name: "Ajouter un bot" }).click();
+  const wizard = page.getByRole("dialog", { name: "Nouveau ΞAgent" }); await wizard.waitFor();
+  await wizard.getByRole("radio", { name: /Saisie manuelle/ }).check(); await wizard.getByRole("button", { name: "Saisir manuellement" }).click();
+  await wizard.getByRole("button", { name: "Suivant" }).click(); await wizard.getByRole("alert").filter({ hasText: "Nom requis." }).waitFor();
+  await page.keyboard.press("Escape"); await wizard.waitFor({ state: "detached" });
+  for (const choice of [personal, shared]) {
+    await open(); await palette.getByRole("option", { name: "Se renseigner sur un topic" }).click();
+    await palette.getByRole("option", { name: `${choice.name} · #homonyme (${choice.personal ? "personnel" : "partagé"})` }).click();
+    await page.waitForURL(`${app.origin}/dashboard/topics/homonyme?topicId=${choice.id}`);
+    assert.equal(await page.getByText("Topic personnel", { exact: true }).count(), choice.personal ? 1 : 0);
+    if (!choice.personal) {
+      await page.getByText("Périmètre partagé", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "S’abonner" }).click();
+      await page.getByRole("button", { name: "Abonné" }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("topicId"), shared.id);
+      await page.getByRole("button", { name: "Je connais ce sujet" }).click();
+      await page.getByRole("button", { name: "Connaissance acquise" }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("topicId"), shared.id);
+    }
+  }
+  assert.equal((await bob.request.get(`${app.origin}/dashboard/topics/by-id?topicId=${personal.id}`)).status(), 404);
+  const anonymous = await browser.newContext();
+  assert.equal((await anonymous.request.get(`${app.origin}/api/commands/topics`)).status(), 401);
+  await anonymous.close();
+  await page.goto(`${app.origin}/dashboard`); await hydrated(page.getByRole("button", { name: "Commandes", exact: true }));
+  await open(); await palette.getByRole("option", { name: "Demander un scan" }).click();
+  const scanResponse = page.waitForResponse(response => response.url().endsWith(`/api/xiagents/${agentId}/control`) && response.request().method() === "POST");
+  await palette.getByRole("option", { name: /Homonyme partagé · @/ }).click();
+  const response = await scanResponse; assert.equal(response.status(), 200);
+  const scan = await response.json(); assert.equal(scan.planned, ollamaUrl ? 1 : 0); assert.ok(scan.runId);
+  await page.getByText(ollamaUrl ? /Veille demandée : 1 collecte/ : "Aucune source à collecter pour cet ΞAgent.").waitFor();
+  if (ollamaUrl) {
+    const db = new Database(app.databasePath, { readonly: true });
+    try {
+      const pending = (db.prepare("SELECT count(*) AS n FROM watch_job WHERE kind = 'collect-source' AND state = 'pending' AND json_extract(payload, '$.agentId') = ?").get(agentId) as { n: number }).n;
+      assert.equal(pending, 1);
+      console.log(`Real Cmdly scan: ${scan.planned} collection scheduled and persisted; no worker is started by this test.`);
+    } finally { db.close(); }
+  }
+  await post(`/api/xiagents/${agentId}/control`, { action: "pause", resumeAt: null, resumeWith: "now" });
+  await open(); await palette.getByRole("option", { name: "Demander un scan" }).click();
+  await palette.getByRole("option", { name: /Homonyme partagé · @/ }).click();
+  await palette.getByRole("alert").filter({ hasText: "ΞAgent en pause" }).waitFor();
   assert.deepEqual(errors, []);
 });
