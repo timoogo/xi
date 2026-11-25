@@ -71,7 +71,7 @@ export function createLocalInference(config: InferenceConfig, { resolve }: { res
       const messages = [{ role: "system", content: system }, { role: "user", content: prompt }];
       // Deterministic decoding: same input, same output, so a resumed task does not drift.
       const body = config.api === "ollama"
-        ? { model, messages, stream: false, format: "json", options: { temperature: 0, seed: 0 } }
+        ? { model, messages, stream: false, think: false, format: "json", options: { temperature: 0, seed: 0 } }
         : { model, messages, stream: false, temperature: 0, seed: 0, response_format: { type: "json_object" } };
       let response;
       try {
